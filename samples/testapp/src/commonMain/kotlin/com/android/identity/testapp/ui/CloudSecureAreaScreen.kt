@@ -58,6 +58,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.datetime.Clock
 import kotlinx.io.bytestring.encodeToByteString
 import org.multipaz.crypto.Algorithm
+import org.multipaz.testapp.platformHttpClientEngineFactory
 import kotlin.time.Duration.Companion.days
 
 private val TAG = "CloudSecureAreaScreen"
@@ -101,7 +102,8 @@ fun CloudSecureAreaScreen(
                     cloudSecureArea = CloudSecureArea.create(
                         EphemeralStorage(),
                         "CloudSecureArea",
-                        url
+                        url,
+                        platformHttpClientEngineFactory()
                     )
                     try {
                         cloudSecureArea!!.register(

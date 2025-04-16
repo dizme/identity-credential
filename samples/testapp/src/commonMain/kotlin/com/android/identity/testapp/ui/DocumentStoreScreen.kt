@@ -54,6 +54,7 @@ import kotlinx.datetime.TimeZone
 import kotlinx.datetime.atStartOfDayIn
 import kotlinx.io.bytestring.ByteString
 import org.multipaz.crypto.Algorithm
+import org.multipaz.testapp.platformHttpClientEngineFactory
 
 private const val TAG = "DocumentStoreScreen"
 
@@ -105,7 +106,8 @@ fun DocumentStoreScreen(
                     val cloudSecureArea = CloudSecureArea.create(
                         platformStorage(),
                         "CloudSecureArea?url=${url.encodeURLParameter()}",
-                        url
+                        url,
+                        platformHttpClientEngineFactory()
                     )
                     try {
                         cloudSecureArea.register(
@@ -359,7 +361,8 @@ private suspend fun provisionTestDocuments(
         showToast("Secure Area doesn't support algorithm $deviceKeyAlgorithm for DeviceKey")
         return
     }
-    if (secureArea.supportedAlgorithms.find { it == deviceKeyMacAlgorithm } == null) {
+    if (deviceKeyMacAlgorithm != Algorithm.UNSET &&
+        secureArea.supportedAlgorithms.find { it == deviceKeyMacAlgorithm } == null) {
         showToast("Secure Area doesn't support algorithm $deviceKeyMacAlgorithm for DeviceKey for MAC")
         return
     }

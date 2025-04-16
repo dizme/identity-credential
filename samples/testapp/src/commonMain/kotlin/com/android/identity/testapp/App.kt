@@ -187,7 +187,8 @@ class App private constructor(val promptModel: PromptModel) {
                 CloudSecureArea.create(
                     platformStorage(),
                     identifier,
-                    cloudSecureAreaUrl
+                    cloudSecureAreaUrl,
+                    platformHttpClientEngineFactory()
                 )
             }
         }
