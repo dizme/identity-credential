@@ -1549,11 +1549,12 @@ private fun calcDcRequestStringOpenID4VP(
                             )
                         }
                         putJsonArray("claims") {
-                            // TODO: support path-based claims, e.g. ["address", "postal_code"]
                             for (claim in request.vcRequest!!.claimsToRequest) {
                                 addJsonObject {
                                     putJsonArray("path") {
-                                        add(JsonPrimitive(claim.identifier))
+                                        for (pathElement in claim.identifier.split(".")) {
+                                            add(JsonPrimitive(pathElement))
+                                        }
                                     }
                                 }
                             }
