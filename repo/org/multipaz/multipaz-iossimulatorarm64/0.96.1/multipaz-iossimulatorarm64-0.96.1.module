@@ -1,0 +1,225 @@
+{
+  "formatVersion": "1.1",
+  "component": {
+    "url": "../../multipaz/0.96.1/multipaz-0.96.1.module",
+    "group": "org.multipaz",
+    "module": "multipaz",
+    "version": "0.96.1",
+    "attributes": {
+      "org.gradle.status": "release"
+    }
+  },
+  "createdBy": {
+    "gradle": {
+      "version": "8.14.2"
+    }
+  },
+  "variants": [
+    {
+      "name": "iosSimulatorArm64ApiElements-published",
+      "attributes": {
+        "artifactType": "org.jetbrains.kotlin.klib",
+        "org.gradle.category": "library",
+        "org.gradle.jvm.environment": "non-jvm",
+        "org.gradle.usage": "kotlin-api",
+        "org.jetbrains.kotlin.native.target": "ios_simulator_arm64",
+        "org.jetbrains.kotlin.platform.type": "native"
+      },
+      "dependencies": [
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-io-bytestring",
+          "version": {
+            "requires": "0.8.2"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-io-core",
+          "version": {
+            "requires": "0.8.2"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-datetime",
+          "version": {
+            "requires": "0.7.1"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-coroutines-core",
+          "version": {
+            "requires": "1.10.2"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-serialization-json",
+          "version": {
+            "requires": "1.9.0"
+          }
+        },
+        {
+          "group": "io.ktor",
+          "module": "ktor-client-core",
+          "version": {
+            "requires": "2.3.13"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlin",
+          "module": "kotlin-stdlib",
+          "version": {
+            "requires": "2.2.21"
+          }
+        },
+        {
+          "group": "androidx.sqlite",
+          "module": "sqlite",
+          "version": {
+            "requires": "2.5.2"
+          }
+        },
+        {
+          "group": "androidx.sqlite",
+          "module": "sqlite-framework",
+          "version": {
+            "requires": "2.5.2"
+          }
+        }
+      ],
+      "files": [
+        {
+          "name": "multipaz-iosSimulatorArm64Main-0.96.1.klib",
+          "url": "multipaz-iossimulatorarm64-0.96.1.klib",
+          "size": 2765422,
+          "sha512": "bab6c7b6f477549149848dc6efab92bb3b3c700d323809717b008c2034bd9d5950aff3902afc7108f0d212182daa25890a4aa6a5d46896b04b0d82a1441be6da",
+          "sha256": "5a67a92c542df9427c6c8263d7515418615f641f2fda23891468a1adee759c75",
+          "sha1": "6b44181f3ec91f44f48c853d303c617c4a9c060e",
+          "md5": "6ea46315b41dfb1f8335c5dcb5d21349"
+        },
+        {
+          "name": "multipaz-iosSimulatorArm64Cinterop-SwiftBridgeMain-0.96.1.klib",
+          "url": "multipaz-iossimulatorarm64-0.96.1-cinterop-SwiftBridge.klib",
+          "size": 145940,
+          "sha512": "d613c493f42d7f65554613051f997d072724c8be043424f73a5652199624b4078fa88bbde7473ad60a06d98287a24cc1701bf3120100da68c86d86c49652fe74",
+          "sha256": "ae3f8b107a420bf594c587a6e33b6dbd6096253ceed1de36f12816218dae5af4",
+          "sha1": "10fec4f5d3815282655edad38ece98bfc9e13f29",
+          "md5": "19f9670d9a71d10906b900aafb50d975"
+        }
+      ]
+    },
+    {
+      "name": "iosSimulatorArm64SourcesElements-published",
+      "attributes": {
+        "org.gradle.category": "documentation",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.docstype": "sources",
+        "org.gradle.jvm.environment": "non-jvm",
+        "org.gradle.usage": "kotlin-runtime",
+        "org.jetbrains.kotlin.native.target": "ios_simulator_arm64",
+        "org.jetbrains.kotlin.platform.type": "native"
+      },
+      "files": [
+        {
+          "name": "multipaz-iossimulatorarm64-0.96.1-sources.jar",
+          "url": "multipaz-iossimulatorarm64-0.96.1-sources.jar",
+          "size": 686312,
+          "sha512": "0649ccd655b63cf5762329a0c08f4bd227c61664cf6c7d2d95328af467bb62436297d49e5f9dd9be0222354510dd8657445ef507a5e63272312fa4a7ebab1031",
+          "sha256": "1e04e25d3dc8d7c4f70d1a45d11d1e3aaf2b066962b57a25a562f9f1d839eb58",
+          "sha1": "0f8c8a094e882b6e76529836870ffddc64334bf0",
+          "md5": "c88ef222632c5db9479f0a0f1744a8cb"
+        }
+      ]
+    },
+    {
+      "name": "iosSimulatorArm64MetadataElements-published",
+      "attributes": {
+        "artifactType": "org.jetbrains.kotlin.klib",
+        "org.gradle.category": "library",
+        "org.gradle.jvm.environment": "non-jvm",
+        "org.gradle.usage": "kotlin-metadata",
+        "org.jetbrains.kotlin.native.target": "ios_simulator_arm64",
+        "org.jetbrains.kotlin.platform.type": "native"
+      },
+      "dependencies": [
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-io-bytestring",
+          "version": {
+            "requires": "0.8.2"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-io-core",
+          "version": {
+            "requires": "0.8.2"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-datetime",
+          "version": {
+            "requires": "0.7.1"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-coroutines-core",
+          "version": {
+            "requires": "1.10.2"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-serialization-json",
+          "version": {
+            "requires": "1.9.0"
+          }
+        },
+        {
+          "group": "io.ktor",
+          "module": "ktor-client-core",
+          "version": {
+            "requires": "2.3.13"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlin",
+          "module": "kotlin-stdlib",
+          "version": {
+            "requires": "2.2.21"
+          }
+        },
+        {
+          "group": "androidx.sqlite",
+          "module": "sqlite",
+          "version": {
+            "requires": "2.5.2"
+          }
+        },
+        {
+          "group": "androidx.sqlite",
+          "module": "sqlite-framework",
+          "version": {
+            "requires": "2.5.2"
+          }
+        }
+      ],
+      "files": [
+        {
+          "name": "multipaz-iossimulatorarm64-0.96.1-metadata.jar",
+          "url": "multipaz-iossimulatorarm64-0.96.1-metadata.jar",
+          "size": 40129,
+          "sha512": "fda8e7c7a6c4e8c7a7c826cc9fc27362e5d7b4e5c57daf8af618c0f8ec54f5f963e4219a97d13612a3818f8e5891aed3546695b2624bc18392f4466109bf8dab",
+          "sha256": "2b907d7dfd116ccbe803e46339869bf1ef3f9d0f57c72921e4387cac86f85cb0",
+          "sha1": "ab312d5dad0bd9d29d4da502e95b972eb2a82843",
+          "md5": "6930ebb4b48b08212b156214a078fc28"
+        }
+      ]
+    }
+  ]
+}

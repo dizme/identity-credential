@@ -1,0 +1,344 @@
+{
+  "formatVersion": "1.1",
+  "component": {
+    "group": "org.multipaz",
+    "module": "multipaz-longfellow",
+    "version": "0.96.1",
+    "attributes": {
+      "org.gradle.status": "release"
+    }
+  },
+  "createdBy": {
+    "gradle": {
+      "version": "8.14.2"
+    }
+  },
+  "variants": [
+    {
+      "name": "metadataApiElements",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.jvm.environment": "non-jvm",
+        "org.gradle.usage": "kotlin-metadata",
+        "org.jetbrains.kotlin.platform.type": "common"
+      },
+      "dependencies": [
+        {
+          "group": "org.jetbrains.kotlin",
+          "module": "kotlin-stdlib",
+          "version": {
+            "requires": "2.2.21"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-io-bytestring",
+          "version": {
+            "requires": "0.8.2"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-datetime",
+          "version": {
+            "requires": "0.7.1"
+          }
+        },
+        {
+          "group": "org.multipaz",
+          "module": "multipaz",
+          "version": {
+            "requires": "0.96.1"
+          }
+        }
+      ],
+      "files": [
+        {
+          "name": "multipaz-longfellow-metadata-0.96.1.jar",
+          "url": "multipaz-longfellow-0.96.1.jar",
+          "size": 7135,
+          "sha512": "c4b7a681595a4f2fe9af83a7a0bb0895089eb833626b50670311c530ea89abe0e71b8a3f5b71448b61177890a900737a8b1c84dabef96b428886bf903c22bd75",
+          "sha256": "8643d4a69b9aec5bf5cdc3646321791b1ce773c49f834e3c7521bfe97c701cd3",
+          "sha1": "070c9df26327687ad4967e5bd0b5831b2bcd947e",
+          "md5": "ee9b96d211435acaa89320adfa1c165f"
+        }
+      ]
+    },
+    {
+      "name": "metadataSourcesElements",
+      "attributes": {
+        "org.gradle.category": "documentation",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.docstype": "sources",
+        "org.gradle.jvm.environment": "non-jvm",
+        "org.gradle.usage": "kotlin-runtime",
+        "org.jetbrains.kotlin.platform.type": "common"
+      },
+      "files": [
+        {
+          "name": "multipaz-longfellow-kotlin-0.96.1-sources.jar",
+          "url": "multipaz-longfellow-0.96.1-sources.jar",
+          "size": 12034,
+          "sha512": "7e1fbbcb08726b63a9144f9beb6fb247ef2751fa1d684610219a2385ea701b802afe5e86bd0fdb35ed986d5ae0c2ccfc82645d37059e9da1a31c428b3ac1ee28",
+          "sha256": "ed4acf3e7d0f716aa9db68b4e1e06200721883c8f01800baf25e8186696cde93",
+          "sha1": "f42c5cb3560beb83479d2303e02d0d2810e43883",
+          "md5": "0fd701917f27941a145303cb9deae9e3"
+        }
+      ]
+    },
+    {
+      "name": "releaseApiElements-published",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.jvm.environment": "android",
+        "org.gradle.usage": "java-api",
+        "org.jetbrains.kotlin.platform.type": "androidJvm"
+      },
+      "available-at": {
+        "url": "../../multipaz-longfellow-android/0.96.1/multipaz-longfellow-android-0.96.1.module",
+        "group": "org.multipaz",
+        "module": "multipaz-longfellow-android",
+        "version": "0.96.1"
+      }
+    },
+    {
+      "name": "releaseRuntimeElements-published",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.jvm.environment": "android",
+        "org.gradle.usage": "java-runtime",
+        "org.jetbrains.kotlin.platform.type": "androidJvm"
+      },
+      "available-at": {
+        "url": "../../multipaz-longfellow-android/0.96.1/multipaz-longfellow-android-0.96.1.module",
+        "group": "org.multipaz",
+        "module": "multipaz-longfellow-android",
+        "version": "0.96.1"
+      }
+    },
+    {
+      "name": "releaseSourcesElements-published",
+      "attributes": {
+        "org.gradle.category": "documentation",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.docstype": "sources",
+        "org.gradle.jvm.environment": "android",
+        "org.gradle.libraryelements": "jar",
+        "org.gradle.usage": "java-runtime",
+        "org.jetbrains.kotlin.platform.type": "androidJvm"
+      },
+      "available-at": {
+        "url": "../../multipaz-longfellow-android/0.96.1/multipaz-longfellow-android-0.96.1.module",
+        "group": "org.multipaz",
+        "module": "multipaz-longfellow-android",
+        "version": "0.96.1"
+      }
+    },
+    {
+      "name": "iosArm64ApiElements-published",
+      "attributes": {
+        "artifactType": "org.jetbrains.kotlin.klib",
+        "org.gradle.category": "library",
+        "org.gradle.jvm.environment": "non-jvm",
+        "org.gradle.usage": "kotlin-api",
+        "org.jetbrains.kotlin.native.target": "ios_arm64",
+        "org.jetbrains.kotlin.platform.type": "native"
+      },
+      "available-at": {
+        "url": "../../multipaz-longfellow-iosarm64/0.96.1/multipaz-longfellow-iosarm64-0.96.1.module",
+        "group": "org.multipaz",
+        "module": "multipaz-longfellow-iosarm64",
+        "version": "0.96.1"
+      }
+    },
+    {
+      "name": "iosArm64SourcesElements-published",
+      "attributes": {
+        "org.gradle.category": "documentation",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.docstype": "sources",
+        "org.gradle.jvm.environment": "non-jvm",
+        "org.gradle.usage": "kotlin-runtime",
+        "org.jetbrains.kotlin.native.target": "ios_arm64",
+        "org.jetbrains.kotlin.platform.type": "native"
+      },
+      "available-at": {
+        "url": "../../multipaz-longfellow-iosarm64/0.96.1/multipaz-longfellow-iosarm64-0.96.1.module",
+        "group": "org.multipaz",
+        "module": "multipaz-longfellow-iosarm64",
+        "version": "0.96.1"
+      }
+    },
+    {
+      "name": "iosArm64MetadataElements-published",
+      "attributes": {
+        "artifactType": "org.jetbrains.kotlin.klib",
+        "org.gradle.category": "library",
+        "org.gradle.jvm.environment": "non-jvm",
+        "org.gradle.usage": "kotlin-metadata",
+        "org.jetbrains.kotlin.native.target": "ios_arm64",
+        "org.jetbrains.kotlin.platform.type": "native"
+      },
+      "available-at": {
+        "url": "../../multipaz-longfellow-iosarm64/0.96.1/multipaz-longfellow-iosarm64-0.96.1.module",
+        "group": "org.multipaz",
+        "module": "multipaz-longfellow-iosarm64",
+        "version": "0.96.1"
+      }
+    },
+    {
+      "name": "iosSimulatorArm64ApiElements-published",
+      "attributes": {
+        "artifactType": "org.jetbrains.kotlin.klib",
+        "org.gradle.category": "library",
+        "org.gradle.jvm.environment": "non-jvm",
+        "org.gradle.usage": "kotlin-api",
+        "org.jetbrains.kotlin.native.target": "ios_simulator_arm64",
+        "org.jetbrains.kotlin.platform.type": "native"
+      },
+      "available-at": {
+        "url": "../../multipaz-longfellow-iossimulatorarm64/0.96.1/multipaz-longfellow-iossimulatorarm64-0.96.1.module",
+        "group": "org.multipaz",
+        "module": "multipaz-longfellow-iossimulatorarm64",
+        "version": "0.96.1"
+      }
+    },
+    {
+      "name": "iosSimulatorArm64SourcesElements-published",
+      "attributes": {
+        "org.gradle.category": "documentation",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.docstype": "sources",
+        "org.gradle.jvm.environment": "non-jvm",
+        "org.gradle.usage": "kotlin-runtime",
+        "org.jetbrains.kotlin.native.target": "ios_simulator_arm64",
+        "org.jetbrains.kotlin.platform.type": "native"
+      },
+      "available-at": {
+        "url": "../../multipaz-longfellow-iossimulatorarm64/0.96.1/multipaz-longfellow-iossimulatorarm64-0.96.1.module",
+        "group": "org.multipaz",
+        "module": "multipaz-longfellow-iossimulatorarm64",
+        "version": "0.96.1"
+      }
+    },
+    {
+      "name": "iosSimulatorArm64MetadataElements-published",
+      "attributes": {
+        "artifactType": "org.jetbrains.kotlin.klib",
+        "org.gradle.category": "library",
+        "org.gradle.jvm.environment": "non-jvm",
+        "org.gradle.usage": "kotlin-metadata",
+        "org.jetbrains.kotlin.native.target": "ios_simulator_arm64",
+        "org.jetbrains.kotlin.platform.type": "native"
+      },
+      "available-at": {
+        "url": "../../multipaz-longfellow-iossimulatorarm64/0.96.1/multipaz-longfellow-iossimulatorarm64-0.96.1.module",
+        "group": "org.multipaz",
+        "module": "multipaz-longfellow-iossimulatorarm64",
+        "version": "0.96.1"
+      }
+    },
+    {
+      "name": "iosX64ApiElements-published",
+      "attributes": {
+        "artifactType": "org.jetbrains.kotlin.klib",
+        "org.gradle.category": "library",
+        "org.gradle.jvm.environment": "non-jvm",
+        "org.gradle.usage": "kotlin-api",
+        "org.jetbrains.kotlin.native.target": "ios_x64",
+        "org.jetbrains.kotlin.platform.type": "native"
+      },
+      "available-at": {
+        "url": "../../multipaz-longfellow-iosx64/0.96.1/multipaz-longfellow-iosx64-0.96.1.module",
+        "group": "org.multipaz",
+        "module": "multipaz-longfellow-iosx64",
+        "version": "0.96.1"
+      }
+    },
+    {
+      "name": "iosX64SourcesElements-published",
+      "attributes": {
+        "org.gradle.category": "documentation",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.docstype": "sources",
+        "org.gradle.jvm.environment": "non-jvm",
+        "org.gradle.usage": "kotlin-runtime",
+        "org.jetbrains.kotlin.native.target": "ios_x64",
+        "org.jetbrains.kotlin.platform.type": "native"
+      },
+      "available-at": {
+        "url": "../../multipaz-longfellow-iosx64/0.96.1/multipaz-longfellow-iosx64-0.96.1.module",
+        "group": "org.multipaz",
+        "module": "multipaz-longfellow-iosx64",
+        "version": "0.96.1"
+      }
+    },
+    {
+      "name": "iosX64MetadataElements-published",
+      "attributes": {
+        "artifactType": "org.jetbrains.kotlin.klib",
+        "org.gradle.category": "library",
+        "org.gradle.jvm.environment": "non-jvm",
+        "org.gradle.usage": "kotlin-metadata",
+        "org.jetbrains.kotlin.native.target": "ios_x64",
+        "org.jetbrains.kotlin.platform.type": "native"
+      },
+      "available-at": {
+        "url": "../../multipaz-longfellow-iosx64/0.96.1/multipaz-longfellow-iosx64-0.96.1.module",
+        "group": "org.multipaz",
+        "module": "multipaz-longfellow-iosx64",
+        "version": "0.96.1"
+      }
+    },
+    {
+      "name": "jvmApiElements-published",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.jvm.environment": "standard-jvm",
+        "org.gradle.libraryelements": "jar",
+        "org.gradle.usage": "java-api",
+        "org.jetbrains.kotlin.platform.type": "jvm"
+      },
+      "available-at": {
+        "url": "../../multipaz-longfellow-jvm/0.96.1/multipaz-longfellow-jvm-0.96.1.module",
+        "group": "org.multipaz",
+        "module": "multipaz-longfellow-jvm",
+        "version": "0.96.1"
+      }
+    },
+    {
+      "name": "jvmRuntimeElements-published",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.jvm.environment": "standard-jvm",
+        "org.gradle.libraryelements": "jar",
+        "org.gradle.usage": "java-runtime",
+        "org.jetbrains.kotlin.platform.type": "jvm"
+      },
+      "available-at": {
+        "url": "../../multipaz-longfellow-jvm/0.96.1/multipaz-longfellow-jvm-0.96.1.module",
+        "group": "org.multipaz",
+        "module": "multipaz-longfellow-jvm",
+        "version": "0.96.1"
+      }
+    },
+    {
+      "name": "jvmSourcesElements-published",
+      "attributes": {
+        "org.gradle.category": "documentation",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.docstype": "sources",
+        "org.gradle.jvm.environment": "standard-jvm",
+        "org.gradle.libraryelements": "jar",
+        "org.gradle.usage": "java-runtime",
+        "org.jetbrains.kotlin.platform.type": "jvm"
+      },
+      "available-at": {
+        "url": "../../multipaz-longfellow-jvm/0.96.1/multipaz-longfellow-jvm-0.96.1.module",
+        "group": "org.multipaz",
+        "module": "multipaz-longfellow-jvm",
+        "version": "0.96.1"
+      }
+    }
+  ]
+}

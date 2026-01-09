@@ -1,0 +1,166 @@
+{
+  "formatVersion": "1.1",
+  "component": {
+    "group": "org.multipaz",
+    "module": "multipaz-android-legacy",
+    "version": "0.96.1",
+    "attributes": {
+      "org.gradle.status": "release"
+    }
+  },
+  "createdBy": {
+    "gradle": {
+      "version": "8.14.2"
+    }
+  },
+  "variants": [
+    {
+      "name": "releaseVariantReleaseApiPublication",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.libraryelements": "aar",
+        "org.gradle.usage": "java-api"
+      },
+      "dependencies": [
+        {
+          "group": "org.jetbrains.kotlin",
+          "module": "kotlin-stdlib",
+          "version": {
+            "requires": "2.2.21"
+          }
+        }
+      ],
+      "files": [
+        {
+          "name": "multipaz-android-legacy-0.96.1.aar",
+          "url": "multipaz-android-legacy-0.96.1.aar",
+          "size": 415047,
+          "sha512": "a715aed3c2a04e418dfc9757b20aeff92ae953a0df22c0361c05eef6ec04fa601e74458fc5f62d9de2493ac6d23fa9fef25ba9a8dda3ac3a832884bb0c3560fd",
+          "sha256": "a9e5591e5c50ffb6fb8073cfdac44cc80194d3b90918d83cd0061b33487088bb",
+          "sha1": "65fb966587435bbed695aaf9598549fafe22e0ef",
+          "md5": "0f884ae48de756c3a871ab15fcd7ddaf"
+        }
+      ]
+    },
+    {
+      "name": "releaseVariantReleaseRuntimePublication",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.libraryelements": "aar",
+        "org.gradle.usage": "java-runtime"
+      },
+      "dependencies": [
+        {
+          "group": "org.multipaz",
+          "module": "multipaz",
+          "version": {
+            "requires": "0.96.1"
+          }
+        },
+        {
+          "group": "androidx.biometric",
+          "module": "biometric",
+          "version": {
+            "requires": "1.2.0-alpha05"
+          }
+        },
+        {
+          "group": "org.bouncycastle",
+          "module": "bcpkix-jdk18on",
+          "version": {
+            "requires": "1.83"
+          }
+        },
+        {
+          "group": "com.android.volley",
+          "module": "volley",
+          "version": {
+            "requires": "1.2.1"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-datetime",
+          "version": {
+            "requires": "0.7.1"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-io-core",
+          "version": {
+            "requires": "0.8.2"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-io-bytestring",
+          "version": {
+            "requires": "0.8.2"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-coroutines-core",
+          "version": {
+            "requires": "1.10.2"
+          }
+        },
+        {
+          "group": "co.nstant.in",
+          "module": "cbor",
+          "version": {
+            "requires": "0.9"
+          }
+        },
+        {
+          "group": "com.google.errorprone",
+          "module": "error_prone_annotations",
+          "version": {
+            "requires": "2.44.0"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlin",
+          "module": "kotlin-stdlib",
+          "version": {
+            "requires": "2.2.21"
+          }
+        }
+      ],
+      "files": [
+        {
+          "name": "multipaz-android-legacy-0.96.1.aar",
+          "url": "multipaz-android-legacy-0.96.1.aar",
+          "size": 415047,
+          "sha512": "a715aed3c2a04e418dfc9757b20aeff92ae953a0df22c0361c05eef6ec04fa601e74458fc5f62d9de2493ac6d23fa9fef25ba9a8dda3ac3a832884bb0c3560fd",
+          "sha256": "a9e5591e5c50ffb6fb8073cfdac44cc80194d3b90918d83cd0061b33487088bb",
+          "sha1": "65fb966587435bbed695aaf9598549fafe22e0ef",
+          "md5": "0f884ae48de756c3a871ab15fcd7ddaf"
+        }
+      ]
+    },
+    {
+      "name": "releaseVariantReleaseSourcePublication",
+      "attributes": {
+        "org.gradle.category": "documentation",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.docstype": "sources",
+        "org.gradle.usage": "java-runtime"
+      },
+      "files": [
+        {
+          "name": "multipaz-android-legacy-0.96.1-sources.jar",
+          "url": "multipaz-android-legacy-0.96.1-sources.jar",
+          "size": 209523,
+          "sha512": "c3ec10dc1f6e313ee33bad3dc9a3bab14446aafd9ce24dd5078c91d92c6f97edae769243f81421c6a9a2b24e6164496871a4c0dbf60212668db2cbaa8672926d",
+          "sha256": "6cb338334b68691361d79d08f1e2c9902f76f01cbfd1450535fe339c27a6f9c8",
+          "sha1": "073268af73438940ad4ea00a552a136340f443bf",
+          "md5": "1775c84ca11f587d78f987523c52f490"
+        }
+      ]
+    }
+  ]
+}

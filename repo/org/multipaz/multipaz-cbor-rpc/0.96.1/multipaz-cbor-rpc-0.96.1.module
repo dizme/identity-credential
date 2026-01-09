@@ -1,0 +1,116 @@
+{
+  "formatVersion": "1.1",
+  "component": {
+    "group": "org.multipaz",
+    "module": "multipaz-cbor-rpc",
+    "version": "0.96.1",
+    "attributes": {
+      "org.gradle.status": "release"
+    }
+  },
+  "createdBy": {
+    "gradle": {
+      "version": "8.14.2"
+    }
+  },
+  "variants": [
+    {
+      "name": "apiElements",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.jvm.environment": "standard-jvm",
+        "org.gradle.jvm.version": 17,
+        "org.gradle.libraryelements": "jar",
+        "org.gradle.usage": "java-api",
+        "org.jetbrains.kotlin.platform.type": "jvm"
+      },
+      "dependencies": [
+        {
+          "group": "org.jetbrains.kotlin",
+          "module": "kotlin-stdlib",
+          "version": {
+            "requires": "2.2.21"
+          }
+        }
+      ],
+      "files": [
+        {
+          "name": "multipaz-cbor-rpc-0.96.1.jar",
+          "url": "multipaz-cbor-rpc-0.96.1.jar",
+          "size": 89389,
+          "sha512": "35479f62a14a2f4cdc01b2780b7e3549f72a2478e826f6e85711d86246539359c35a7c9104ddc75ef4ec216ae2fc5d6ec505453179cd0daeb6d459b4aeda1a3b",
+          "sha256": "5787456bf1b1b84b14f7325b9ce644c5b618fb051369803335a47382da4b931f",
+          "sha1": "8757f106fc859d786b8212ad1832bbf6d0883f55",
+          "md5": "25440c5f275440744a809365c5c48f79"
+        }
+      ]
+    },
+    {
+      "name": "runtimeElements",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.jvm.environment": "standard-jvm",
+        "org.gradle.jvm.version": 17,
+        "org.gradle.libraryelements": "jar",
+        "org.gradle.usage": "java-runtime",
+        "org.jetbrains.kotlin.platform.type": "jvm"
+      },
+      "dependencies": [
+        {
+          "group": "com.google.devtools.ksp",
+          "module": "symbol-processing-api",
+          "version": {
+            "requires": "2.3.3"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-io-core",
+          "version": {
+            "requires": "0.8.2"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlin",
+          "module": "kotlin-stdlib",
+          "version": {
+            "requires": "2.2.21"
+          }
+        }
+      ],
+      "files": [
+        {
+          "name": "multipaz-cbor-rpc-0.96.1.jar",
+          "url": "multipaz-cbor-rpc-0.96.1.jar",
+          "size": 89389,
+          "sha512": "35479f62a14a2f4cdc01b2780b7e3549f72a2478e826f6e85711d86246539359c35a7c9104ddc75ef4ec216ae2fc5d6ec505453179cd0daeb6d459b4aeda1a3b",
+          "sha256": "5787456bf1b1b84b14f7325b9ce644c5b618fb051369803335a47382da4b931f",
+          "sha1": "8757f106fc859d786b8212ad1832bbf6d0883f55",
+          "md5": "25440c5f275440744a809365c5c48f79"
+        }
+      ]
+    },
+    {
+      "name": "sourcesElements",
+      "attributes": {
+        "org.gradle.category": "documentation",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.docstype": "sources",
+        "org.gradle.usage": "java-runtime"
+      },
+      "files": [
+        {
+          "name": "multipaz-cbor-rpc-0.96.1-sources.jar",
+          "url": "multipaz-cbor-rpc-0.96.1-sources.jar",
+          "size": 23296,
+          "sha512": "1e7fe8f48a32029ec6ca677367275d3ffd4e8b9bbbcb503e8fe03e437cd1450efe46ee4658a299261d173eb139f394add958bccb860a4e15bd15db035f0160c3",
+          "sha256": "3d322481b166605088c4a7cea7df1310ab58f9a8182894362e73d98cd4568af9",
+          "sha1": "aee5becc146168f328b3ffcce03dfcead29d2ea4",
+          "md5": "4d63dc9cb8536b8b59b3eb68d554c1f8"
+        }
+      ]
+    }
+  ]
+}

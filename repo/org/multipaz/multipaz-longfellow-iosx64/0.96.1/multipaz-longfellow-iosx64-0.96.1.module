@@ -1,0 +1,155 @@
+{
+  "formatVersion": "1.1",
+  "component": {
+    "url": "../../multipaz-longfellow/0.96.1/multipaz-longfellow-0.96.1.module",
+    "group": "org.multipaz",
+    "module": "multipaz-longfellow",
+    "version": "0.96.1",
+    "attributes": {
+      "org.gradle.status": "release"
+    }
+  },
+  "createdBy": {
+    "gradle": {
+      "version": "8.14.2"
+    }
+  },
+  "variants": [
+    {
+      "name": "iosX64ApiElements-published",
+      "attributes": {
+        "artifactType": "org.jetbrains.kotlin.klib",
+        "org.gradle.category": "library",
+        "org.gradle.jvm.environment": "non-jvm",
+        "org.gradle.usage": "kotlin-api",
+        "org.jetbrains.kotlin.native.target": "ios_x64",
+        "org.jetbrains.kotlin.platform.type": "native"
+      },
+      "dependencies": [
+        {
+          "group": "org.jetbrains.kotlin",
+          "module": "kotlin-stdlib",
+          "version": {
+            "requires": "2.2.21"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-io-bytestring",
+          "version": {
+            "requires": "0.8.2"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-datetime",
+          "version": {
+            "requires": "0.7.1"
+          }
+        },
+        {
+          "group": "org.multipaz",
+          "module": "multipaz",
+          "version": {
+            "requires": "0.96.1"
+          }
+        }
+      ],
+      "files": [
+        {
+          "name": "multipaz-longfellow-iosX64Main-0.96.1.klib",
+          "url": "multipaz-longfellow-iosx64-0.96.1.klib",
+          "size": 44683,
+          "sha512": "b82f354e488ceba6be50680baa163176f473e696527028634a82d1e779e454acce3388a7ce5833f197537658c1f4590ad9418141ea432fcb1a95c6dec2341593",
+          "sha256": "41b2dee72d137dadb49b1d131243259178677261186ab78a9db1fa0f1f8ec2ab",
+          "sha1": "fd6c9580eb661708cf5d44b894a3bf4c9358939e",
+          "md5": "4ce53c6860277b56341bb54c115cae89"
+        },
+        {
+          "name": "multipaz-longfellow-iosX64Cinterop-LongfellowMain-0.96.1.klib",
+          "url": "multipaz-longfellow-iosx64-0.96.1-cinterop-Longfellow.klib",
+          "size": 794743,
+          "sha512": "1c231cb3acbe1ab8e5e83f7077e7b7bfadb8e686cff3391a3308c3aaeeb6e4dc45c7bf51a7fb59ec578a5396d1e9f6faa4dce8b139d14fd867a3b69263154ddd",
+          "sha256": "73c3d4ec1e726867ad71c6ae582e1cf20f01fe95e8e9b6455643244fb492bb12",
+          "sha1": "08bbde6512e62048de0b15c8230b1e051bff4e77",
+          "md5": "1f9f7230b4e40fcfca8e329365cc097b"
+        }
+      ]
+    },
+    {
+      "name": "iosX64SourcesElements-published",
+      "attributes": {
+        "org.gradle.category": "documentation",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.docstype": "sources",
+        "org.gradle.jvm.environment": "non-jvm",
+        "org.gradle.usage": "kotlin-runtime",
+        "org.jetbrains.kotlin.native.target": "ios_x64",
+        "org.jetbrains.kotlin.platform.type": "native"
+      },
+      "files": [
+        {
+          "name": "multipaz-longfellow-iosx64-0.96.1-sources.jar",
+          "url": "multipaz-longfellow-iosx64-0.96.1-sources.jar",
+          "size": 9974,
+          "sha512": "e6f92303fbf4571aed214b0a06c3ebb6d6a8fa7d44623dc2d237f17b978e25faf7e5e17088e117f5f52e6f34124d9d403a8676abaa7613c905e3c690ea2090c1",
+          "sha256": "9ab7367b25b1f2b9b566e8268b513b12e82cb0a8aa9dd45fdb44a7234211b805",
+          "sha1": "04f53a53d47d7c987ab3a97ac598dc909abe02dd",
+          "md5": "5e3648004489d2315bff4bb990a28969"
+        }
+      ]
+    },
+    {
+      "name": "iosX64MetadataElements-published",
+      "attributes": {
+        "artifactType": "org.jetbrains.kotlin.klib",
+        "org.gradle.category": "library",
+        "org.gradle.jvm.environment": "non-jvm",
+        "org.gradle.usage": "kotlin-metadata",
+        "org.jetbrains.kotlin.native.target": "ios_x64",
+        "org.jetbrains.kotlin.platform.type": "native"
+      },
+      "dependencies": [
+        {
+          "group": "org.jetbrains.kotlin",
+          "module": "kotlin-stdlib",
+          "version": {
+            "requires": "2.2.21"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-io-bytestring",
+          "version": {
+            "requires": "0.8.2"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-datetime",
+          "version": {
+            "requires": "0.7.1"
+          }
+        },
+        {
+          "group": "org.multipaz",
+          "module": "multipaz",
+          "version": {
+            "requires": "0.96.1"
+          }
+        }
+      ],
+      "files": [
+        {
+          "name": "multipaz-longfellow-iosx64-0.96.1-metadata.jar",
+          "url": "multipaz-longfellow-iosx64-0.96.1-metadata.jar",
+          "size": 18118,
+          "sha512": "97d49f8e1b2dfbc56ddc559ae64f33f2fa44300480d03c055edfd1b846ac257689a2104e8c6dd0faa37d013cfe156b953a660fcfe81e08fa15590de10ec4cba7",
+          "sha256": "b292ec35268690697f2274e8223a8258998a27f09f54c0667c7faccd0f9c5e78",
+          "sha1": "22ff5785a301b1eaa5ca94fd83e52f629bcfafdc",
+          "md5": "2911cf32c8a414bf4f0d6bbb0842c8b0"
+        }
+      ]
+    }
+  ]
+}

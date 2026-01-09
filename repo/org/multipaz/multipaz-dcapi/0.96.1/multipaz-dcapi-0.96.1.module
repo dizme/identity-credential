@@ -1,0 +1,308 @@
+{
+  "formatVersion": "1.1",
+  "component": {
+    "group": "org.multipaz",
+    "module": "multipaz-dcapi",
+    "version": "0.96.1",
+    "attributes": {
+      "org.gradle.status": "release"
+    }
+  },
+  "createdBy": {
+    "gradle": {
+      "version": "8.14.2"
+    }
+  },
+  "variants": [
+    {
+      "name": "metadataApiElements",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.jvm.environment": "non-jvm",
+        "org.gradle.usage": "kotlin-metadata",
+        "org.jetbrains.kotlin.platform.type": "common"
+      },
+      "dependencies": [
+        {
+          "group": "org.jetbrains.kotlin",
+          "module": "kotlin-stdlib",
+          "version": {
+            "requires": "2.2.21"
+          }
+        },
+        {
+          "group": "org.multipaz",
+          "module": "multipaz",
+          "version": {
+            "requires": "0.96.1"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-coroutines-core",
+          "version": {
+            "requires": "1.10.2"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-datetime",
+          "version": {
+            "requires": "0.7.1"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-io-core",
+          "version": {
+            "requires": "0.8.2"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-serialization-json",
+          "version": {
+            "requires": "1.9.0"
+          }
+        }
+      ],
+      "files": [
+        {
+          "name": "multipaz-dcapi-metadata-0.96.1.jar",
+          "url": "multipaz-dcapi-0.96.1.jar",
+          "size": 2881,
+          "sha512": "b0fe805699906538d034d7fedc95b328cd66b7e79672ac61698c48d018af492bc50a37457a8f30a63d5b98627ba07eb2012fb63cbcc8d96b95ab4113b62c9463",
+          "sha256": "a7aa631113aee5a8c4115c843c178e914ee52df40eaa05a8a18a51168fa6f8e3",
+          "sha1": "7bd354745e95e828f4f309da8830021325692324",
+          "md5": "780e6cccd57528405bd4d24af77d0a71"
+        }
+      ]
+    },
+    {
+      "name": "metadataSourcesElements",
+      "attributes": {
+        "org.gradle.category": "documentation",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.docstype": "sources",
+        "org.gradle.jvm.environment": "non-jvm",
+        "org.gradle.usage": "kotlin-runtime",
+        "org.jetbrains.kotlin.platform.type": "common"
+      },
+      "files": [
+        {
+          "name": "multipaz-dcapi-kotlin-0.96.1-sources.jar",
+          "url": "multipaz-dcapi-0.96.1-sources.jar",
+          "size": 2484,
+          "sha512": "1e30c76758313d776983238e78847349e453725434c94455847746f5950cfae8a982c587b4b57adc087d24057f204976d3ff4e7770dbcc8007cce763fb4730e4",
+          "sha256": "420651e5e35c6726f77f124e708eb413530ac851e6a104f264505653fdf07a2e",
+          "sha1": "d25faddc117fa546a9ff35452d8ed1785b560ecd",
+          "md5": "ec817f90c597453b038c768368927ec2"
+        }
+      ]
+    },
+    {
+      "name": "releaseApiElements-published",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.jvm.environment": "android",
+        "org.gradle.usage": "java-api",
+        "org.jetbrains.kotlin.platform.type": "androidJvm"
+      },
+      "available-at": {
+        "url": "../../multipaz-dcapi-android/0.96.1/multipaz-dcapi-android-0.96.1.module",
+        "group": "org.multipaz",
+        "module": "multipaz-dcapi-android",
+        "version": "0.96.1"
+      }
+    },
+    {
+      "name": "releaseRuntimeElements-published",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.jvm.environment": "android",
+        "org.gradle.usage": "java-runtime",
+        "org.jetbrains.kotlin.platform.type": "androidJvm"
+      },
+      "available-at": {
+        "url": "../../multipaz-dcapi-android/0.96.1/multipaz-dcapi-android-0.96.1.module",
+        "group": "org.multipaz",
+        "module": "multipaz-dcapi-android",
+        "version": "0.96.1"
+      }
+    },
+    {
+      "name": "releaseSourcesElements-published",
+      "attributes": {
+        "org.gradle.category": "documentation",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.docstype": "sources",
+        "org.gradle.jvm.environment": "android",
+        "org.gradle.libraryelements": "jar",
+        "org.gradle.usage": "java-runtime",
+        "org.jetbrains.kotlin.platform.type": "androidJvm"
+      },
+      "available-at": {
+        "url": "../../multipaz-dcapi-android/0.96.1/multipaz-dcapi-android-0.96.1.module",
+        "group": "org.multipaz",
+        "module": "multipaz-dcapi-android",
+        "version": "0.96.1"
+      }
+    },
+    {
+      "name": "iosArm64ApiElements-published",
+      "attributes": {
+        "artifactType": "org.jetbrains.kotlin.klib",
+        "org.gradle.category": "library",
+        "org.gradle.jvm.environment": "non-jvm",
+        "org.gradle.usage": "kotlin-api",
+        "org.jetbrains.kotlin.native.target": "ios_arm64",
+        "org.jetbrains.kotlin.platform.type": "native"
+      },
+      "available-at": {
+        "url": "../../multipaz-dcapi-iosarm64/0.96.1/multipaz-dcapi-iosarm64-0.96.1.module",
+        "group": "org.multipaz",
+        "module": "multipaz-dcapi-iosarm64",
+        "version": "0.96.1"
+      }
+    },
+    {
+      "name": "iosArm64SourcesElements-published",
+      "attributes": {
+        "org.gradle.category": "documentation",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.docstype": "sources",
+        "org.gradle.jvm.environment": "non-jvm",
+        "org.gradle.usage": "kotlin-runtime",
+        "org.jetbrains.kotlin.native.target": "ios_arm64",
+        "org.jetbrains.kotlin.platform.type": "native"
+      },
+      "available-at": {
+        "url": "../../multipaz-dcapi-iosarm64/0.96.1/multipaz-dcapi-iosarm64-0.96.1.module",
+        "group": "org.multipaz",
+        "module": "multipaz-dcapi-iosarm64",
+        "version": "0.96.1"
+      }
+    },
+    {
+      "name": "iosArm64MetadataElements-published",
+      "attributes": {
+        "artifactType": "org.jetbrains.kotlin.klib",
+        "org.gradle.category": "library",
+        "org.gradle.jvm.environment": "non-jvm",
+        "org.gradle.usage": "kotlin-metadata",
+        "org.jetbrains.kotlin.native.target": "ios_arm64",
+        "org.jetbrains.kotlin.platform.type": "native"
+      },
+      "available-at": {
+        "url": "../../multipaz-dcapi-iosarm64/0.96.1/multipaz-dcapi-iosarm64-0.96.1.module",
+        "group": "org.multipaz",
+        "module": "multipaz-dcapi-iosarm64",
+        "version": "0.96.1"
+      }
+    },
+    {
+      "name": "iosSimulatorArm64ApiElements-published",
+      "attributes": {
+        "artifactType": "org.jetbrains.kotlin.klib",
+        "org.gradle.category": "library",
+        "org.gradle.jvm.environment": "non-jvm",
+        "org.gradle.usage": "kotlin-api",
+        "org.jetbrains.kotlin.native.target": "ios_simulator_arm64",
+        "org.jetbrains.kotlin.platform.type": "native"
+      },
+      "available-at": {
+        "url": "../../multipaz-dcapi-iossimulatorarm64/0.96.1/multipaz-dcapi-iossimulatorarm64-0.96.1.module",
+        "group": "org.multipaz",
+        "module": "multipaz-dcapi-iossimulatorarm64",
+        "version": "0.96.1"
+      }
+    },
+    {
+      "name": "iosSimulatorArm64SourcesElements-published",
+      "attributes": {
+        "org.gradle.category": "documentation",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.docstype": "sources",
+        "org.gradle.jvm.environment": "non-jvm",
+        "org.gradle.usage": "kotlin-runtime",
+        "org.jetbrains.kotlin.native.target": "ios_simulator_arm64",
+        "org.jetbrains.kotlin.platform.type": "native"
+      },
+      "available-at": {
+        "url": "../../multipaz-dcapi-iossimulatorarm64/0.96.1/multipaz-dcapi-iossimulatorarm64-0.96.1.module",
+        "group": "org.multipaz",
+        "module": "multipaz-dcapi-iossimulatorarm64",
+        "version": "0.96.1"
+      }
+    },
+    {
+      "name": "iosSimulatorArm64MetadataElements-published",
+      "attributes": {
+        "artifactType": "org.jetbrains.kotlin.klib",
+        "org.gradle.category": "library",
+        "org.gradle.jvm.environment": "non-jvm",
+        "org.gradle.usage": "kotlin-metadata",
+        "org.jetbrains.kotlin.native.target": "ios_simulator_arm64",
+        "org.jetbrains.kotlin.platform.type": "native"
+      },
+      "available-at": {
+        "url": "../../multipaz-dcapi-iossimulatorarm64/0.96.1/multipaz-dcapi-iossimulatorarm64-0.96.1.module",
+        "group": "org.multipaz",
+        "module": "multipaz-dcapi-iossimulatorarm64",
+        "version": "0.96.1"
+      }
+    },
+    {
+      "name": "iosX64ApiElements-published",
+      "attributes": {
+        "artifactType": "org.jetbrains.kotlin.klib",
+        "org.gradle.category": "library",
+        "org.gradle.jvm.environment": "non-jvm",
+        "org.gradle.usage": "kotlin-api",
+        "org.jetbrains.kotlin.native.target": "ios_x64",
+        "org.jetbrains.kotlin.platform.type": "native"
+      },
+      "available-at": {
+        "url": "../../multipaz-dcapi-iosx64/0.96.1/multipaz-dcapi-iosx64-0.96.1.module",
+        "group": "org.multipaz",
+        "module": "multipaz-dcapi-iosx64",
+        "version": "0.96.1"
+      }
+    },
+    {
+      "name": "iosX64SourcesElements-published",
+      "attributes": {
+        "org.gradle.category": "documentation",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.docstype": "sources",
+        "org.gradle.jvm.environment": "non-jvm",
+        "org.gradle.usage": "kotlin-runtime",
+        "org.jetbrains.kotlin.native.target": "ios_x64",
+        "org.jetbrains.kotlin.platform.type": "native"
+      },
+      "available-at": {
+        "url": "../../multipaz-dcapi-iosx64/0.96.1/multipaz-dcapi-iosx64-0.96.1.module",
+        "group": "org.multipaz",
+        "module": "multipaz-dcapi-iosx64",
+        "version": "0.96.1"
+      }
+    },
+    {
+      "name": "iosX64MetadataElements-published",
+      "attributes": {
+        "artifactType": "org.jetbrains.kotlin.klib",
+        "org.gradle.category": "library",
+        "org.gradle.jvm.environment": "non-jvm",
+        "org.gradle.usage": "kotlin-metadata",
+        "org.jetbrains.kotlin.native.target": "ios_x64",
+        "org.jetbrains.kotlin.platform.type": "native"
+      },
+      "available-at": {
+        "url": "../../multipaz-dcapi-iosx64/0.96.1/multipaz-dcapi-iosx64-0.96.1.module",
+        "group": "org.multipaz",
+        "module": "multipaz-dcapi-iosx64",
+        "version": "0.96.1"
+      }
+    }
+  ]
+}

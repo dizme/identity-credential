@@ -17,7 +17,7 @@ val projectVersionCode: Int by extra {
 // For a tagged release, projectVersionNext should be blank and the next commit
 // following the release should bump it to the next version number.
 //
-val projectVersionLast = "0.96.0"
+val projectVersionLast = "0.96.1"
 val projectVersionNext = ""
 
 private fun runCommand(args: List<String>): String {
