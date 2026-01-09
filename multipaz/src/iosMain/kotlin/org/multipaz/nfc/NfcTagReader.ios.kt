@@ -28,6 +28,11 @@ private class IosTagReader<T>(
 ) {
     val session: NFCTagReaderSession
 
+    // Guard flag to prevent double tag detection from triggering interaction twice.
+    // This fixes a race condition where a second tag detection can occur before
+    // the session is invalidated after successful engagement with BLE transport.
+    private var interactionCompleted = false
+
     @OptIn(ExperimentalCoroutinesApi::class)
     private val tagReaderSessionDelegate = object : NSObject(), NFCTagReaderSessionDelegateProtocol {
         override fun tagReaderSession(
@@ -53,6 +58,12 @@ private class IosTagReader<T>(
             session: NFCTagReaderSession,
             didDetectTags: List<*>
         ) {
+            // Guard against second tag detection during race window after first successful interaction
+            if (interactionCompleted) {
+                Logger.i(TAG, "Ignoring tag detection - interaction already completed")
+                return
+            }
+
             // Currently we only consider the first tag. We might need to look at all tags.
             val tag = didDetectTags[0] as NFCTagProtocol
             session.connectToTag(tag) { error ->
@@ -64,9 +75,25 @@ private class IosTagReader<T>(
                         session = session
                     )
                     CoroutineScope(context).launch {
+                        // Double-check guard inside coroutine (handles race between callback and launch)
+                        if (interactionCompleted) {
+                            Logger.i(TAG, "Ignoring tag interaction - already completed")
+                            return@launch
+                        }
+
                         try {
                             val ret = tagInteractionFunc(isoTag)
                             if (ret != null) {
+                                // Mark as completed BEFORE invalidating to prevent any further detections
+                                interactionCompleted = true
+
+                                // For BLE transport case: invalidate session immediately to prevent
+                                // second tag detection during the window before beginSession resumes.
+                                // For NFC transport case: the tag.close() logic will handle invalidation.
+                                if (isoTag.closeCalled) {
+                                    session.invalidateSession()
+                                }
+
                                 continuation?.resume(Pair(ret, isoTag), null)
                                 continuation = null
                             } else {
@@ -106,12 +133,14 @@ private class IosTagReader<T>(
                 session.setAlertMessage(alertMessage)
                 session.beginSession()
             }
-            if (tag.closeCalled) {
-                session.invalidateSession()
-            } else {
+            // Session invalidation is now handled in the didDetectTags callback for the BLE case
+            // (when tag.closeCalled is true). For NFC transport case where close() hasn't been
+            // called yet, we need to set the flag so that close() will invalidate later.
+            if (!tag.closeCalled) {
                 Logger.i(TAG, "NfcIsoTag.close() not yet called, keeping session alive until then")
                 tag.invalidateSessionOnClose = true
             }
+            // Note: if closeCalled is true, session was already invalidated in the callback
             return ret
         } catch (e: CancellationException) {
             session.invalidateSessionWithErrorMessage("Dialog was canceled")
