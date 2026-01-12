@@ -1,0 +1,177 @@
+{
+  "formatVersion": "1.1",
+  "component": {
+    "url": "../../multipaz-longfellow/0.96.1-pre.2.ef0c0b51/multipaz-longfellow-0.96.1-pre.2.ef0c0b51.module",
+    "group": "org.multipaz",
+    "module": "multipaz-longfellow",
+    "version": "0.96.1-pre.2.ef0c0b51",
+    "attributes": {
+      "org.gradle.status": "release"
+    }
+  },
+  "createdBy": {
+    "gradle": {
+      "version": "8.14.2"
+    }
+  },
+  "variants": [
+    {
+      "name": "releaseApiElements-published",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.jvm.environment": "android",
+        "org.gradle.usage": "java-api",
+        "org.jetbrains.kotlin.platform.type": "androidJvm"
+      },
+      "dependencies": [
+        {
+          "group": "org.jetbrains.kotlin",
+          "module": "kotlin-stdlib",
+          "version": {
+            "requires": "2.2.21"
+          }
+        }
+      ],
+      "files": [
+        {
+          "name": "multipaz-longfellow-release.aar",
+          "url": "multipaz-longfellow-android-0.96.1-pre.2.ef0c0b51.aar",
+          "size": 3043314,
+          "sha512": "65ce8822e99724bf9c22844886d0093a8ec9f2e1ce34387b923e2e322a07174ff37275b1cb9dd9bb77ff786d5674db4421387c2e9e737a9c75c022ed60bc13ac",
+          "sha256": "853c638eeff793edee3c93f68f4c6691f09ffe09634fb7b58bc6474992d704c6",
+          "sha1": "d52f1c1a5fac52438479b0d22531c037c915d90a",
+          "md5": "1e3d0e3a1f70910f10f33d04470fd486"
+        }
+      ]
+    },
+    {
+      "name": "releaseRuntimeElements-published",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.jvm.environment": "android",
+        "org.gradle.usage": "java-runtime",
+        "org.jetbrains.kotlin.platform.type": "androidJvm"
+      },
+      "dependencies": [
+        {
+          "group": "org.jetbrains.kotlin",
+          "module": "kotlin-stdlib",
+          "version": {
+            "requires": "2.2.21"
+          },
+          "excludes": [
+            {
+              "group": "org.jetbrains.kotlin",
+              "module": "kotlin-stdlib-common"
+            },
+            {
+              "group": "org.jetbrains.kotlin",
+              "module": "kotlin-test-common"
+            },
+            {
+              "group": "org.jetbrains.kotlin",
+              "module": "kotlin-test-annotations-common"
+            }
+          ]
+        },
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-io-bytestring",
+          "version": {
+            "requires": "0.8.2"
+          },
+          "excludes": [
+            {
+              "group": "org.jetbrains.kotlin",
+              "module": "kotlin-stdlib-common"
+            },
+            {
+              "group": "org.jetbrains.kotlin",
+              "module": "kotlin-test-common"
+            },
+            {
+              "group": "org.jetbrains.kotlin",
+              "module": "kotlin-test-annotations-common"
+            }
+          ]
+        },
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-datetime",
+          "version": {
+            "requires": "0.7.1"
+          },
+          "excludes": [
+            {
+              "group": "org.jetbrains.kotlin",
+              "module": "kotlin-stdlib-common"
+            },
+            {
+              "group": "org.jetbrains.kotlin",
+              "module": "kotlin-test-common"
+            },
+            {
+              "group": "org.jetbrains.kotlin",
+              "module": "kotlin-test-annotations-common"
+            }
+          ]
+        },
+        {
+          "group": "org.multipaz",
+          "module": "multipaz",
+          "version": {
+            "requires": "0.96.1-pre.2.ef0c0b51"
+          },
+          "excludes": [
+            {
+              "group": "org.jetbrains.kotlin",
+              "module": "kotlin-stdlib-common"
+            },
+            {
+              "group": "org.jetbrains.kotlin",
+              "module": "kotlin-test-common"
+            },
+            {
+              "group": "org.jetbrains.kotlin",
+              "module": "kotlin-test-annotations-common"
+            }
+          ]
+        }
+      ],
+      "files": [
+        {
+          "name": "multipaz-longfellow-release.aar",
+          "url": "multipaz-longfellow-android-0.96.1-pre.2.ef0c0b51.aar",
+          "size": 3043314,
+          "sha512": "65ce8822e99724bf9c22844886d0093a8ec9f2e1ce34387b923e2e322a07174ff37275b1cb9dd9bb77ff786d5674db4421387c2e9e737a9c75c022ed60bc13ac",
+          "sha256": "853c638eeff793edee3c93f68f4c6691f09ffe09634fb7b58bc6474992d704c6",
+          "sha1": "d52f1c1a5fac52438479b0d22531c037c915d90a",
+          "md5": "1e3d0e3a1f70910f10f33d04470fd486"
+        }
+      ]
+    },
+    {
+      "name": "releaseSourcesElements-published",
+      "attributes": {
+        "org.gradle.category": "documentation",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.docstype": "sources",
+        "org.gradle.jvm.environment": "android",
+        "org.gradle.libraryelements": "jar",
+        "org.gradle.usage": "java-runtime",
+        "org.jetbrains.kotlin.platform.type": "androidJvm"
+      },
+      "files": [
+        {
+          "name": "multipaz-longfellow-android-0.96.1-pre.2.ef0c0b51-sources.jar",
+          "url": "multipaz-longfellow-android-0.96.1-pre.2.ef0c0b51-sources.jar",
+          "size": 10415,
+          "sha512": "365e66ec6a63f9d3bbadf473b30d526f65dcb7a2422ce3d27ee3e5ba9eb6e166be30f48f5c959e88a4b4ccd1030a85f8b33738a264ad489289b1342d66dec5e1",
+          "sha256": "bdfa82c0176b9f1474b7ef9776c3591a1a555f75d78495eae1885e3cfa0de3f2",
+          "sha1": "9b06ed18f2e3968a9f5cb2d0327875a38a28c8ab",
+          "md5": "a6b588686ec325e3c51d6cb22afaa857"
+        }
+      ]
+    }
+  ]
+}

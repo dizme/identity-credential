@@ -1,0 +1,451 @@
+{
+  "formatVersion": "1.1",
+  "component": {
+    "url": "../../multipaz-compose/0.96.1-pre.2.ef0c0b51/multipaz-compose-0.96.1-pre.2.ef0c0b51.module",
+    "group": "org.multipaz",
+    "module": "multipaz-compose",
+    "version": "0.96.1-pre.2.ef0c0b51",
+    "attributes": {
+      "org.gradle.status": "release"
+    }
+  },
+  "createdBy": {
+    "gradle": {
+      "version": "8.14.2"
+    }
+  },
+  "variants": [
+    {
+      "name": "iosSimulatorArm64ApiElements-published",
+      "attributes": {
+        "artifactType": "org.jetbrains.kotlin.klib",
+        "org.gradle.category": "library",
+        "org.gradle.jvm.environment": "non-jvm",
+        "org.gradle.usage": "kotlin-api",
+        "org.jetbrains.kotlin.native.target": "ios_simulator_arm64",
+        "org.jetbrains.kotlin.platform.type": "native"
+      },
+      "dependencies": [
+        {
+          "group": "org.jetbrains.compose.runtime",
+          "module": "runtime",
+          "version": {
+            "requires": "1.9.3"
+          }
+        },
+        {
+          "group": "org.jetbrains.compose.foundation",
+          "module": "foundation",
+          "version": {
+            "requires": "1.9.3"
+          }
+        },
+        {
+          "group": "org.jetbrains.compose.material3",
+          "module": "material3",
+          "version": {
+            "requires": "1.9.0"
+          }
+        },
+        {
+          "group": "org.jetbrains.compose.ui",
+          "module": "ui",
+          "version": {
+            "requires": "1.9.3"
+          }
+        },
+        {
+          "group": "org.jetbrains.compose.components",
+          "module": "components-resources",
+          "version": {
+            "requires": "1.9.3"
+          }
+        },
+        {
+          "group": "org.jetbrains.compose.material",
+          "module": "material-icons-extended",
+          "version": {
+            "requires": "1.7.3"
+          }
+        },
+        {
+          "group": "org.jetbrains.androidx.navigation",
+          "module": "navigation-compose",
+          "version": {
+            "requires": "2.9.1"
+          }
+        },
+        {
+          "group": "org.jetbrains.androidx.navigation",
+          "module": "navigation-runtime",
+          "version": {
+            "requires": "2.9.1"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlin",
+          "module": "kotlin-stdlib",
+          "version": {
+            "requires": "2.2.21"
+          }
+        },
+        {
+          "group": "org.multipaz",
+          "module": "multipaz",
+          "version": {
+            "requires": "0.96.1-pre.2.ef0c0b51"
+          }
+        },
+        {
+          "group": "org.multipaz",
+          "module": "multipaz-dcapi",
+          "version": {
+            "requires": "0.96.1-pre.2.ef0c0b51"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-datetime",
+          "version": {
+            "requires": "0.7.1"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-serialization-json",
+          "version": {
+            "requires": "1.9.0"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-io-core",
+          "version": {
+            "requires": "0.8.2"
+          }
+        },
+        {
+          "group": "io.coil-kt.coil3",
+          "module": "coil-core",
+          "version": {
+            "requires": "3.3.0"
+          }
+        },
+        {
+          "group": "io.coil-kt.coil3",
+          "module": "coil-compose-core",
+          "version": {
+            "requires": "3.3.0"
+          }
+        }
+      ],
+      "files": [
+        {
+          "name": "multipaz-compose-iosSimulatorArm64Main-0.96.1-pre.2.ef0c0b51.klib",
+          "url": "multipaz-compose-iossimulatorarm64-0.96.1-pre.2.ef0c0b51.klib",
+          "size": 585895,
+          "sha512": "e60cb9ebeb5ab79e7693a0f97ee79c3f1b9ab813262e9f3f85b37dccd5a0c9be164e11963d313d6d5eba31a84a9cd4591b43d348ad6be6ffac3036f93903ae72",
+          "sha256": "6fb0185dfcf6d1e145ce2f015f1febed9b47ea96d3d632259279ee0b7d30d3df",
+          "sha1": "ecf635fa87e8c0e9c25892b58f965c22edafa816",
+          "md5": "57c37fb530be9e52dff33c2dd20d9d30"
+        }
+      ]
+    },
+    {
+      "name": "iosSimulatorArm64SourcesElements-published",
+      "attributes": {
+        "org.gradle.category": "documentation",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.docstype": "sources",
+        "org.gradle.jvm.environment": "non-jvm",
+        "org.gradle.usage": "kotlin-runtime",
+        "org.jetbrains.kotlin.native.target": "ios_simulator_arm64",
+        "org.jetbrains.kotlin.platform.type": "native"
+      },
+      "files": [
+        {
+          "name": "multipaz-compose-iossimulatorarm64-0.96.1-pre.2.ef0c0b51-sources.jar",
+          "url": "multipaz-compose-iossimulatorarm64-0.96.1-pre.2.ef0c0b51-sources.jar",
+          "size": 97578,
+          "sha512": "b29e1ea8c10d5391cfd121c70fb05ca8bc0b2cadf52441fb0878b60730aa5e0b45db594d5ebea098faeb4c7da0e1dd499fb6dff63ff680ed8ff2367645d5fa38",
+          "sha256": "c51a39e2664b0e953976159fbd15e50addefdebd2b56de1abeac3edc5eb8dc51",
+          "sha1": "68551fd6e2bef03e382c247cf22b1167d7ab3d97",
+          "md5": "00eede3de1328657beb93d84c9776601"
+        }
+      ]
+    },
+    {
+      "name": "iosSimulatorArm64ResourcesElements-published",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.jvm.environment": "non-jvm",
+        "org.gradle.libraryelements": "kotlin-multiplatformresources",
+        "org.gradle.usage": "kotlin-multiplatformresources",
+        "org.jetbrains.kotlin.native.target": "ios_simulator_arm64",
+        "org.jetbrains.kotlin.platform.type": "native"
+      },
+      "dependencies": [
+        {
+          "group": "org.jetbrains.compose.runtime",
+          "module": "runtime",
+          "version": {
+            "requires": "1.9.3"
+          }
+        },
+        {
+          "group": "org.jetbrains.compose.foundation",
+          "module": "foundation",
+          "version": {
+            "requires": "1.9.3"
+          }
+        },
+        {
+          "group": "org.jetbrains.compose.material3",
+          "module": "material3",
+          "version": {
+            "requires": "1.9.0"
+          }
+        },
+        {
+          "group": "org.jetbrains.compose.ui",
+          "module": "ui",
+          "version": {
+            "requires": "1.9.3"
+          }
+        },
+        {
+          "group": "org.jetbrains.compose.components",
+          "module": "components-resources",
+          "version": {
+            "requires": "1.9.3"
+          }
+        },
+        {
+          "group": "org.jetbrains.compose.material",
+          "module": "material-icons-extended",
+          "version": {
+            "requires": "1.7.3"
+          }
+        },
+        {
+          "group": "org.jetbrains.androidx.navigation",
+          "module": "navigation-compose",
+          "version": {
+            "requires": "2.9.1"
+          }
+        },
+        {
+          "group": "org.jetbrains.androidx.navigation",
+          "module": "navigation-runtime",
+          "version": {
+            "requires": "2.9.1"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlin",
+          "module": "kotlin-stdlib",
+          "version": {
+            "requires": "2.2.21"
+          }
+        },
+        {
+          "group": "org.multipaz",
+          "module": "multipaz",
+          "version": {
+            "requires": "0.96.1-pre.2.ef0c0b51"
+          }
+        },
+        {
+          "group": "org.multipaz",
+          "module": "multipaz-dcapi",
+          "version": {
+            "requires": "0.96.1-pre.2.ef0c0b51"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-datetime",
+          "version": {
+            "requires": "0.7.1"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-serialization-json",
+          "version": {
+            "requires": "1.9.0"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-io-core",
+          "version": {
+            "requires": "0.8.2"
+          }
+        },
+        {
+          "group": "io.coil-kt.coil3",
+          "module": "coil-core",
+          "version": {
+            "requires": "3.3.0"
+          }
+        },
+        {
+          "group": "io.coil-kt.coil3",
+          "module": "coil-compose-core",
+          "version": {
+            "requires": "3.3.0"
+          }
+        }
+      ],
+      "files": [
+        {
+          "name": "multipaz-compose-0.96.1-pre.2.ef0c0b51.kotlin_resources.zip",
+          "url": "multipaz-compose-iossimulatorarm64-0.96.1-pre.2.ef0c0b51-kotlin_resources.kotlin_resources.zip",
+          "size": 256556,
+          "sha512": "8bc5d8c6cd3cd34c9042814cf0a4a415e2fee9d4d4e6165343512e4dc76e498d2999d3ebf6c5f7231b57ff4dde052945d117611bb17c66975c6623f5c4c69d65",
+          "sha256": "c0e97d60959411acc1c7b006abd4edaff8df77bd9fe7ad13f59f4ef5926ae8bd",
+          "sha1": "3942f5921a6637fd5c8ffd2bfc20b8c7a8c4498d",
+          "md5": "343a5dc7642a90d93c099cef57db5a55"
+        }
+      ]
+    },
+    {
+      "name": "iosSimulatorArm64MetadataElements-published",
+      "attributes": {
+        "artifactType": "org.jetbrains.kotlin.klib",
+        "org.gradle.category": "library",
+        "org.gradle.jvm.environment": "non-jvm",
+        "org.gradle.usage": "kotlin-metadata",
+        "org.jetbrains.kotlin.native.target": "ios_simulator_arm64",
+        "org.jetbrains.kotlin.platform.type": "native"
+      },
+      "dependencies": [
+        {
+          "group": "org.jetbrains.compose.runtime",
+          "module": "runtime",
+          "version": {
+            "requires": "1.9.3"
+          }
+        },
+        {
+          "group": "org.jetbrains.compose.foundation",
+          "module": "foundation",
+          "version": {
+            "requires": "1.9.3"
+          }
+        },
+        {
+          "group": "org.jetbrains.compose.material3",
+          "module": "material3",
+          "version": {
+            "requires": "1.9.0"
+          }
+        },
+        {
+          "group": "org.jetbrains.compose.ui",
+          "module": "ui",
+          "version": {
+            "requires": "1.9.3"
+          }
+        },
+        {
+          "group": "org.jetbrains.compose.components",
+          "module": "components-resources",
+          "version": {
+            "requires": "1.9.3"
+          }
+        },
+        {
+          "group": "org.jetbrains.compose.material",
+          "module": "material-icons-extended",
+          "version": {
+            "requires": "1.7.3"
+          }
+        },
+        {
+          "group": "org.jetbrains.androidx.navigation",
+          "module": "navigation-compose",
+          "version": {
+            "requires": "2.9.1"
+          }
+        },
+        {
+          "group": "org.jetbrains.androidx.navigation",
+          "module": "navigation-runtime",
+          "version": {
+            "requires": "2.9.1"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlin",
+          "module": "kotlin-stdlib",
+          "version": {
+            "requires": "2.2.21"
+          }
+        },
+        {
+          "group": "org.multipaz",
+          "module": "multipaz",
+          "version": {
+            "requires": "0.96.1-pre.2.ef0c0b51"
+          }
+        },
+        {
+          "group": "org.multipaz",
+          "module": "multipaz-dcapi",
+          "version": {
+            "requires": "0.96.1-pre.2.ef0c0b51"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-datetime",
+          "version": {
+            "requires": "0.7.1"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-serialization-json",
+          "version": {
+            "requires": "1.9.0"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-io-core",
+          "version": {
+            "requires": "0.8.2"
+          }
+        },
+        {
+          "group": "io.coil-kt.coil3",
+          "module": "coil-core",
+          "version": {
+            "requires": "3.3.0"
+          }
+        },
+        {
+          "group": "io.coil-kt.coil3",
+          "module": "coil-compose-core",
+          "version": {
+            "requires": "3.3.0"
+          }
+        }
+      ],
+      "files": [
+        {
+          "name": "multipaz-compose-iossimulatorarm64-0.96.1-pre.2.ef0c0b51-metadata.jar",
+          "url": "multipaz-compose-iossimulatorarm64-0.96.1-pre.2.ef0c0b51-metadata.jar",
+          "size": 16935,
+          "sha512": "db081b37ddad566ac3ea7936bc3f4df5ad1713e1b33db625df5e75b0b22f144d6ace99c7aa672d6198d8c87afe336dfe765fec296531a891d7351f1ea9f3f4e3",
+          "sha256": "b495e2e63fd984a07a3d5d970a888a6eea86b5e2aab1d1b595c3c1a4a7f0839f",
+          "sha1": "4b262d7ecb8a2f402fc330e9ab9ad7cec8d98208",
+          "md5": "6a7bd58b3e59bb5da7da3b5e0aa65b63"
+        }
+      ]
+    }
+  ]
+}

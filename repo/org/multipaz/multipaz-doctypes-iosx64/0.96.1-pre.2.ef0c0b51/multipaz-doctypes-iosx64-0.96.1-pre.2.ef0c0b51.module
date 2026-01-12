@@ -1,0 +1,160 @@
+{
+  "formatVersion": "1.1",
+  "component": {
+    "url": "../../multipaz-doctypes/0.96.1-pre.2.ef0c0b51/multipaz-doctypes-0.96.1-pre.2.ef0c0b51.module",
+    "group": "org.multipaz",
+    "module": "multipaz-doctypes",
+    "version": "0.96.1-pre.2.ef0c0b51",
+    "attributes": {
+      "org.gradle.status": "release"
+    }
+  },
+  "createdBy": {
+    "gradle": {
+      "version": "8.14.2"
+    }
+  },
+  "variants": [
+    {
+      "name": "iosX64ApiElements-published",
+      "attributes": {
+        "artifactType": "org.jetbrains.kotlin.klib",
+        "org.gradle.category": "library",
+        "org.gradle.jvm.environment": "non-jvm",
+        "org.gradle.usage": "kotlin-api",
+        "org.jetbrains.kotlin.native.target": "ios_x64",
+        "org.jetbrains.kotlin.platform.type": "native"
+      },
+      "dependencies": [
+        {
+          "group": "org.multipaz",
+          "module": "multipaz",
+          "version": {
+            "requires": "0.96.1-pre.2.ef0c0b51"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlin",
+          "module": "kotlin-stdlib",
+          "version": {
+            "requires": "2.2.21"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-datetime",
+          "version": {
+            "requires": "0.7.1"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-io-bytestring",
+          "version": {
+            "requires": "0.8.2"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-serialization-json",
+          "version": {
+            "requires": "1.9.0"
+          }
+        }
+      ],
+      "files": [
+        {
+          "name": "multipaz-doctypes-iosX64Main-0.96.1-pre.2.ef0c0b51.klib",
+          "url": "multipaz-doctypes-iosx64-0.96.1-pre.2.ef0c0b51.klib",
+          "size": 122160,
+          "sha512": "769680579b1895f220a4795b83e06ed7c44a0aac8e02864f6b258564d334b4cd66aef74989b63400cbde62c600f63ec168b30c4348401a0b2ab70492450019df",
+          "sha256": "d5fcbc336091adf979f80090acf55bdd50f72b70f7f2f61258c08f043f698866",
+          "sha1": "96c6712523adbb32429f012288c660626471cc66",
+          "md5": "0045e434e701e5ae77aebf044f5fcc75"
+        }
+      ]
+    },
+    {
+      "name": "iosX64SourcesElements-published",
+      "attributes": {
+        "org.gradle.category": "documentation",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.docstype": "sources",
+        "org.gradle.jvm.environment": "non-jvm",
+        "org.gradle.usage": "kotlin-runtime",
+        "org.jetbrains.kotlin.native.target": "ios_x64",
+        "org.jetbrains.kotlin.platform.type": "native"
+      },
+      "files": [
+        {
+          "name": "multipaz-doctypes-iosx64-0.96.1-pre.2.ef0c0b51-sources.jar",
+          "url": "multipaz-doctypes-iosx64-0.96.1-pre.2.ef0c0b51-sources.jar",
+          "size": 43068,
+          "sha512": "bee4c72e30c13a106cc0be85c5e24746bf454a555e53f5bda7b37a4780b9ca3d4f143c06f82baca27cde86856f0853f29f0ef6b0107f5feba73a0c0d460d025e",
+          "sha256": "3bc212df7356d4dcf55f1521727dd9bb9b7c03ba33cfe1023ba4cd0467468c0a",
+          "sha1": "d93af0296d7d7b3c473cc9493831c3ef79bc1753",
+          "md5": "5f75aae9397a9283dc00263aa526d4fd"
+        }
+      ]
+    },
+    {
+      "name": "iosX64MetadataElements-published",
+      "attributes": {
+        "artifactType": "org.jetbrains.kotlin.klib",
+        "org.gradle.category": "library",
+        "org.gradle.jvm.environment": "non-jvm",
+        "org.gradle.usage": "kotlin-metadata",
+        "org.jetbrains.kotlin.native.target": "ios_x64",
+        "org.jetbrains.kotlin.platform.type": "native"
+      },
+      "dependencies": [
+        {
+          "group": "org.multipaz",
+          "module": "multipaz",
+          "version": {
+            "requires": "0.96.1-pre.2.ef0c0b51"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlin",
+          "module": "kotlin-stdlib",
+          "version": {
+            "requires": "2.2.21"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-datetime",
+          "version": {
+            "requires": "0.7.1"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-io-bytestring",
+          "version": {
+            "requires": "0.8.2"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-serialization-json",
+          "version": {
+            "requires": "1.9.0"
+          }
+        }
+      ],
+      "files": [
+        {
+          "name": "multipaz-doctypes-iosx64-0.96.1-pre.2.ef0c0b51-metadata.jar",
+          "url": "multipaz-doctypes-iosx64-0.96.1-pre.2.ef0c0b51-metadata.jar",
+          "size": 261,
+          "sha512": "d333c786022bfc6fe9c4fb79a91cc3c6b31ef2889b2a8bf8dca72fde15995aab50597d05c37d46a3992fd5d0be619d56b2bc48792a78083ee200340ce7113db9",
+          "sha256": "d9c694e645b632254e6f20d7ce6658a11e4bc1b8e59db1619cff36163f1fd52d",
+          "sha1": "14114249c88fe23e3993b7816ec921e6cbff155a",
+          "md5": "ee714580d4a9d376425a719465ca1872"
+        }
+      ]
+    }
+  ]
+}
