@@ -18,6 +18,7 @@ package org.multipaz.securearea
 import org.multipaz.crypto.Algorithm
 import org.multipaz.crypto.EcPublicKey
 import org.multipaz.crypto.EcSignature
+import org.multipaz.prompt.Reason
 
 /**
  * An interface to a Secure Area.
@@ -101,7 +102,7 @@ interface SecureArea {
         }
         return BatchCreateKeyResult(
             keyInfos = keyInfos,
-            openid4vciKeyAttestation = null
+            openid4vciKeyAttestationJws = null
         )
     }
 
@@ -136,7 +137,7 @@ interface SecureArea {
     suspend fun sign(
         alias: String,
         dataToSign: ByteArray,
-        keyUnlockData: KeyUnlockData? = KeyUnlockInteractive()
+        unlockReason: Reason = Reason.Unspecified
     ): EcSignature
 
     /**
@@ -160,7 +161,7 @@ interface SecureArea {
     suspend fun keyAgreement(
         alias: String,
         otherKey: EcPublicKey,
-        keyUnlockData: KeyUnlockData? = KeyUnlockInteractive()
+        unlockReason: Reason = Reason.Unspecified
     ): ByteArray
 
     /**

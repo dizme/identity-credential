@@ -1,13 +1,12 @@
 package org.multipaz.asn1
 
+import kotlinx.io.bytestring.ByteString
 import org.multipaz.util.toHex
 import kotlinx.io.bytestring.ByteStringBuilder
 import org.multipaz.util.appendUInt8
 import org.multipaz.util.getUInt16
 import org.multipaz.util.getUInt32
-import org.multipaz.util.getUInt64
 import org.multipaz.util.getUInt8
-import org.multipaz.util.putInt32
 import org.multipaz.util.putUInt32
 import kotlin.math.max
 
@@ -168,8 +167,13 @@ object ASN1 {
      * @return a [ASN1Object]-derived instance.
      * @throws IllegalArgumentException if the given bytes are not valid.
      */
+    @Throws(IllegalArgumentException::class)
     fun decode(derEncoded: ByteArray): ASN1Object? {
-        val (newOffset, obj) = decode(derEncoded, 0)
+        val (newOffset, obj) = try {
+            decode(derEncoded, 0)
+        } catch(e: Throwable) {
+            throw IllegalArgumentException("Unexpected error decoding", e)
+        }
         if (newOffset != derEncoded.size) {
             throw IllegalArgumentException(
                 "${newOffset - derEncoded.size} bytes leftover after decoding"
@@ -179,12 +183,23 @@ object ASN1 {
     }
 
     /**
+     * Decodes a single DER encoded value.
+     *
+     * @param derEncoded the encoded bytes.
+     * @return a [ASN1Object]-derived instance.
+     * @throws IllegalArgumentException if the given bytes are not valid.
+     */
+    @Throws(IllegalArgumentException::class)
+    fun decode(derEncoded: ByteString): ASN1Object? = decode(derEncoded.toByteArray())
+
+    /**
      * Decodes multiple encoded DER values.
      *
      * @param derEncoded the encoded bytes.
      * @return one or more [ASN1Object]-derived instances.
      * @throws IllegalArgumentException if the given bytes are not valid.
      */
+    @Throws(IllegalArgumentException::class)
     fun decodeMultiple(derEncoded: ByteArray): List<ASN1Object> {
         val objects = mutableListOf<ASN1Object>()
         var offset = 0

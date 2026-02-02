@@ -17,7 +17,6 @@ package org.multipaz.credential
 
 import org.multipaz.cbor.Cbor
 import org.multipaz.cbor.CborBuilder
-import org.multipaz.cbor.CborMap
 import org.multipaz.cbor.DataItem
 import org.multipaz.cbor.MapBuilder
 import org.multipaz.claim.Claim
@@ -29,8 +28,7 @@ import org.multipaz.securearea.SecureArea
 import org.multipaz.storage.StorageTableSpec
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.datetime.Clock
-import kotlinx.datetime.Instant
+import kotlin.time.Instant
 import kotlinx.io.bytestring.ByteString
 import org.multipaz.cbor.buildCborMap
 import kotlin.concurrent.Volatile
@@ -89,6 +87,13 @@ abstract class Credential {
      * A stable identifier for the Credential instance.
      */
     internal var _identifier: String? = null
+
+    /**
+     * Identifies credential type.
+     *
+     * Each leaf [Credential] subclass must have a unique type.
+     */
+    abstract val credentialType: String
 
     val identifier: String
         get() = _identifier!!
@@ -159,7 +164,7 @@ abstract class Credential {
         usageCount = dataItem["usageCount"].asNumber.toInt()
 
         if (dataItem.hasKey("data")) {
-            _issuerProvidedData = dataItem["data"].asBstr
+            _issuerProvidedData = ByteString(dataItem["data"].asBstr)
             _validFrom = Instant.fromEpochMilliseconds(dataItem["validFrom"].asNumber)
             _validUntil = Instant.fromEpochMilliseconds(dataItem["validUntil"].asNumber)
         } else {
@@ -169,13 +174,6 @@ abstract class Credential {
         }
 
         replacementForIdentifier = dataItem.getOrNull("replacementForAlias")?.asTstr
-    }
-
-    // Creates an alias which is guaranteed to be unique for all time (assuming the system clock
-    // only goes forwards)
-    private fun createUniqueIdentifier(): String {
-        val now = Clock.System.now()
-        return "${CREDENTIAL_ID_PREFIX}_${now.epochSeconds}_${now.nanosecondsOfSecond}_${uniqueIdentifierCounter++}"
     }
 
     /**
@@ -188,11 +186,11 @@ abstract class Credential {
      *
      * @throws IllegalStateException if the credential is not yet certified.
      */
-    val issuerProvidedData: ByteArray
+    val issuerProvidedData: ByteString
         get() = _issuerProvidedData
             ?: throw IllegalStateException("This credential is not yet certified")
     @Volatile
-    private var _issuerProvidedData: ByteArray? = null
+    private var _issuerProvidedData: ByteString? = null
 
     /**
      * The point in time the issuer-provided data is valid from.
@@ -226,19 +224,34 @@ abstract class Credential {
         private set
 
     /**
-     * Deletes the credential.
+     * Cleans up additional credential data, such as a [SecureArea] key.
+     *
+     * NB: credential is deleted from [DocumentStore]-managed storage separately either
+     * using [deleteFromStorage] or more efficient [deleteAllFromStorage].
+     *
+     * After a credential is cleared, it should no longer be used.
+     */
+    protected open suspend fun clear() {
+    }
+
+    /**
+     * Deletes the credential from [DocumentStore]-managed storage.
      *
      * After deletion, this object should no longer be used.
      */
-    protected open suspend fun delete() {
+    private suspend fun deleteFromStorage() {
         val table = document.store.storage.getTable(credentialTableSpec)
         table.delete(partitionId = document.identifier, key = identifier)
     }
 
     // Called by Document.deleteCredential
     internal suspend fun deleteCredential() {
-        delete()
+        clear()
+        deleteFromStorage()
     }
+
+    // Called by Document.deleteDocument
+    internal suspend fun clearCredential() = clear()
 
     /**
      * Increases usage count of the credential.
@@ -257,20 +270,15 @@ abstract class Credential {
      * Certifies the credential.
      *
      * @param issuerProvidedAuthenticationData the issuer-provided static authentication data.
-     * @param validFrom the point in time before which the data is not valid.
-     * @param validUntil the point in time after which the data is not valid.
      */
-    open suspend fun certify(
-        issuerProvidedAuthenticationData: ByteArray,
-        validFrom: Instant,
-        validUntil: Instant
-    ) {
+    open suspend fun certify(issuerProvidedAuthenticationData: ByteString) {
         check(!isCertified) { "Credential is already certified" }
 
+        _issuerProvidedData = issuerProvidedAuthenticationData
+        val validity = extractValidityFromIssuerData()
+        _validFrom = validity.first
+        _validUntil = validity.second
         val replacementForIdentifier = lock.withLock {
-            _issuerProvidedData = issuerProvidedAuthenticationData
-            _validFrom = validFrom
-            _validUntil = validUntil
             val replacementForIdentifier = this.replacementForIdentifier
             this.replacementForIdentifier = null
             save()
@@ -281,6 +289,14 @@ abstract class Credential {
             document.deleteCredential(replacementForIdentifier)
         }
     }
+
+    /**
+     * Extract validity from the issuer-provided data
+     *
+     * Must return the validity range for this credential: first element in the pair is used
+     * to initialize [Credential.validFrom] and the second one [Credential.validUntil].
+     */
+    protected abstract suspend fun extractValidityFromIssuerData(): Pair<Instant, Instant>
 
     // Deleted identifier for which this one is a replacement
     // Called by Document.deleteCredential()
@@ -306,14 +322,14 @@ abstract class Credential {
      */
     private fun toDataItem(): DataItem {
         return buildCborMap {
-            put("credentialType", this@Credential::class.simpleName!!)  // used by CredentialFactory
+            put("credentialType", credentialType)  // used by CredentialFactory
             put("domain", domain)
             put("usageCount", usageCount.toLong())
             if (replacementForIdentifier != null) {
                 put("replacementForAlias", replacementForIdentifier!!)
             }
             if (isCertified) {
-                put("data", issuerProvidedData)
+                put("data", issuerProvidedData.toByteArray())
                 put("validFrom", validFrom.toEpochMilliseconds())
                 put("validUntil", validUntil.toEpochMilliseconds())
             }
@@ -332,27 +348,30 @@ abstract class Credential {
      * Gets the claims in the credential.
      *
      * If a [DocumentTypeRepository] is passed, it will be used to look up the document type
-     * and if a type is found, it'll be used to populate the the [Claim.attribute] field of
+     * and if a type is found, it'll be used to populate the [Claim.attribute] field of
      * the resulting claims.
      *
      * @param documentTypeRepository a [DocumentTypeRepository] or `null`.
      * @return a list of claims with values.
      */
-    abstract fun getClaims(
+    abstract suspend fun getClaims(
         documentTypeRepository: DocumentTypeRepository?
     ): List<Claim>
 
     companion object {
         private const val TAG = "Credential"
-        private const val CREDENTIAL_ID_PREFIX = "Credential"
-
-        private var uniqueIdentifierCounter = 0
 
         private val credentialTableSpec = StorageTableSpec(
             name = "Credentials",
             supportPartitions = true,  // partition id is document id
             supportExpiration = false
         )
+
+
+        internal suspend fun deleteAllFromStorage(document: Document) {
+            val table = document.store.storage.getTable(credentialTableSpec)
+            table.deletePartition(partitionId = document.identifier)
+        }
 
         // Only for use in Document
         internal suspend fun enumerate(document: Document): List<String> {

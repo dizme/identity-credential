@@ -1,8 +1,12 @@
 import CryptoKit
+import UIKit
 import Foundation
 import Security
 import LocalAuthentication
 import DeviceCheck
+import CoreImage
+import CommonCrypto
+import IdentityDocumentServices
 
 @objc public class SwiftBridge : NSObject {
     @objc(sha1:) public class func sha1(data: Data) -> Data {
@@ -24,7 +28,20 @@ import DeviceCheck
         let hashed = SHA512.hash(data: data)
         return Data(hashed)
     }
-    
+
+    @objc(hmacSha1: :) public class func hmacSha1(key: Data, data: Data) -> Data {
+        var hmac = [UInt8](repeating: 0, count: Int(20))
+        data.withUnsafeBytes { messageBytes in
+            key.withUnsafeBytes { keyBytes in
+                CCHmac(CCHmacAlgorithm(kCCHmacAlgSHA1),
+                       keyBytes.baseAddress, key.count,
+                       messageBytes.baseAddress, data.count,
+                       &hmac)
+            }
+        }
+        return Data(hmac)
+    }
+
     @objc(hmacSha256: :) public class func hmacSha256(key: Data, data: Data) -> Data {
         let symmetricKey = SymmetricKey(data: key)
         let mac = HMAC<SHA256>.authenticationCode(for: data, using: symmetricKey)
@@ -43,62 +60,32 @@ import DeviceCheck
         return Data(mac)
     }
     
-    @objc(aesGcmEncrypt: : :) public class func aesGcmEncrypt(key: Data, plainText: Data, nonce: Data) -> Data {
+    @objc(aesGcmEncrypt: : : :) public class func aesGcmEncrypt(key: Data, plainText: Data, nonce: Data, aad: Data?) -> Data {
         let symmetricKey = SymmetricKey(data: key)
-        let sealedBox = try! AES.GCM.seal(plainText, using: symmetricKey, nonce: AES.GCM.Nonce(data: nonce))
-        var ret = sealedBox.ciphertext
-        ret.append(sealedBox.tag)
-        return ret
+        if (aad != nil) {
+            let sealedBox = try! AES.GCM.seal(plainText, using: symmetricKey, nonce: AES.GCM.Nonce(data: nonce), authenticating: aad!)
+            var ret = sealedBox.ciphertext
+            ret.append(sealedBox.tag)
+            return ret
+        } else {
+            let sealedBox = try! AES.GCM.seal(plainText, using: symmetricKey, nonce: AES.GCM.Nonce(data: nonce))
+            var ret = sealedBox.ciphertext
+            ret.append(sealedBox.tag)
+            return ret
+        }
     }
     
-    @objc(aesGcmDecrypt: : :) public class func aesGcmDecrypt(key: Data, cipherText: Data, nonce: Data) -> Data? {
+    @objc(aesGcmDecrypt: : : : :) public class func aesGcmDecrypt(key: Data, cipherText: Data, tag: Data, nonce: Data, aad: Data?) -> Data? {
         let symmetricKey = SymmetricKey(data: key)
-        var combined = nonce
-        combined.append(cipherText)
-        let sealedBox = try! AES.GCM.SealedBox(combined: combined)
+        let sealedBox = try! AES.GCM.SealedBox(nonce: AES.GCM.Nonce(data: nonce), ciphertext: cipherText, tag: tag)
         do {
-            return try AES.GCM.open(sealedBox, using: symmetricKey)
+            if (aad != nil) {
+                return try AES.GCM.open(sealedBox, using: symmetricKey, authenticating: aad!)
+            } else {
+                return try AES.GCM.open(sealedBox, using: symmetricKey)
+            }
         } catch {
             return nil
-        }
-    }
-    
-    @objc(hkdf: : : : :) public class func hkdf(hashLen: Int, ikm: Data, salt: Data, info: Data, size: Int) -> Data? {
-        guard #available(iOS 14.0, *) else {
-            return nil
-        }
-        let inputKeyMaterial = SymmetricKey(data: ikm)
-        let res: SymmetricKey
-        switch (hashLen) {
-        case 32:
-            res = HKDF<SHA256>.deriveKey(
-                inputKeyMaterial: inputKeyMaterial,
-                salt: salt,
-                info: info,
-                outputByteCount: size
-            )
-            break
-        case 48:
-            res = HKDF<SHA384>.deriveKey(
-                inputKeyMaterial: inputKeyMaterial,
-                salt: salt,
-                info: info,
-                outputByteCount: size
-            )
-            break
-        case 64:
-            res = HKDF<SHA512>.deriveKey(
-                inputKeyMaterial: inputKeyMaterial,
-                salt: salt,
-                info: info,
-                outputByteCount: size
-            )
-            break
-        default:
-            return nil
-        }
-        return res.withUnsafeBytes {
-            return Data(Array($0))
         }
     }
     
@@ -336,26 +323,6 @@ import DeviceCheck
         }
     }
 
-    @objc(hpkeEncrypt: : :) public class func hpkeEncrypt(receiverPublicKeyRepresentation: Data, plainText: Data, aad: Data) -> Array<Data> {
-        guard #available(iOS 17.0, *) else {
-            return []
-        }
-        let receiverKey = try! P256.KeyAgreement.PublicKey(rawRepresentation: receiverPublicKeyRepresentation)
-        var sender = try! HPKE.Sender(recipientKey: receiverKey, ciphersuite: HPKE.Ciphersuite.P256_SHA256_AES_GCM_256, info: Data())
-        let cipherText = try! sender.seal(plainText, authenticating: aad)
-        return [sender.encapsulatedKey, cipherText]
-    }
-
-    @objc(hpkeDecrypt: : : :) public class func hpkeDecrypt(receiverPrivateKeyRepresentation: Data, cipherText: Data, aad: Data, encapsulatedPublicKey: Data) -> Data? {
-        guard #available(iOS 17.0, *) else {
-            return nil
-        }
-        let receiverKey = try! P256.KeyAgreement.PrivateKey(rawRepresentation: receiverPrivateKeyRepresentation)
-        var receiver = try! HPKE.Recipient(privateKey: receiverKey, ciphersuite: HPKE.Ciphersuite.P256_SHA256_AES_GCM_256, info: Data(), encapsulatedKey: encapsulatedPublicKey)
-        let plainText = try! receiver.open(cipherText, authenticating: aad)
-        return plainText
-    }
-
     @objc(x509CertGetKey:) public class func x509CertGetKey(encodedX509Cert: Data) -> Data? {
         let certificate = SecCertificateCreateWithData(nil, encodedX509Cert as CFData)
         if (certificate == nil) {
@@ -456,6 +423,66 @@ import DeviceCheck
             return error!.takeRetainedValue() as Error
         }
         return nil
+    }
+
+    @objc(generateQrCode:) public class func generateQrCode(url: String) -> UIImage? {
+        let data = url.data(using: String.Encoding.ascii)
+        if let filter = CIFilter(name: "CIQRCodeGenerator") {
+            filter.setValue(data, forKey: "inputMessage")
+            let scalingFactor = 4.0
+            let transform = CGAffineTransform(scaleX: scalingFactor, y: scalingFactor)
+            if let output = filter.outputImage?.transformed(by: transform) {
+                // iOS QR Code generator doesn't add the proper Quiet Zone so we need
+                // to do this ourselves. Add four modules as required by the standard.
+                //
+                let quietZonePadding = 4*scalingFactor
+                let context = CIContext()
+                let cgImage = context.createCGImage(
+                    output,
+                    from: CGRect(
+                        x: -quietZonePadding,
+                        y: -quietZonePadding,
+                        width: output.extent.width + 2*quietZonePadding,
+                        height: output.extent.height + 2*quietZonePadding
+                    )
+                )
+                return UIImage(cgImage: cgImage!)
+            }
+        }
+        return nil
+    }
+
+    @objc(docRegAdd:::) public class func docRegAdd(
+     documentIdentifier: String,
+     documentType: String,
+    ) async throws -> Bool {
+        if #available(iOS 26.0, *) {
+            let store = IdentityDocumentProviderRegistrationStore()
+
+            let registration = MobileDocumentRegistration(
+                mobileDocumentType: documentType,
+                supportedAuthorityKeyIdentifiers: [],  // TODO: param
+                documentIdentifier: documentIdentifier,
+                invalidationDate: nil          // TODO: param
+            )
+            try await store.addRegistration(registration)
+            return true
+        }
+        return false
+    }
+
+    @objc(docRegRemoveAll:) public class func docRegRemoveAll() async throws -> Int {
+        if #available(iOS 26.0, *) {
+            var numRemoved = 0
+            let store = IdentityDocumentProviderRegistrationStore()
+            let registrations = try await store.registrations
+            for registration in registrations {
+                try await store.removeRegistration(forDocumentIdentifier: registration.documentIdentifier)
+                numRemoved += 1
+            }
+            return numRemoved
+        }
+        return 0
     }
 }
 

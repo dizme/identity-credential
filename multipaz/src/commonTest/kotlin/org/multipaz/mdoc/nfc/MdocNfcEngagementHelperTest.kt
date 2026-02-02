@@ -14,7 +14,6 @@ import org.multipaz.nfc.NfcIsoTag
 import org.multipaz.nfc.ResponseApdu
 import org.multipaz.util.UUID
 import org.multipaz.util.fromHex
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import kotlinx.io.bytestring.ByteString
 import kotlin.test.Test
@@ -36,6 +35,12 @@ class MdocNfcEngagementHelperTest {
 
         override val maxTransceiveLength: Int
             get() = 65536
+
+        override suspend fun close() {
+            transcript.appendLine("close")
+        }
+
+        override suspend fun updateDialogMessage(message: String) {}
 
         override suspend fun transceive(command: CommandApdu): ResponseApdu {
             transcript.appendLine("${command}")
@@ -379,7 +384,7 @@ class MdocNfcEngagementHelperTest {
         )
     }
 
-    private fun testNfcEngagementHelper(
+    private suspend fun testNfcEngagementHelper(
         testBlock: suspend (tag: NfcIsoTag) -> Unit
     ): Pair<Boolean, Throwable?> {
         var handoverSuccess = false
@@ -390,12 +395,12 @@ class MdocNfcEngagementHelperTest {
             onError = { error -> handoverError = error },
             staticHandoverMethods = getConnectionMethods(),
         )
-        runBlocking { testBlock(LoopbackIsoTag(helper)) }
+        testBlock(LoopbackIsoTag(helper))
         return Pair(handoverSuccess, handoverError)
     }
 
     @Test
-    fun testWrongApplicationIdSelected() {
+    fun testWrongApplicationIdSelected() = runTest {
         var (handoverSuccess, handoverError) = testNfcEngagementHelper { tag ->
             // Off by one from the NDEF AID
             assertFailsWith(NfcCommandFailedException::class) {
@@ -411,7 +416,7 @@ class MdocNfcEngagementHelperTest {
     }
 
     @Test
-    fun testFiledIdBeforeApplicationSelectSelected() {
+    fun testFiledIdBeforeApplicationSelectSelected() = runTest {
         var (handoverSuccess, handoverError) = testNfcEngagementHelper { tag ->
             // Fails because application is not yet selected
             assertFailsWith(NfcCommandFailedException::class) {
@@ -427,7 +432,7 @@ class MdocNfcEngagementHelperTest {
     }
 
     @Test
-    fun testUnexpectedFileIdSelected() {
+    fun testUnexpectedFileIdSelected() = runTest {
         var (handoverSuccess, handoverError) = testNfcEngagementHelper { tag ->
             tag.selectApplication(Nfc.NDEF_APPLICATION_ID)
             // Fails because the FileID is unknown
@@ -446,7 +451,7 @@ class MdocNfcEngagementHelperTest {
     // TODO: add more tests to exercise implementation of READ_BINARY and UPDATE_BINARY
 
     @Test
-    fun testConstructor() {
+    fun testConstructor() = runTest {
         assertFailsWith(
             IllegalStateException::class,
             "Must use either static or negotiated handover, none are selected"

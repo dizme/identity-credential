@@ -25,32 +25,59 @@ import org.multipaz.storage.StorageTable
 import org.multipaz.storage.StorageTableSpec
 import org.multipaz.storage.ephemeral.EphemeralStorage
 import kotlinx.coroutines.test.runTest
-import kotlinx.datetime.Clock
-import kotlinx.datetime.Instant
+import kotlinx.coroutines.withContext
+import kotlin.time.Clock
+import kotlin.time.Instant
 import kotlinx.io.bytestring.ByteString
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.long
 import org.bouncycastle.jce.provider.BouncyCastleProvider
 import org.junit.Assert
 import org.junit.Assume.assumeTrue
 import org.junit.Before
 import org.junit.Test
+import org.multipaz.certext.CloudKeyAttestation
+import org.multipaz.crypto.EcPublicKey
+import org.multipaz.crypto.JsonWebSignature
+import org.multipaz.util.fromBase64Url
+import org.multipaz.certext.MultipazExtension
+import org.multipaz.certext.fromCbor
+import org.multipaz.crypto.AsymmetricKey
+import org.multipaz.crypto.buildX509Cert
+import org.multipaz.device.AndroidKeystoreSecurityLevel
+import org.multipaz.securearea.KeyUnlockData
+import org.multipaz.securearea.KeyUnlockDataProvider
+import org.multipaz.prompt.Reason
+import org.multipaz.securearea.SecureArea
 import java.io.IOException
 import java.security.MessageDigest
 import java.security.NoSuchAlgorithmException
 import java.security.Security
+import kotlin.math.absoluteValue
 import kotlin.random.Random
 import kotlin.reflect.KClass
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.days
 import kotlin.time.Duration.Companion.minutes
 
+private const val VCI_KA_ISSUER = "https://csa.example.org"
+private const val VCI_KA_KEY_STORAGE = "ava_van.5"
+private const val VCI_KA_USER_AUTHENTICATION = "ava_van.5"
+private val VCI_KA_USER_AUTHENTICATION_NO_PASSPHRASE: String? = null
+private const val VCI_KA_CERTIFICATION = "https://certification-agency.example.org/path/to/certification-letter.pdf"
+
+
 // TODO: Move to commonTests once [CloudSecureAreaServer] is also multiplatform
 class CloudSecureAreaTest {
     @Before
     fun setup() {
-        // This is needed to prefer BouncyCastle bundled with the app instead of the Conscrypt
-        // based implementation included in Android.
+        // Load BouncyCastle to ensure we can test full curve support
         Security.removeProvider(BouncyCastleProvider.PROVIDER_NAME)
-        Security.addProvider(BouncyCastleProvider())
+        Security.insertProviderAt(BouncyCastleProvider(), 1)
+        println("Crypto.provider: ${Crypto.provider}")
+        println("Crypto.supportedCurves: ${Crypto.supportedCurves}")
         initializeApplication(InstrumentationRegistry.getInstrumentation().context)
     }
 
@@ -69,44 +96,64 @@ class CloudSecureAreaTest {
         val context = applicationContext
         private lateinit var server: CloudSecureAreaServer
 
+        lateinit var attestationRootKey: AsymmetricKey
+        lateinit var attestationKey: EcPublicKey
+        lateinit var attestationKeyCertChain: X509CertChain
+
         public override suspend fun initialize() {
             super.initialize()
             val enclaveBoundKey = Random.nextBytes(32)
 
-            val attestationKeySubject = "CN=Cloud Secure Area Attestation Root"
+            val attestationRootSubject = "CN=Cloud Secure Area Attestation Root"
+            val attestationKeySubject = "CN=Cloud Secure Area Attestation"
             val attestationKeyValidFrom = Clock.System.now()
             val attestationKeyValidUntil = attestationKeyValidFrom + 365.days*5
-            val attestationKey = Crypto.createEcPrivateKey(EcCurve.P256)
-            val attestationKeySignatureAlgorithm = attestationKey.curve.defaultSigningAlgorithm
-            val attestationKeyCertificates = X509CertChain(
+            val attestationKeyPrivate = Crypto.createEcPrivateKey(EcCurve.P256)
+            attestationRootKey = AsymmetricKey.ephemeral()
+            val attestationRootCert = buildX509Cert(
+                publicKey = attestationRootKey.publicKey,
+                signingKey = attestationRootKey,
+                serialNumber = ASN1Integer(42L),
+                subject = X500Name.fromName(attestationRootSubject),
+                issuer = X500Name.fromName(attestationRootSubject),
+                validFrom = attestationKeyValidFrom,
+                validUntil = attestationKeyValidUntil
+            ) {
+                includeSubjectKeyIdentifier()
+                setKeyUsage(setOf(X509KeyUsage.KEY_CERT_SIGN))
+            }
+            attestationKey = attestationKeyPrivate.publicKey
+            attestationKeyCertChain = X509CertChain(
                 listOf(
                     X509Cert.Builder(
-                        publicKey = attestationKey.publicKey,
-                        signingKey = attestationKey,
-                        signatureAlgorithm = attestationKeySignatureAlgorithm,
+                        publicKey = attestationKeyPrivate.publicKey,
+                        signingKey = attestationRootKey,
                         serialNumber = ASN1Integer(1L),
                         subject = X500Name.fromName(attestationKeySubject),
-                        issuer = X500Name.fromName(attestationKeySubject),
+                        issuer = X500Name.fromName(attestationRootSubject),
                         validFrom = attestationKeyValidFrom,
                         validUntil = attestationKeyValidUntil
                     )
                         .includeSubjectKeyIdentifier()
                         .setKeyUsage(setOf(X509KeyUsage.KEY_CERT_SIGN))
                         .build(),
+                    attestationRootCert
                 )
+            )
+            val attestationSigningKey = AsymmetricKey.X509CertifiedExplicit(
+                privateKey = attestationKeyPrivate,
+                certChain = attestationKeyCertChain
             )
 
             val cloudBindingKeySubject = "CN=Cloud Secure Area Cloud Binding Key Attestation Root"
             val cloudBindingKeyValidFrom = Clock.System.now()
             val cloudBindingKeyValidUntil = cloudBindingKeyValidFrom + 365.days*5
             val cloudBindingKeyAttestationKey = Crypto.createEcPrivateKey(EcCurve.P256)
-            val cloudBindingKeySignatureAlgorithm = cloudBindingKeyAttestationKey.curve.defaultSigningAlgorithm
             val cloudBindingKeyAttestationCertificates = X509CertChain(
                 listOf(
                     X509Cert.Builder(
                         publicKey = cloudBindingKeyAttestationKey.publicKey,
-                        signingKey = cloudBindingKeyAttestationKey,
-                        signatureAlgorithm = cloudBindingKeySignatureAlgorithm,
+                        signingKey = attestationSigningKey,
                         serialNumber = ASN1Integer(1L),
                         subject = X500Name.fromName(cloudBindingKeySubject),
                         issuer = X500Name.fromName(cloudBindingKeySubject),
@@ -117,6 +164,10 @@ class CloudSecureAreaTest {
                         .setKeyUsage(setOf(X509KeyUsage.KEY_CERT_SIGN))
                         .build(),
                 )
+            )
+            val cloudBindingKeyAttestationSigningKey = AsymmetricKey.X509CertifiedExplicit(
+                privateKey = cloudBindingKeyAttestationKey,
+                certChain = cloudBindingKeyAttestationCertificates
             )
 
             val digestOfSignatures: MutableList<ByteArray> = ArrayList()
@@ -135,22 +186,23 @@ class CloudSecureAreaTest {
                 }
             }
             server = CloudSecureAreaServer(
-                enclaveBoundKey,
-                attestationKey,
-                attestationKeySignatureAlgorithm,
-                attestationKeySubject,
-                attestationKeyCertificates,
-                cloudBindingKeyAttestationKey,
-                cloudBindingKeySignatureAlgorithm,
-                cloudBindingKeySubject,
-                cloudBindingKeyAttestationCertificates,
-                10 * 60,
-                false,
-                null,
-                false,
-                false,
-                digestOfSignatures.map { it -> ByteString(it) },
-                SimplePassphraseFailureEnforcer(
+                serverSecureAreaBoundKey = enclaveBoundKey,
+                attestationKey = attestationSigningKey,
+                cloudRootAttestationKey = cloudBindingKeyAttestationSigningKey,
+                e2eeKeyLimitSeconds = 10 * 60,
+                iosReleaseBuild = false,
+                iosAppIdentifiers = listOf(),
+                androidGmsAttestation = false,
+                androidVerifiedBootGreen = false,
+                androidAppSignatureCertificateDigests = digestOfSignatures.map { it -> ByteString(it) },
+                androidAppPackageNames = listOf(),
+                androidKeystoreSecurityLevel = AndroidKeystoreSecurityLevel.SOFTWARE,
+                openid4vciKeyAttestationIssuer = VCI_KA_ISSUER,
+                openid4vciKeyAttestationKeyStorage = VCI_KA_KEY_STORAGE,
+                openid4vciKeyAttestationUserAuthentication = VCI_KA_USER_AUTHENTICATION,
+                openid4vciKeyAttestationUserAuthenticationNoPassphrase = VCI_KA_USER_AUTHENTICATION_NO_PASSPHRASE,
+                openid4vciKeyAttestationCertification = VCI_KA_CERTIFICATION,
+                passphraseFailureEnforcer = SimplePassphraseFailureEnforcer(
                     lockoutNumFailedAttempts = 3,
                     lockoutDuration = 1.minutes,
                     clockFunction = { serverTime }
@@ -183,21 +235,28 @@ class CloudSecureAreaTest {
         val validFrom = Instant.parse("2025-02-05T23:36:10Z")
         val validUntil = validFrom + 30.days
         for (algorithm in csa.supportedAlgorithms) {
+            if (!Crypto.supportedCurves.contains(algorithm.curve!!)) {
+                println("Curve ${algorithm.curve} not supported on platform")
+                continue
+            }
+
             val expectedKeyUsage = if (algorithm.isSigning) {
                 setOf(X509KeyUsage.DIGITAL_SIGNATURE)
             } else {
                 setOf(X509KeyUsage.KEY_AGREEMENT)
             }
             val challenge = ByteString(1, 2, 3)
-            val tests = mapOf<CloudCreateKeySettings, CloudAttestationExtension>(
+            val tests = mapOf(
                 CloudCreateKeySettings.Builder(challenge)
                     .setAlgorithm(algorithm)
                     .setValidityPeriod(validFrom, validUntil)
                     .build() to
-                        CloudAttestationExtension(
-                            challenge = challenge,
-                            passphrase = false,
-                            userAuthentication = setOf()
+                        MultipazExtension(
+                            cloudKeyAttestation = CloudKeyAttestation(
+                                challenge = challenge,
+                                passphrase = false,
+                                userAuthentication = setOf()
+                            )
                         ),
 
                 CloudCreateKeySettings.Builder(challenge)
@@ -205,10 +264,12 @@ class CloudSecureAreaTest {
                     .setValidityPeriod(validFrom, validUntil)
                     .setPassphraseRequired(true)
                     .build() to
-                        CloudAttestationExtension(
-                            challenge = challenge,
-                            passphrase = true,
-                            userAuthentication = setOf()
+                        MultipazExtension(
+                            cloudKeyAttestation = CloudKeyAttestation(
+                                challenge = challenge,
+                                passphrase = true,
+                                userAuthentication = setOf()
+                            )
                         ),
 
                 CloudCreateKeySettings.Builder(challenge)
@@ -216,10 +277,12 @@ class CloudSecureAreaTest {
                     .setValidityPeriod(validFrom, validUntil)
                     .setUserAuthenticationRequired(true, setOf(CloudUserAuthType.PASSCODE))
                     .build() to
-                        CloudAttestationExtension(
-                            challenge = challenge,
-                            passphrase = false,
-                            userAuthentication = setOf(CloudUserAuthType.PASSCODE)
+                        MultipazExtension(
+                            cloudKeyAttestation = CloudKeyAttestation(
+                                challenge = challenge,
+                                passphrase = false,
+                                userAuthentication = setOf(CloudUserAuthType.PASSCODE)
+                            )
                         ),
 
                 CloudCreateKeySettings.Builder(challenge)
@@ -227,10 +290,12 @@ class CloudSecureAreaTest {
                     .setValidityPeriod(validFrom, validUntil)
                     .setUserAuthenticationRequired(true, setOf(CloudUserAuthType.BIOMETRIC))
                     .build() to
-                        CloudAttestationExtension(
-                            challenge = challenge,
-                            passphrase = false,
-                            userAuthentication = setOf(CloudUserAuthType.BIOMETRIC)
+                        MultipazExtension(
+                            cloudKeyAttestation = CloudKeyAttestation(
+                                challenge = challenge,
+                                passphrase = false,
+                                userAuthentication = setOf(CloudUserAuthType.BIOMETRIC)
+                            )
                         ),
 
                 CloudCreateKeySettings.Builder(challenge)
@@ -242,11 +307,13 @@ class CloudSecureAreaTest {
                         )
                     )
                     .build() to
-                        CloudAttestationExtension(
-                            challenge = challenge,
-                            passphrase = false,
-                            userAuthentication = setOf(
-                                CloudUserAuthType.BIOMETRIC, CloudUserAuthType.PASSCODE
+                        MultipazExtension(
+                            cloudKeyAttestation = CloudKeyAttestation(
+                                challenge = challenge,
+                                passphrase = false,
+                                userAuthentication = setOf(
+                                    CloudUserAuthType.BIOMETRIC, CloudUserAuthType.PASSCODE
+                                )
                             )
                         ),
 
@@ -260,29 +327,35 @@ class CloudSecureAreaTest {
                         )
                     )
                     .build() to
-                        CloudAttestationExtension(
-                            challenge = challenge,
-                            passphrase = true,
-                            userAuthentication = setOf(
-                                CloudUserAuthType.BIOMETRIC, CloudUserAuthType.PASSCODE
+                        MultipazExtension(
+                            cloudKeyAttestation = CloudKeyAttestation(
+                                challenge = challenge,
+                                passphrase = true,
+                                userAuthentication = setOf(
+                                    CloudUserAuthType.BIOMETRIC, CloudUserAuthType.PASSCODE
+                                )
                             )
                         ),
             )
             for ((settings, expectedAttestation) in tests) {
                 val keyInfo = csa.createKey("test", settings)
-                val attestationCertificate = keyInfo.attestation.certChain!!.certificates[0]
-                val attestationExtension = CloudAttestationExtension.decode(
-                    ByteString(attestationCertificate
-                        .getExtensionValue(OID.X509_EXTENSION_MULTIPAZ_KEY_ATTESTATION.oid)!!
-                    )
+                // First check the certificate chain is well-formed and has the expected root
+                val attestationCertificateChain = keyInfo.attestation.certChain!!
+                Assert.assertTrue(attestationCertificateChain.validate())
+                Assert.assertEquals(csa.attestationRootKey.publicKey, attestationCertificateChain.certificates.last().ecPublicKey)
+
+                // Then check for the extensions in the leaf certificate
+                val attestationCertificate = attestationCertificateChain.certificates[0]
+                val extension = MultipazExtension.fromCbor(
+                    attestationCertificate.getExtensionValue(OID.X509_EXTENSION_MULTIPAZ_EXTENSION.oid)!!
                 )
-                Assert.assertEquals(expectedAttestation, attestationExtension)
+                Assert.assertEquals(expectedAttestation, extension)
                 Assert.assertEquals(expectedKeyUsage, attestationCertificate.keyUsage)
                 Assert.assertEquals(validFrom, attestationCertificate.validityNotBefore)
                 Assert.assertEquals(validUntil, attestationCertificate.validityNotAfter)
                 Assert.assertEquals(1L, attestationCertificate.serialNumber.toLong())
                 Assert.assertEquals("CN=Cloud Secure Area Key", attestationCertificate.subject.name)
-                Assert.assertEquals("CN=Cloud Secure Area Attestation Root", attestationCertificate.issuer.name)
+                Assert.assertEquals("CN=Cloud Secure Area Attestation", attestationCertificate.issuer.name)
             }
         }
     }
@@ -301,11 +374,107 @@ class CloudSecureAreaTest {
         val settings = CloudCreateKeySettings.Builder(challenge).build()
         csa.createKey("test", settings)
 
-        val attestation = CloudAttestationExtension.decode(ByteString(
+        val extension = MultipazExtension.fromCbor(
             csa.getKeyInfo("test").attestation.certChain!!.certificates[0]
-                .getExtensionValue(OID.X509_EXTENSION_MULTIPAZ_KEY_ATTESTATION.oid)!!
-        ))
-        Assert.assertEquals(challenge, attestation.challenge)
+                .getExtensionValue(OID.X509_EXTENSION_MULTIPAZ_EXTENSION.oid)!!
+        )
+        Assert.assertEquals(challenge, extension.cloudKeyAttestation!!.challenge)
+    }
+
+    @Test fun testBatchKeyCreationWithPassphrase() = testBatchKeyCreation(true)
+    @Test fun testBatchKeyCreationWithoutPassphrase() = testBatchKeyCreation(false)
+
+    fun testBatchKeyCreation(usePassphrase: Boolean) = runTest {
+        val csa = LoopbackCloudSecureArea(
+            EphemeralStorage().getTable(tableSpec),
+            null
+        )
+        csa.initialize()
+        csa.register(
+            "xyz123",
+            PassphraseConstraints.NONE) { true }
+        val challenge = ByteString(1, 2, 3)
+        val validFrom = Instant.parse("2025-02-05T23:36:10Z")
+        val validUntil = validFrom + 30.days
+        val settings = CloudCreateKeySettings.Builder(challenge)
+            .setValidityPeriod(validFrom, validUntil)
+            .setPassphraseRequired(usePassphrase)
+            .build()
+        val result = csa.batchCreateKey(10, settings)
+        Assert.assertEquals(10, result.keyInfos.size)
+        for (keyInfo in result.keyInfos) {
+            val extension = MultipazExtension.fromCbor(
+                    keyInfo.attestation.certChain!!.certificates[0]
+                        .getExtensionValue(OID.X509_EXTENSION_MULTIPAZ_EXTENSION.oid)!!
+            )
+            Assert.assertEquals(challenge, extension.cloudKeyAttestation!!.challenge)
+
+            // Also check we can use the key
+            val dataToSign = byteArrayOf(4, 5, 6)
+            val keyUnlockInfo = if (usePassphrase) {
+                CloudKeyUnlockData(
+                    csa,
+                    keyInfo.alias
+                ).apply {
+                    passphrase = "xyz123"
+                }
+            } else {
+                null
+            }
+            val signature = try {
+                if (keyUnlockInfo != null) {
+                    withContext(MockKeyUnlockDataProvider(keyUnlockInfo)) {
+                        csa.sign(keyInfo.alias, dataToSign)
+                    }
+                } else {
+                    csa.sign(keyInfo.alias, dataToSign)
+                }
+            } catch (e: KeyLockedException) {
+                throw AssertionError(e)
+            }
+            Crypto.checkSignature(
+                keyInfo.publicKey, dataToSign, Algorithm.ES256, signature
+            )
+        }
+
+        // OpenID4VCI attestation checks... first check that it's signed by the expected key
+        //
+        JsonWebSignature.verify(
+            jws = result.openid4vciKeyAttestationJws!!,  // We always return the JWS
+            publicKey = csa.attestationKey
+        )
+
+        // Then that the x5c is set as expected
+        val info = JsonWebSignature.getInfo(result.openid4vciKeyAttestationJws)
+        val sansRoot = csa.attestationKeyCertChain.certificates.let { it.subList(0, it.size - 1) }
+        Assert.assertEquals(X509CertChain(sansRoot), info.x5c)
+
+        // Finally check the body is as expected
+        Assert.assertEquals(VCI_KA_ISSUER, info.claimsSet["iss"]!!.jsonPrimitive.content)
+        val iat = info.claimsSet["iat"]!!.jsonPrimitive.long
+        val now = Clock.System.now().epochSeconds
+        Assert.assertTrue((iat - now).absoluteValue < 10)
+        Assert.assertEquals(validFrom.epochSeconds, info.claimsSet["nbf"]!!.jsonPrimitive.long)
+        Assert.assertEquals(validUntil.epochSeconds, info.claimsSet["exp"]!!.jsonPrimitive.long)
+        val attestedKeysJwkArray = info.claimsSet["attested_keys"]!!.jsonArray
+        Assert.assertEquals(10, attestedKeysJwkArray.size)
+        var n = 0
+        for (attestedKeyJwk in attestedKeysJwkArray) {
+            val attestedKey = EcPublicKey.fromJwk(attestedKeyJwk.jsonObject)
+            Assert.assertEquals(result.keyInfos[n++].publicKey, attestedKey)
+        }
+        val keyStorageArray = info.claimsSet["key_storage"]!!.jsonArray
+        Assert.assertEquals(1, keyStorageArray.size)
+        Assert.assertEquals(VCI_KA_KEY_STORAGE, keyStorageArray[0].jsonPrimitive.content)
+        if (usePassphrase) {
+            val userAuthenticationArray = info.claimsSet["user_authentication"]!!.jsonArray
+            Assert.assertEquals(1, userAuthenticationArray.size)
+            Assert.assertEquals(VCI_KA_USER_AUTHENTICATION, userAuthenticationArray[0].jsonPrimitive.content)
+        } else {
+            Assert.assertNull(info.claimsSet["user_authentication"])
+        }
+        Assert.assertEquals(VCI_KA_CERTIFICATION, info.claimsSet["certification"]!!.jsonPrimitive.content)
+        Assert.assertEquals(challenge, ByteString(info.claimsSet["nonce"]!!.jsonPrimitive.content.fromBase64Url()))
     }
 
     @Test
@@ -322,7 +491,7 @@ class CloudSecureAreaTest {
         csa.createKey("testKey", settings)
         val keyInfo = csa.getKeyInfo("testKey")
         Assert.assertNotNull(keyInfo)
-        Assert.assertTrue(keyInfo.attestation.certChain!!.certificates.size >= 1)
+        Assert.assertTrue(keyInfo.attestation.certChain!!.certificates.isNotEmpty())
         Assert.assertEquals(Algorithm.ESP256, keyInfo.algorithm)
         Assert.assertFalse(keyInfo.isUserAuthenticationRequired)
         Assert.assertEquals(setOf<Any>(), keyInfo.userAuthenticationTypes)
@@ -330,7 +499,7 @@ class CloudSecureAreaTest {
         Assert.assertNull(keyInfo.validUntil)
         val dataToSign = byteArrayOf(4, 5, 6)
         val signature = try {
-            csa.sign("testKey", dataToSign, null)
+            csa.sign("testKey", dataToSign)
         } catch (e: KeyLockedException) {
             throw AssertionError(e)
         }
@@ -356,7 +525,7 @@ class CloudSecureAreaTest {
         csa.createKey("testKey", settings)
         val keyInfo = csa.getKeyInfo("testKey")
         Assert.assertNotNull(keyInfo)
-        Assert.assertTrue(keyInfo.attestation.certChain!!.certificates.size >= 1)
+        Assert.assertTrue(keyInfo.attestation.certChain!!.certificates.isNotEmpty())
         Assert.assertEquals(Algorithm.ECDH_P256, keyInfo.algorithm)
         Assert.assertFalse(keyInfo.isUserAuthenticationRequired)
         Assert.assertEquals(setOf<Any>(), keyInfo.userAuthenticationTypes)
@@ -365,7 +534,7 @@ class CloudSecureAreaTest {
 
         // First do the ECDH from the perspective of our side...
         val ourSharedSecret = try {
-            csa.keyAgreement("testKey", otherKeyPair.publicKey, null)
+            csa.keyAgreement("testKey", otherKeyPair.publicKey)
         } catch (e: KeyLockedException) {
             throw AssertionError(e)
         }
@@ -433,7 +602,7 @@ class CloudSecureAreaTest {
                 PassphraseConstraints.NONE
             ) { true }
             Assert.fail("Expected exception")
-        } catch (e: CloudException) {
+        } catch (_: CloudException) {
             // Expected path.
         }
     }
@@ -459,11 +628,11 @@ class CloudSecureAreaTest {
         Assert.assertEquals(Algorithm.ESP256, keyInfo.algorithm)
 
         // Check that the challenge is empty.
-        val attestation = CloudAttestationExtension.decode(ByteString(
+        val extension = MultipazExtension.fromCbor(
             csa.getKeyInfo("testKey").attestation.certChain!!.certificates[0]
-                .getExtensionValue(OID.X509_EXTENSION_MULTIPAZ_KEY_ATTESTATION.oid)!!
-        ))
-        Assert.assertEquals(challenge, attestation.challenge)
+                .getExtensionValue(OID.X509_EXTENSION_MULTIPAZ_EXTENSION.oid)!!
+        )
+        Assert.assertEquals(challenge, extension.cloudKeyAttestation!!.challenge)
 
         // Now delete it...
         csa.deleteKey("testKey")
@@ -474,7 +643,13 @@ class CloudSecureAreaTest {
         testWrongPassphraseDelayHelper(
             algorithm = Algorithm.ESP256,
             useKey = { alias, csa, unlockData ->
-                csa.sign(alias, byteArrayOf(1, 2, 3), unlockData)
+                if (unlockData == null) {
+                    csa.sign(alias, byteArrayOf(1, 2, 3))
+                } else {
+                    withContext(MockKeyUnlockDataProvider(unlockData)) {
+                        csa.sign(alias, byteArrayOf(1, 2, 3))
+                    }
+                }
         })
     }
 
@@ -485,7 +660,13 @@ class CloudSecureAreaTest {
         testWrongPassphraseDelayHelper(
             algorithm = Algorithm.ECDH_P256,
             useKey = { alias, csa, unlockData ->
-                csa.keyAgreement(alias, otherKey.publicKey, unlockData)
+                if (unlockData == null) {
+                    csa.keyAgreement(alias, otherKey.publicKey)
+                } else {
+                    withContext(MockKeyUnlockDataProvider(unlockData)) {
+                        csa.keyAgreement(alias, otherKey.publicKey)
+                    }
+                }
         })
     }
 
@@ -641,6 +822,16 @@ class CloudSecureAreaTest {
         Assert.assertEquals(Instant.fromEpochMilliseconds(2000 * 1000), serverTime)
         useKey("testKey1", csa, correctPassphrase)
         Assert.assertEquals(Instant.fromEpochMilliseconds(2060 * 1000), serverTime)
+    }
+
+    private class MockKeyUnlockDataProvider(
+        val keyUnlockData: KeyUnlockData
+    ): KeyUnlockDataProvider {
+        override suspend fun getKeyUnlockData(
+            secureArea: SecureArea,
+            alias: String,
+            unlockReason: Reason
+        ): KeyUnlockData = keyUnlockData
     }
 
     companion object {

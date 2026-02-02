@@ -1,45 +1,29 @@
 package org.multipaz.crypto
 
+import kotlinx.coroutines.test.runTest
 import org.multipaz.asn1.ASN1
 import org.multipaz.asn1.ASN1Boolean
 import org.multipaz.asn1.ASN1Integer
 import org.multipaz.asn1.ASN1OctetString
 import org.multipaz.asn1.ASN1Sequence
-import org.multipaz.asn1.ASN1Time
 import org.multipaz.util.toHex
-import kotlinx.datetime.Clock
-import kotlinx.datetime.Instant
-import kotlinx.datetime.toKotlinInstant
+import kotlin.time.Clock
+import kotlin.time.Instant
 import kotlinx.io.bytestring.ByteStringBuilder
-import org.bouncycastle.asn1.x500.X500Name as bcX500Name
-import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder
-import org.bouncycastle.jcajce.spec.XDHParameterSpec
-import org.bouncycastle.jce.provider.BouncyCastleProvider
-import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder
-import java.io.File
-import java.math.BigInteger
-import java.security.KeyPair
-import java.security.KeyPairGenerator
-import java.security.Security
-import java.security.spec.ECGenParameterSpec
-import java.util.Date
-import java.util.concurrent.TimeUnit
+import org.multipaz.testUtilSetupCryptoProvider
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
-import kotlin.time.Duration.Companion.days
 import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.seconds
+import kotlin.time.toKotlinInstant
 
 class X509CertTestsJvm {
-
     @BeforeTest
-    fun setup() {
-        Security.insertProviderAt(BouncyCastleProvider(), 1)
-    }
+    fun setup() = testUtilSetupCryptoProvider()
 
     // This is Maryland's IACA certificate (IACA_Root_2024.cer) downloaded from
     //
@@ -102,13 +86,17 @@ A01EUDAKBggqhkjOPQQDAgNIADBFAiEAnX3+E4E5dQ+5G1rmStJTW79ZAiDTabyL
     }
 
     // Checks that the Java X509Certificate.verify() works with certificates created by X509Cert.Builder
-    private fun testJavaCertSignedWithCurve(curve: EcCurve) {
+    private fun testJavaCertSignedWithCurve(curve: EcCurve) = runTest {
+        // TODO: use assumeTrue() when available in kotlin-test
+        if (!Crypto.supportedCurves.contains(curve)) {
+            println("Curve $curve not supported on platform")
+            return@runTest
+        }
         val key = Crypto.createEcPrivateKey(curve)
         val now = Instant.fromEpochSeconds(Clock.System.now().epochSeconds)
         val cert = X509Cert.Builder(
             publicKey = key.publicKey,
-            signingKey = key,
-            signatureAlgorithm = key.curve.defaultSigningAlgorithm,
+            signingKey = AsymmetricKey.anonymous(key, key.curve.defaultSigningAlgorithm),
             serialNumber = ASN1Integer(1L),
             subject = X500Name.fromName("CN=Foobar"),
             issuer = X500Name.fromName("CN=Foobar"),
@@ -130,7 +118,7 @@ A01EUDAKBggqhkjOPQQDAgNIADBFAiEAnX3+E4E5dQ+5G1rmStJTW79ZAiDTabyL
     @Test fun testCertSignedWithCurve_ED448() = testJavaCertSignedWithCurve(EcCurve.ED448)
 
     @Test
-    fun testGenerateAndValidate() {
+    fun testGenerateAndValidate() = runTest {
         // OpenSSL does not believe certificates issued before this date (even if it recognizes it)
         val from = Instant.parse("1950-01-01T00:00:00Z")
 
@@ -150,8 +138,7 @@ A01EUDAKBggqhkjOPQQDAgNIADBFAiEAnX3+E4E5dQ+5G1rmStJTW79ZAiDTabyL
         val caCertificate =
             X509Cert.Builder(
                 publicKey = caKey.publicKey,
-                signingKey = caKey,
-                signatureAlgorithm = caKey.curve.defaultSigningAlgorithm,
+                signingKey = AsymmetricKey.anonymous(caKey, caKey.curve.defaultSigningAlgorithm),
                 serialNumber = ASN1Integer(112676L),
                 subject = X500Name.fromName("CN=TestCA"),
                 issuer = X500Name.fromName("CN=TestCA"),
@@ -166,8 +153,11 @@ A01EUDAKBggqhkjOPQQDAgNIADBFAiEAnX3+E4E5dQ+5G1rmStJTW79ZAiDTabyL
         val leafKey = Crypto.createEcPrivateKey(EcCurve.P256)
         val leafCertificate = X509Cert.Builder(
             publicKey = leafKey.publicKey,
-            signingKey = caKey,
-            signatureAlgorithm = caKey.curve.defaultSigningAlgorithm,
+            signingKey = AsymmetricKey.X509CertifiedExplicit(
+                privateKey = caKey,
+                certChain = X509CertChain(listOf(caCertificate)),
+                algorithm = caKey.curve.defaultSigningAlgorithm
+            ),
             serialNumber = ASN1Integer(1222682L),
             subject = X500Name.fromName("CN=TestLeaf"),
             issuer = caCertificate.subject,

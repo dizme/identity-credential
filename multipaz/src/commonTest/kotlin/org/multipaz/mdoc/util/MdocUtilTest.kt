@@ -15,6 +15,7 @@
  */
 package org.multipaz.mdoc.util
 
+import kotlinx.coroutines.test.runTest
 import org.multipaz.asn1.ASN1
 import org.multipaz.asn1.ASN1Integer
 import org.multipaz.asn1.OID
@@ -28,7 +29,6 @@ import org.multipaz.crypto.Crypto
 import org.multipaz.crypto.EcCurve
 import org.multipaz.crypto.X500Name
 import org.multipaz.mdoc.TestVectors
-import org.multipaz.mdoc.mso.MobileSecurityObjectParser
 import org.multipaz.mdoc.request.DeviceRequestParser
 import org.multipaz.mdoc.util.MdocUtil.calculateDigestsForNameSpace
 import org.multipaz.mdoc.util.MdocUtil.generateDocumentRequest
@@ -39,14 +39,19 @@ import org.multipaz.util.toHex
 import kotlinx.datetime.LocalDateTime
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toInstant
+import org.multipaz.crypto.AsymmetricKey
+import org.multipaz.crypto.X509CertChain
+import org.multipaz.mdoc.mso.MobileSecurityObject
 import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertTrue
 
 class MdocUtilTest {
     @Test
-    fun testGenerateIssuerNameSpaces() {
+    fun testGenerateIssuerNameSpaces() = runTest {
         val nameSpacedData = NameSpacedData.Builder()
             .putEntryString("ns1", "foo1", "bar1")
             .putEntryString("ns1", "foo2", "bar2")
@@ -229,7 +234,7 @@ class MdocUtilTest {
     }
 
     @Test
-    fun testGetDigestsForNameSpaceInTestVectors() {
+    fun testGetDigestsForNameSpaceInTestVectors() = runTest {
         val deviceResponse = Cbor.decode(
             TestVectors.ISO_18013_5_ANNEX_D_DEVICE_RESPONSE.fromHex()
         )
@@ -237,10 +242,8 @@ class MdocUtilTest {
         val issuerSigned = documentDataItem["issuerSigned"]
         val issuerAuthDataItem = issuerSigned["issuerAuth"]
         val (_, _, _, payload) = issuerAuthDataItem.asCoseSign1
-        val mobileSecurityObject = Cbor.decode(payload!!)
-            .asTaggedEncodedCbor
-        val encodedMobileSecurityObject = Cbor.encode(mobileSecurityObject)
-        val mso = MobileSecurityObjectParser(encodedMobileSecurityObject).parse()
+        val mobileSecurityObject = Cbor.decode(payload!!).asTaggedEncodedCbor
+        val mso = MobileSecurityObject.fromDataItem(mobileSecurityObject)
         val nameSpaces = issuerSigned["nameSpaces"]
         val arrayOfIssuerSignedItemBytes = nameSpaces["org.iso.18013.5.1"].asArray
         val issuerNamespacesForMdlNamespace: MutableList<ByteArray> = ArrayList()
@@ -254,7 +257,7 @@ class MdocUtilTest {
             issuerNameSpacesFromTestVector,
             Algorithm.SHA256
         )
-        val digestsListedInMsoInTestVector = mso.getDigestIDs("org.iso.18013.5.1")
+        val digestsListedInMsoInTestVector = mso.valueDigests["org.iso.18013.5.1"]!!
 
         // Note: Because of selective disclosure, the response doesn't contain all the data
         // elements listed in the MSO... and we can only test what's in the response. So we
@@ -262,13 +265,13 @@ class MdocUtilTest {
         //
         for (digestId in digestsCalculatedFromResponseInTestVector.keys) {
             val calculatedDigest = digestsCalculatedFromResponseInTestVector[digestId]
-            val digestInMso = digestsListedInMsoInTestVector!![digestId]
+            val digestInMso = digestsListedInMsoInTestVector[digestId]!!.toByteArray()
             assertContentEquals(calculatedDigest, digestInMso)
         }
     }
 
     @Test
-    fun testGenerateDocumentRequest() {
+    fun testGenerateDocumentRequest() = runTest {
         val encodedSessionTranscriptBytes =
             TestVectors.ISO_18013_5_ANNEX_D_SESSION_TRANSCRIPT_BYTES.fromHex()
         val encodedSessionTranscript = Cbor.encode(
@@ -300,10 +303,10 @@ class MdocUtilTest {
 
     // Checks the correct extensions are present and that they are formatted correctly.
     @Test
-    fun testGenerateIacaCertificate() {
+    fun testGenerateIacaCertificate() = runTest {
         val iacaKey = Crypto.createEcPrivateKey(EcCurve.P384)
         val iacaCert = MdocUtil.generateIacaCertificate(
-            iacaKey = iacaKey,
+            iacaKey = AsymmetricKey.anonymous(iacaKey),
             subject = X500Name.fromName("CN=TEST IACA Certificate,C=XG-US,ST=MA"),
             serial = ASN1Integer(1),
             validFrom = LocalDateTime(2024, 1, 1, 0, 0, 0, 0).toInstant(TimeZone.UTC),
@@ -349,10 +352,10 @@ class MdocUtilTest {
     }
 
     @Test
-    fun testGenerateDsCertificate() {
+    fun testGenerateDsCertificate() = runTest {
         val iacaKey = Crypto.createEcPrivateKey(EcCurve.P384)
         val iacaCert = MdocUtil.generateIacaCertificate(
-            iacaKey = iacaKey,
+            iacaKey = AsymmetricKey.anonymous(iacaKey),
             subject = X500Name.fromName("CN=TEST IACA Certificate,C=XG-US,ST=MA"),
             serial = ASN1Integer(1),
             validFrom = LocalDateTime(2024, 1, 1, 0, 0, 0, 0).toInstant(TimeZone.UTC),
@@ -362,8 +365,10 @@ class MdocUtilTest {
         )
         val dsKey = Crypto.createEcPrivateKey(EcCurve.P384)
         val dsCert = MdocUtil.generateDsCertificate(
-            iacaCert = iacaCert,
-            iacaKey = iacaKey,
+            iacaKey = AsymmetricKey.X509CertifiedExplicit(
+                privateKey = iacaKey,
+                certChain = X509CertChain(listOf(iacaCert))
+            ),
             dsKey = dsKey.publicKey,
             subject = X500Name.fromName("CN=TEST DS Certificate,C=XG-US,ST=MA"),
             serial = ASN1Integer(1),
@@ -392,5 +397,101 @@ class MdocUtilTest {
             dsCert.getExtensionValue(OID.X509_EXTENSION_CRL_DISTRIBUTION_POINTS.oid)!!,
             iacaCert.getExtensionValue(OID.X509_EXTENSION_CRL_DISTRIBUTION_POINTS.oid)!!
         )
+    }
+
+    @Test
+    fun testGenerateReaderAuthCertificate() = runTest {
+        val readerRootKey = Crypto.createEcPrivateKey(EcCurve.P384)
+        val rootCert = MdocUtil.generateReaderRootCertificate(
+            readerRootKey = AsymmetricKey.anonymous(readerRootKey),
+            subject = X500Name.fromName("CN=TEST Reader Root,C=XG-US,ST=MA"),
+            serial = ASN1Integer(1),
+            validFrom = LocalDateTime(2024, 1, 1, 0, 0, 0, 0).toInstant(TimeZone.UTC),
+            validUntil = LocalDateTime(2029, 1, 1, 0, 0, 0, 0).toInstant(TimeZone.UTC),
+            crlUrl = "http://www.example.com/issuer/crl"
+        )
+        val readerKey = Crypto.createEcPrivateKey(EcCurve.P384)
+        val readerCert = MdocUtil.generateReaderCertificate(
+            readerRootKey = AsymmetricKey.X509CertifiedExplicit(
+                privateKey = readerRootKey,
+                certChain = X509CertChain(listOf(rootCert))
+            ),
+            readerKey = readerKey.publicKey,
+            subject = X500Name.fromName("CN=TEST Reader Certificate,C=XG-US,ST=MA"),
+            serial = ASN1Integer(1),
+            validFrom = LocalDateTime(2024, 1, 1, 0, 0, 0, 0).toInstant(TimeZone.UTC),
+            validUntil = LocalDateTime(2029, 1, 1, 0, 0, 0, 0).toInstant(TimeZone.UTC),
+        )
+        assertEquals(
+            "BIT STRING (7 bit) 0000011",
+            ASN1.print(ASN1.decode(rootCert.getExtensionValue(
+                OID.X509_EXTENSION_KEY_USAGE.oid)!!)!!).trim()
+        )
+        assertEquals(
+            """
+            SEQUENCE (2 elem)
+              BOOLEAN true
+              INTEGER 0
+            """.trimIndent(),
+            ASN1.print(ASN1.decode(rootCert.getExtensionValue(
+                OID.X509_EXTENSION_BASIC_CONSTRAINTS.oid)!!)!!).trim()
+        )
+        assertContentEquals(
+            readerCert.getExtensionValue(OID.X509_EXTENSION_CRL_DISTRIBUTION_POINTS.oid)!!,
+            rootCert.getExtensionValue(OID.X509_EXTENSION_CRL_DISTRIBUTION_POINTS.oid)!!
+        )
+        assertEquals(
+            """
+            SEQUENCE (1 elem)
+              OBJECT IDENTIFIER 1.0.18013.5.1.6 Mobile Driving Licence (mDL) Reader Auth
+            """.trimIndent(),
+            ASN1.print(ASN1.decode(readerCert.getExtensionValue(
+                OID.X509_EXTENSION_EXTENDED_KEY_USAGE.oid)!!)!!).trim()
+        )
+        assertEquals(
+            "BIT STRING (1 bit) 1",
+            ASN1.print(ASN1.decode(readerCert.getExtensionValue(
+                OID.X509_EXTENSION_KEY_USAGE.oid)!!)!!).trim()
+        )
+    }
+
+    @Test
+    fun mdocVersionParsing() {
+        assertEquals(Pair(1, 0), "1.0".parseMdocVersion())
+        assertEquals(Pair(1, 1), "1.1".parseMdocVersion())
+        assertEquals(Pair(3, 10), "3.10".parseMdocVersion())
+
+        assertEquals(
+            "Expected version string '1.0.0' to only have two components",
+            assertFailsWith(IllegalArgumentException::class) {
+                val parsed = "1.0.0".parseMdocVersion()
+            }.message
+        )
+
+        assertEquals(
+            "Expected first component of 'a.1' to be an integer",
+            assertFailsWith(IllegalArgumentException::class) {
+                val parsed = "a.1".parseMdocVersion()
+            }.message
+        )
+
+        assertEquals(
+            "Expected second component of '1.a' to be an integer",
+            assertFailsWith(IllegalArgumentException::class) {
+                val parsed = "1.a".parseMdocVersion()
+            }.message
+        )
+    }
+
+    @Test
+    fun mdocVersionCompare() {
+        assertTrue("1.0".mdocVersionCompareTo("1.1") < 0)
+        assertTrue("1.1".mdocVersionCompareTo("1.0") > 0)
+
+        assertTrue("1.0".mdocVersionCompareTo("1.0") == 0)
+        assertTrue("1.2".mdocVersionCompareTo("1.2") == 0)
+
+        assertTrue("1.10".compareTo("1.2") < 0)
+        assertTrue("1.10".mdocVersionCompareTo("1.2") > 0)
     }
 }

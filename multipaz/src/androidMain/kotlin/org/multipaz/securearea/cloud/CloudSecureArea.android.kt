@@ -1,34 +1,21 @@
 package org.multipaz.securearea.cloud
 
-import org.multipaz.context.applicationContext
 import org.multipaz.securearea.AndroidKeystoreCreateKeySettings
 import org.multipaz.securearea.AndroidKeystoreSecureArea
 import org.multipaz.securearea.UserAuthenticationType
 import org.multipaz.securearea.CreateKeySettings
 import org.multipaz.securearea.SecureArea
-import org.multipaz.securearea.SecureAreaProvider
 import org.multipaz.storage.Storage
-import org.multipaz.storage.android.AndroidStorage
 import kotlinx.io.bytestring.ByteString
 import org.multipaz.crypto.Algorithm
-import java.io.File
+import kotlin.time.Duration.Companion.seconds
 
-
-private val androidStorage: AndroidStorage by lazy {
-    AndroidStorage(
-        File(applicationContext.dataDir.path, "storage.db").absolutePath
-    )
-}
-
-private val androidKeystoreSecureAreaProvider = SecureAreaProvider {
-    AndroidKeystoreSecureArea.create(androidStorage)
-}
 
 internal actual suspend fun cloudSecureAreaGetPlatformSecureArea(
     storage: Storage,
     partitionId: String,
 ): SecureArea {
-    return AndroidKeystoreSecureArea.create(androidStorage)
+    return AndroidKeystoreSecureArea.create(storage, "_csa_$partitionId")
 }
 
 internal actual fun cloudSecureAreaGetPlatformSecureAreaCreateKeySettings(
@@ -60,7 +47,7 @@ internal actual fun cloudSecureAreaGetPlatformSecureAreaCreateKeySettings(
         .setAlgorithm(algorithm)
         .setUserAuthenticationRequired(
             required = userAuthenticationRequired,
-            timeoutMillis = 0,
+            timeout = 0.seconds,
             userAuthenticationTypes = androidUserAuthTypes
         )
         .build()

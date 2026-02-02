@@ -7,6 +7,7 @@ import org.multipaz.cbor.Cbor
 import org.multipaz.cbor.CborArray
 import org.multipaz.cbor.CborMap
 import org.multipaz.cbor.DataItem
+import org.multipaz.cbor.Simple
 import org.multipaz.cbor.Tstr
 import org.multipaz.cbor.toDataItem
 import org.multipaz.rpc.backend.BackendEnvironment
@@ -83,15 +84,15 @@ class RpcDispatcherLocal private constructor(
         }
     }
 
-    fun decodeStateParameter(stateParameter: DataItem): Any {
+    suspend fun decodeStateParameter(stateParameter: DataItem): Any {
         val stateArray = stateParameter.asArray
         val item = targetMap[stateArray[0].asTstr]!!
         return (item.stateDeserializer)(Cbor.decode(cipher.decrypt(stateArray[1].asBstr)))
     }
 
-    fun encodeStateResult(result: Any): DataItem {
+    suspend fun encodeStateResult(result: Any): DataItem {
         val target = stateMap[result::class]
-            ?: throw IllegalStateException("${result::class.qualifiedName} was not registered")
+            ?: throw IllegalStateException("${result::class.simpleName} was not registered")
         return CborArray(mutableListOf(
             Tstr(target),
             Bstr(cipher.encrypt(Cbor.encode(targetMap[target]!!.serialize(result))))
@@ -136,42 +137,74 @@ class RpcDispatcherLocal private constructor(
                 } else {
                     Cbor.decode(decryptedState)
                 })
-            try {
-                val extraContext = if (authCheckRequired) {
+            if (authCheckRequired) {
+                val authContext = try {
                     if (state !is RpcAuthInspector) {
                         throw RpcAuthException(
-                            message = "${state::class.qualifiedName} must implement RpcAuthChecker",
+                            message = "${state::class.simpleName} must implement RpcAuthChecker",
                             rpcAuthError = RpcAuthError.NOT_SUPPORTED
                         )
                     }
                     state.authCheck(target, method, args["payload"] as Bstr, args)
-                } else {
-                    if (state is RpcAuthInspector) {
-                        throw RpcAuthException(
-                            message = "${state::class.qualifiedName} requires authorization",
-                            rpcAuthError = RpcAuthError.REQUIRED
-                        )
-                    }
-                    null
+                } catch (err: RpcAuthNonceException) {
+                    val newStateBlob = stateDataItem(cipher, argList[0], decryptedState, state)
+                    return listOf(
+                        newStateBlob,
+                        Bstr(err.nonce.toByteArray()),
+                        RpcReturnCode.NONCE_RETRY.ordinal.toDataItem()
+                    )
+                } catch (err: CancellationException) {
+                    throw err
+                } catch (err: Throwable) {
+                    val newStateBlob = stateDataItem(cipher, argList[0], decryptedState, state)
+                    return owner.exceptionMap.exceptionReturn(newStateBlob, err)
                 }
-                val result = if (extraContext != null) {
-                    withContext(extraContext) {
+                val nextNonce = authContext[RpcAuthContext.Key]?.nextNonce
+                try {
+                    val result = withContext(authContext) {
                         handler(owner, state, argList.subList(1, argList.size))
                     }
-                } else {
-                    handler(owner, state, argList.subList(1, argList.size))
+                    val newStateBlob = stateDataItem(cipher, argList[0], decryptedState, state)
+                    val newNonce = if (nextNonce == null) {
+                        Simple.NULL
+                    } else {
+                        Bstr(nextNonce.toByteArray())
+                    }
+                    return listOf(
+                        newStateBlob,
+                        newNonce,
+                        RpcReturnCode.RESULT.ordinal.toDataItem(),
+                        result
+                    )
+                } catch (err: CancellationException) {
+                    throw err
+                } catch (err: Throwable) {
+                    val newStateBlob = stateDataItem(cipher, argList[0], decryptedState, state)
+                    return owner.exceptionMap.exceptionReturn(
+                        newStateBlob, err, nextNonce)
                 }
-                val newStateBlob = stateDataItem(cipher, argList[0], decryptedState, state)
-                return listOf(newStateBlob, RpcReturnCode.RESULT.ordinal.toDataItem(), result)
-            } catch (err: CancellationException) {
-                throw err
-            } catch (err: Throwable) {
-                val newStateBlob = stateDataItem(cipher, argList[0], decryptedState, state)
-                return owner.exceptionMap.exceptionReturn(newStateBlob, err)
+            } else {
+                if (state is RpcAuthInspector) {
+                    throw RpcAuthException(
+                        message = "${state::class.simpleName} requires authorization",
+                        rpcAuthError = RpcAuthError.REQUIRED
+                    )
+                }
+                try {
+                    val result = handler(owner, state, argList.subList(1, argList.size))
+                    val newStateBlob = stateDataItem(cipher, argList[0], decryptedState, state)
+                    return listOf(newStateBlob, Simple.NULL,
+                        RpcReturnCode.RESULT.ordinal.toDataItem(), result)
+                } catch (err: CancellationException) {
+                    throw err
+                } catch (err: Throwable) {
+                    val newStateBlob = stateDataItem(cipher, argList[0], decryptedState, state)
+                    return owner.exceptionMap.exceptionReturn(newStateBlob, err)
+                }
             }
         }
 
-        private fun stateDataItem(
+        private suspend fun stateDataItem(
             cipher: SimpleCipher,
             previous: DataItem,
             previousDecryptedState: ByteArray,

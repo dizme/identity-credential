@@ -17,8 +17,6 @@ package org.multipaz.mdoc.response
 
 import org.multipaz.cbor.Bstr
 import org.multipaz.cbor.Cbor
-import org.multipaz.cbor.CborArray
-import org.multipaz.cbor.CborMap
 import org.multipaz.cbor.DataItem
 import org.multipaz.cbor.RawCbor
 import org.multipaz.cbor.Tagged
@@ -33,9 +31,10 @@ import org.multipaz.document.NameSpacedData
 import org.multipaz.crypto.Algorithm
 import org.multipaz.crypto.Crypto
 import org.multipaz.crypto.EcPublicKey
+import org.multipaz.crypto.Hkdf
 import org.multipaz.mdoc.issuersigned.IssuerNamespaces
 import org.multipaz.securearea.KeyLockedException
-import org.multipaz.securearea.KeyUnlockData
+import org.multipaz.prompt.Reason
 import org.multipaz.securearea.SecureArea
 
 /**
@@ -47,6 +46,7 @@ import org.multipaz.securearea.SecureArea
  * @param encodedSessionTranscript bytes of `SessionTranscript` CBOR as per ISO/IEC 18013-5:2021
  * section 9.1.5.1.
  */
+@Deprecated(message = "Deprecated, use DeviceResponse instead")
 class DocumentGenerator
     (
     private val docType: String,
@@ -92,7 +92,7 @@ class DocumentGenerator
         dataElements: NameSpacedData,
         secureArea: SecureArea,
         keyAlias: String,
-        keyUnlockData: KeyUnlockData?,
+        unlockReason: Reason,
         useMac: Boolean,
         eReaderKey: EcPublicKey?
     ) = apply {
@@ -128,19 +128,19 @@ class DocumentGenerator
                     false,
                     mapOf(),
                     mapOf(),
-                    keyUnlockData
+                    unlockReason
                 ).toDataItem()
             )
         } else {
             val sharedSecret = secureArea.keyAgreement(
                 keyAlias,
                 eReaderKey!!,
-                keyUnlockData
+                unlockReason
             )
             val sessionTranscriptBytes = Cbor.encode(Tagged(24, Bstr(encodedSessionTranscript)))
             val salt = Crypto.digest(Algorithm.SHA256, sessionTranscriptBytes)
             val info = "EMacKey".encodeToByteArray()
-            val eMacKey = Crypto.hkdf(Algorithm.HMAC_SHA256, sharedSecret, salt, info, 32)
+            val eMacKey = Hkdf.deriveKey(Algorithm.HMAC_SHA256, sharedSecret, salt, info, 32)
             encodedDeviceMac = Cbor.encode(
                 Cose.coseMac0(
                     Algorithm.HMAC_SHA256,
@@ -192,13 +192,13 @@ class DocumentGenerator
         dataElements: NameSpacedData,
         secureArea: SecureArea,
         keyAlias: String,
-        keyUnlockData: KeyUnlockData?
+        unlockReason: Reason
     ) = apply {
         setDeviceNamespaces(
             dataElements,
             secureArea,
             keyAlias,
-            keyUnlockData,
+            unlockReason,
             useMac = false,
             eReaderKey = null
         )
@@ -222,14 +222,14 @@ class DocumentGenerator
         dataElements: NameSpacedData,
         secureArea: SecureArea,
         keyAlias: String,
-        keyUnlockData: KeyUnlockData?,
-        eReaderKey: EcPublicKey
+        eReaderKey: EcPublicKey,
+        unlockReason: Reason = Reason.Unspecified
     ) = apply {
         setDeviceNamespaces(
             dataElements,
             secureArea,
             keyAlias,
-            keyUnlockData,
+            unlockReason,
             useMac = true,
             eReaderKey = eReaderKey
         )

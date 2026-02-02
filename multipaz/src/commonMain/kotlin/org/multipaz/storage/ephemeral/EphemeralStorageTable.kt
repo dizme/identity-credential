@@ -5,27 +5,28 @@ import org.multipaz.cbor.Cbor
 import org.multipaz.cbor.CborArray
 import org.multipaz.storage.KeyExistsStorageException
 import org.multipaz.storage.NoRecordStorageException
-import org.multipaz.storage.Storage
 import org.multipaz.storage.base.BaseStorageTable
 import org.multipaz.storage.StorageTableSpec
 import org.multipaz.util.toBase64Url
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.datetime.Clock
-import kotlinx.datetime.Instant
+import kotlin.time.Clock
+import kotlin.time.Instant
 import kotlinx.io.bytestring.ByteString
 import kotlinx.io.bytestring.ByteStringBuilder
 import kotlin.math.abs
 import kotlin.random.Random
 
 internal class EphemeralStorageTable(
-    override val storage: Storage,
+    override val storage: EphemeralStorage,
     spec: StorageTableSpec,
     private val clock: Clock
 ): BaseStorageTable(spec) {
 
     private val lock = Mutex()
-    private var storedData = mutableListOf<EphemeralStorageItem>()
+    private val storedData = storage.storage.getOrPut(spec.name.lowercase()) {
+        mutableListOf()
+    }
     private var earliestExpiration: Instant = Instant.DISTANT_FUTURE
 
     override suspend fun get(key: String, partitionId: String?): ByteString? {
@@ -72,7 +73,7 @@ internal class EphemeralStorageTable(
                         return@withLock keyToUse
                     }
                     throw KeyExistsStorageException(
-                        "Record with ${recordDescription(key!!, partitionId)} already exists"
+                        "Record with ${recordDescription(key, partitionId)} already exists"
                     )
                 }
             }
@@ -150,7 +151,20 @@ internal class EphemeralStorageTable(
         partitionId: String?,
         afterKey: String?,
         limit: Int
-    ): List<String> {
+    ) = enumerateImpl(partitionId, afterKey, limit) { it.key }
+
+    override suspend fun enumerateWithData(
+        partitionId: String?,
+        afterKey: String?,
+        limit: Int
+    ) = enumerateImpl(partitionId, afterKey, limit) { Pair(it.key, it.value) }
+
+    private suspend fun<T> enumerateImpl(
+        partitionId: String?,
+        afterKey: String?,
+        limit: Int,
+        extractor: (EphemeralStorageItem) -> T
+    ): List<T> {
         checkPartition(partitionId)
         checkLimit(limit)
         if (limit == 0) {
@@ -164,18 +178,18 @@ internal class EphemeralStorageTable(
                 abs(storedData.binarySearch(EphemeralStorageItem(partitionId, afterKey)) + 1)
             }
             val now = clock.now()
-            val keyList = mutableListOf<String>()
-            while (keyList.size < limit && index < storedData.size) {
+            val results = mutableListOf<T>()
+            while (results.size < limit && index < storedData.size) {
                 val data = storedData[index]
                 if (data.partitionId != partitionId) {
                     break
                 }
                 if (!data.expired(now)) {
-                    keyList.add(data.key)
+                    results.add(extractor(data))
                 }
                 index++
             }
-            keyList.toList()
+            results.toList()
         }
     }
 
@@ -200,7 +214,8 @@ internal class EphemeralStorageTable(
                         unexpired.add(item)
                     }
                 }
-                storedData = unexpired
+                storedData.clear()
+                storedData.addAll(unexpired)
             }
         }
     }

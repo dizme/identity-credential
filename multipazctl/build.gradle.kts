@@ -1,19 +1,18 @@
 plugins {
     id("java-library")
     id("org.jetbrains.kotlin.jvm")
-    alias(libs.plugins.buildconfig)
+    alias(libs.plugins.ktor)
 }
 
-val projectVersionCode: Int by rootProject.extra
-val projectVersionName: String by rootProject.extra
-
-buildConfig {
-    packageName("org.multipaz.multipazctl")
-    buildConfigField("VERSION", projectVersionName)
+application {
+    mainClass.set("org.multipaz.multipazctl.MultipazCtl")
 }
 
 kotlin {
     jvmToolchain(17)
+    compilerOptions {
+        optIn.add("kotlin.time.ExperimentalTime")
+    }
 }
 
 java {
@@ -34,4 +33,12 @@ tasks.register("runMultipazCtl", JavaExec::class) {
     description = "Invoke multipazctl"
     classpath = sourceSets["main"].runtimeClasspath
     mainClass = "org.multipaz.multipazctl.MultipazCtl"
+    workingDir = project.rootDir
+}
+
+ktor {
+}
+
+subprojects {
+	apply(plugin = "org.jetbrains.dokka")
 }

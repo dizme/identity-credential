@@ -11,8 +11,9 @@ import io.ktor.client.request.setBody
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
-import kotlinx.datetime.Instant
+import kotlin.time.Instant
 import kotlinx.io.bytestring.ByteString
 import kotlinx.io.bytestring.buildByteString
 import kotlinx.io.bytestring.decodeToString
@@ -21,6 +22,7 @@ import org.multipaz.asn1.OID
 import org.multipaz.cbor.Cbor
 import org.multipaz.cbor.annotation.CborSerializable
 import org.multipaz.cbor.buildCborArray
+import org.multipaz.cose.CoseKey
 import org.multipaz.crypto.Algorithm
 import org.multipaz.crypto.Crypto
 import org.multipaz.crypto.EcCurve
@@ -32,13 +34,18 @@ import org.multipaz.crypto.X509CertChain
 import org.multipaz.device.AssertionNonce
 import org.multipaz.device.DeviceCheck
 import org.multipaz.prompt.requestPassphrase
+import org.multipaz.securearea.BatchCreateKeyResult
 import org.multipaz.securearea.CreateKeySettings
 import org.multipaz.securearea.KeyAttestation
+import org.multipaz.securearea.KeyInfo
 import org.multipaz.securearea.KeyLockedException
 import org.multipaz.securearea.KeyUnlockData
-import org.multipaz.securearea.KeyUnlockInteractive
 import org.multipaz.securearea.PassphraseConstraints
 import org.multipaz.securearea.SecureArea
+import org.multipaz.securearea.cloud.CloudSecureAreaProtocol.BatchCreateKeyRequest0
+import org.multipaz.securearea.cloud.CloudSecureAreaProtocol.BatchCreateKeyRequest1
+import org.multipaz.securearea.cloud.CloudSecureAreaProtocol.BatchCreateKeyResponse0
+import org.multipaz.securearea.cloud.CloudSecureAreaProtocol.BatchCreateKeyResponse1
 import org.multipaz.securearea.cloud.CloudSecureAreaProtocol.CreateKeyRequest0
 import org.multipaz.securearea.cloud.CloudSecureAreaProtocol.CreateKeyRequest1
 import org.multipaz.securearea.cloud.CloudSecureAreaProtocol.CreateKeyResponse0
@@ -69,6 +76,15 @@ import org.multipaz.storage.StorageTable
 import org.multipaz.storage.StorageTableSpec
 import org.multipaz.util.Logger
 import org.multipaz.util.appendUInt32
+import org.multipaz.certext.MultipazExtension
+import org.multipaz.certext.fromCbor
+import org.multipaz.crypto.Hkdf
+import org.multipaz.prompt.PassphraseEvaluation
+import org.multipaz.prompt.PromptDismissedException
+import org.multipaz.prompt.PromptModel
+import org.multipaz.prompt.PromptModelNotAvailableException
+import org.multipaz.securearea.KeyUnlockDataProvider
+import org.multipaz.prompt.Reason
 import kotlin.random.Random
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
@@ -122,7 +138,7 @@ open class CloudSecureArea protected constructor(
     private val supportedAlgorithms_: List<Algorithm> by lazy {
         // TODO: get from server to support configurations where only a subset of algorithms are supported.
         Algorithm.entries.filter {
-            it.fullySpecified
+            it.fullySpecified && it.curve != null
         }
     }
 
@@ -298,7 +314,7 @@ open class CloudSecureArea protected constructor(
     /**
      * The [PassphraseConstraints] configured at registration time.
      *
-     * @return the [PassphraseConstraints] passed to to the [register] method.
+     * @return the [PassphraseConstraints] passed to the [register] method.
      * @throws IllegalStateException if not registered with a Cloud Secure Area instance.
      */
     suspend fun getPassphraseConstraints(): PassphraseConstraints {
@@ -319,7 +335,7 @@ open class CloudSecureArea protected constructor(
         skDevice = null
     }
 
-    private fun validateCloudBindingKeyAttestation(
+    private suspend fun validateCloudBindingKeyAttestation(
         attestation: X509CertChain,
         expectedDeviceChallenge: ByteArray,
         onAuthorizeRootOfTrust: (cloudSecureAreaRootOfTrust: X509Cert) -> Boolean,
@@ -333,11 +349,12 @@ open class CloudSecureArea protected constructor(
             throw CloudException("Root X509Cert not authorized by app")
         }
 
-        val decodedAttestation = CloudAttestationExtension.decode(ByteString(
+        val decodedAttestation = MultipazExtension.fromCbor(
             attestation.certificates[0]
-                .getExtensionValue(OID.X509_EXTENSION_MULTIPAZ_KEY_ATTESTATION.oid)!!
-        ))
-        check(decodedAttestation.challenge == ByteString(expectedDeviceChallenge)) {
+                .getExtensionValue(OID.X509_EXTENSION_MULTIPAZ_EXTENSION.oid)!!
+        )
+        check(decodedAttestation.cloudKeyAttestation != null &&
+                decodedAttestation.cloudKeyAttestation.challenge == ByteString(expectedDeviceChallenge)) {
             "Challenge in attestation does match what's expected"
         }
     }
@@ -363,8 +380,7 @@ open class CloudSecureArea protected constructor(
             )
             val signature = platformSecureArea.sign(
                 "DeviceBindingKey",
-                dataToSign,
-                null
+                dataToSign
             )
             val deviceAssertion = DeviceCheck.generateAssertion(
                 secureArea = platformSecureArea,
@@ -409,14 +425,14 @@ open class CloudSecureArea protected constructor(
                     }
                 )
             )
-            skDevice = Crypto.hkdf(
+            skDevice = Hkdf.deriveKey(
                 Algorithm.HMAC_SHA256,
                 zab,
                 salt,
                 "SKDevice".encodeToByteArray(),
                 32
             )
-            skCloud = Crypto.hkdf(
+            skCloud = Hkdf.deriveKey(
                 Algorithm.HMAC_SHA256,
                 zab,
                 salt,
@@ -431,7 +447,7 @@ open class CloudSecureArea protected constructor(
         }
     }
 
-    private fun encryptToCloud(messagePlaintext: ByteArray): ByteArray {
+    private suspend fun encryptToCloud(messagePlaintext: ByteArray): ByteArray {
         // The IV and these constants are specified in ISO/IEC 18013-5:2021 clause 9.1.1.5.
         val iv = buildByteString {
             appendUInt32(0x00000000)
@@ -442,7 +458,7 @@ open class CloudSecureArea protected constructor(
         return Crypto.encrypt(Algorithm.A128GCM, skDevice!!, iv, messagePlaintext)
     }
 
-    private fun decryptFromCloud(messageCiphertext: ByteArray): ByteArray {
+    private suspend fun decryptFromCloud(messageCiphertext: ByteArray): ByteArray {
         val iv = buildByteString {
             appendUInt32(0x00000000)
             val ivIdentifier = 0x00000000
@@ -498,7 +514,21 @@ open class CloudSecureArea protected constructor(
             createKeySettings
         } else {
             // Use default settings if user passed in a generic SecureArea.CreateKeySettings.
-            CloudCreateKeySettings.Builder(createKeySettings.nonce).build()
+            val builder = CloudCreateKeySettings.Builder(createKeySettings.nonce)
+                .setUserAuthenticationRequired(
+                    required = createKeySettings.userAuthenticationRequired,
+                    types = setOf(
+                        CloudUserAuthType.PASSCODE,
+                        CloudUserAuthType.BIOMETRIC,
+                    )
+                )
+            if (createKeySettings.validFrom != null && createKeySettings.validUntil != null) {
+                builder.setValidityPeriod(
+                    validFrom = createKeySettings.validFrom,
+                    validUntil = createKeySettings.validUntil
+                )
+            }
+            builder.build()
         }
         setupE2EE(false)
         try {
@@ -553,6 +583,99 @@ open class CloudSecureArea protected constructor(
         }
     }
 
+    override suspend fun batchCreateKey(
+        numKeys: Int,
+        createKeySettings: CreateKeySettings
+    ): BatchCreateKeyResult {
+        val cSettings = if (createKeySettings is CloudCreateKeySettings) {
+            createKeySettings
+        } else {
+            // Use default settings if user passed in a generic SecureArea.CreateKeySettings.
+            CloudCreateKeySettings.Builder(createKeySettings.nonce)
+                .setUserAuthenticationRequired(
+                    required = createKeySettings.userAuthenticationRequired,
+                    types = setOf(
+                        CloudUserAuthType.PASSCODE,
+                        CloudUserAuthType.BIOMETRIC,
+                    )
+                )
+                .build()
+        }
+        setupE2EE(false)
+        try {
+            // Default for validFrom and validUntil is Jan 1, 1970 to Feb 7, 2106
+            var validFrom: Long = 0
+            var validUntil = Int.MAX_VALUE * 1000L * 2
+            if (cSettings.validFrom != null) {
+                validFrom = cSettings.validFrom.toEpochMilliseconds()
+            }
+            if (cSettings.validUntil != null) {
+                validUntil = cSettings.validUntil.toEpochMilliseconds()
+            }
+            val request0 = BatchCreateKeyRequest0(
+                cSettings.algorithm.name,
+                validFrom,
+                validUntil,
+                cSettings.passphraseRequired,
+                cSettings.userAuthenticationRequired,
+                CloudUserAuthType.encodeSet(cSettings.userAuthenticationTypes),
+                cSettings.attestationChallenge.toByteArray()
+            )
+            val response0 = CloudSecureAreaProtocol.Command.fromCbor(communicateE2EE(request0.toCbor())) as BatchCreateKeyResponse0
+            val newKeyAliases = mutableListOf<String>()
+            val localKeys = mutableListOf<CoseKey>()
+            val localKeyAttestations = mutableListOf<X509CertChain>()
+            repeat(numKeys) {
+                val newKeyAlias = storageTable.insert(
+                    key = null,
+                    partitionId = identifier,
+                    data = ByteString()
+                )
+                val localKeyInfo = platformSecureArea.createKey(
+                    alias = getLocalKeyAlias(newKeyAlias),
+                    createKeySettings = cloudSecureAreaGetPlatformSecureAreaCreateKeySettings(
+                        challenge = ByteString(response0.cloudChallenge),
+                        algorithm = Algorithm.ESP256,
+                        userAuthenticationRequired = cSettings.userAuthenticationRequired,
+                        userAuthenticationTypes = cSettings.userAuthenticationTypes
+                    )
+                )
+                localKeys.add(localKeyInfo.publicKey.toCoseKey())
+                if (localKeyInfo.attestation.certChain != null) {
+                    localKeyAttestations.add(localKeyInfo.attestation.certChain)
+                }
+                newKeyAliases.add(newKeyAlias)
+            }
+            val request1 = BatchCreateKeyRequest1(
+                localKeys,
+                localKeyAttestations,
+                response0.serverState
+            )
+            val response1 = CloudSecureAreaProtocol.Command.fromCbor(communicateE2EE(request1.toCbor())) as BatchCreateKeyResponse1
+            val keyInfos = mutableListOf<KeyInfo>()
+            var n = 0
+            for (newKeyAlias in newKeyAliases) {
+                storageTable.update(
+                    key = newKeyAlias,
+                    partitionId = identifier,
+                    data = ByteString(response1.serverStates[n])
+                )
+                val newKeyAttestation = X509CertChain(
+                    listOf(response1.remoteKeyAttestationLeafs[n]) + response1.commonCertChain.certificates
+                )
+                saveKeyMetadata(newKeyAlias, cSettings, newKeyAttestation)
+                keyInfos.add(getKeyInfo(newKeyAlias))
+                n++
+            }
+            return BatchCreateKeyResult(
+                keyInfos = keyInfos,
+                openid4vciKeyAttestationJws = response1.openid4vciKeyAttestationCompactSerialization
+            )
+        } catch (e: Exception) {
+            throw CloudException(e)
+        }
+    }
+
     override suspend fun deleteKey(alias: String) {
         platformSecureArea.deleteKey(getLocalKeyAlias(alias))
         storageTable.delete(
@@ -567,73 +690,43 @@ open class CloudSecureArea protected constructor(
 
     private suspend fun<T> interactionHelper(
         alias: String,
-        keyUnlockData: KeyUnlockData?,
+        unlockReason: Reason,
         op: suspend (unlockData: KeyUnlockData?) -> T,
     ): T {
-        if (keyUnlockData !is KeyUnlockInteractive) {
-            return op(keyUnlockData)
-        }
-        val cloudKeyUnlockData = CloudKeyUnlockData(this, alias)
-        do {
-            try {
-                return op(cloudKeyUnlockData)
-            } catch (e: CloudKeyLockedException) {
-                // TODO: translations
-                val defaultSubtitle = if (getPassphraseConstraints().requireNumerical) {
-                    "Enter the PIN associated with the document"
-                } else {
-                    "Enter the passphrase associated with the document"
+        return try {
+            op.invoke(null)
+        } catch (e: CloudKeyLockedException) {
+            when (e.reason) {
+                CloudKeyLockedException.Reason.WRONG_PASSPHRASE -> {
+                    val unlockDataProvider = currentCoroutineContext()[KeyUnlockDataProvider.Key]
+                        ?: DefaultKeyUnlockDataProvider
+                    // DefaultKeyUnlockDataProvider.getKeyUnlockData checks passphrase/PIN before
+                    // returning it here, so retry loop is internal to the provider. We expect
+                    // other providers to do the same, as we do not want to subject non-interactive
+                    // providers to handle repeated calls when unlock data fails to unlock the key.
+                    val unlockData = unlockDataProvider.getKeyUnlockData(
+                        secureArea = this,
+                        alias = alias,
+                        unlockReason = unlockReason
+                    )
+                    op.invoke(unlockData)
                 }
-                when (e.reason) {
-                    CloudKeyLockedException.Reason.WRONG_PASSPHRASE -> {
-                        cloudKeyUnlockData.passphrase = requestPassphrase(
-                            // TODO: translations
-                            title = keyUnlockData.title ?: "Verify it's you",
-                            subtitle = keyUnlockData.subtitle ?: defaultSubtitle,
-                            passphraseConstraints = getPassphraseConstraints(),
-                            passphraseEvaluator = { enteredPassphrase: String ->
-                                when (val result = checkPassphrase(enteredPassphrase)) {
-                                    CloudSecureAreaProtocol.RESULT_WRONG_PASSPHRASE -> {
-                                        if (getPassphraseConstraints().requireNumerical) {
-                                            "Wrong PIN entered. Try again"
-                                        } else {
-                                            "Wrong passphrase entered. Try again"
-                                        }
-                                    }
-                                    CloudSecureAreaProtocol.RESULT_TOO_MANY_PASSPHRASE_ATTEMPTS -> {
-                                        "Too many attempts. Try again later"
-                                    }
-                                    CloudSecureAreaProtocol.RESULT_OK -> {
-                                        null
-                                    }
-                                    else -> {
-                                        Logger.w(TAG, "Unexpected result $result when checking passphrase")
-                                        null
-                                    }
-                                }
-                            }
-                        )
-                        if (cloudKeyUnlockData.passphrase == null) {
-                            throw KeyLockedException("User canceled passphrase prompt")
-                        }
-                    }
-                    CloudKeyLockedException.Reason.USER_NOT_AUTHENTICATED -> {
-                        // This should never happen when using KeyUnlockInteractive...
-                        throw IllegalStateException("Unexpected reason USER_NOT_AUTHENTICATED")
-                    }
+                CloudKeyLockedException.Reason.USER_NOT_AUTHENTICATED -> {
+                    // This should never happen here...
+                    throw IllegalStateException("Unexpected reason USER_NOT_AUTHENTICATED")
                 }
             }
-        } while (true)
+        }
     }
 
     override suspend fun sign(
         alias: String,
         dataToSign: ByteArray,
-        keyUnlockData: KeyUnlockData?
+        unlockReason: Reason
     ): EcSignature {
         return interactionHelper(
             alias,
-            keyUnlockData,
+            unlockReason,
             op = { unlockData -> signNonInteractive(alias, dataToSign, unlockData) }
         )
     }
@@ -710,11 +803,11 @@ open class CloudSecureArea protected constructor(
     override suspend fun keyAgreement(
         alias: String,
         otherKey: EcPublicKey,
-        keyUnlockData: KeyUnlockData?
+        unlockReason: Reason
     ): ByteArray {
         return interactionHelper(
             alias,
-            keyUnlockData,
+            unlockReason,
             op = { unlockData -> keyAgreementNonInteractive(alias, otherKey, unlockData) }
         )
     }
@@ -851,7 +944,7 @@ open class CloudSecureArea protected constructor(
     }
 
     @CborSerializable(
-        schemaHash = "e5QGYoSzCKpW0SQLZYu6wxtVXu5da-t6VYzJQ18vSTQ"
+        schemaHash = "w-5iNr7XcEFY2B2L8dT64GO06QiTsDV87YdGHeocruI"
     )
     internal data class KeyMetadata(
         val algorithm: Algorithm,
@@ -863,6 +956,51 @@ open class CloudSecureArea protected constructor(
         val attestationCertChain: X509CertChain
     ) {
         companion object
+    }
+
+    private object DefaultKeyUnlockDataProvider: KeyUnlockDataProvider {
+        override suspend fun getKeyUnlockData(
+            secureArea: SecureArea,
+            alias: String,
+            unlockReason: Reason
+        ): KeyUnlockData {
+            check(secureArea is CloudSecureArea)
+            val unlockData = CloudKeyUnlockData(secureArea, alias)
+            val promptModel = try {
+                PromptModel.get()
+            } catch (_: PromptModelNotAvailableException) {
+                throw KeyLockedException("Key is locked and PromptModel is not available to unlock interactively")
+            }
+            val passphraseConstraints = secureArea.getPassphraseConstraints()
+            val humanReadable = promptModel.toHumanReadable(unlockReason, passphraseConstraints)
+            unlockData.passphrase = try {
+                promptModel.requestPassphrase(
+                    title = humanReadable.title,
+                    subtitle = humanReadable.subtitle,
+                    passphraseConstraints = passphraseConstraints,
+                    passphraseEvaluator = { enteredPassphrase: String ->
+                        when (val result = secureArea.checkPassphrase(enteredPassphrase)) {
+                            CloudSecureAreaProtocol.RESULT_WRONG_PASSPHRASE ->
+                                PassphraseEvaluation.TryAgain
+
+                            CloudSecureAreaProtocol.RESULT_TOO_MANY_PASSPHRASE_ATTEMPTS ->
+                                PassphraseEvaluation.TooManyAttempts
+
+                            CloudSecureAreaProtocol.RESULT_OK ->
+                                PassphraseEvaluation.OK
+
+                            else -> {
+                                Logger.w(TAG, "Unexpected result $result when checking passphrase")
+                                PassphraseEvaluation.OK
+                            }
+                        }
+                    }
+                )
+            } catch (_: PromptDismissedException) {
+                throw KeyLockedException("User canceled passphrase prompt")
+            }
+            return unlockData
+        }
     }
 
     // TODO: override batchCreateKey and implement server-side command to avoid roundtrips.

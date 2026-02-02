@@ -20,7 +20,7 @@ import org.multipaz.cbor.Cbor
 import org.multipaz.cbor.CborArray
 import org.multipaz.cbor.DataItem
 import org.multipaz.crypto.EcPublicKey
-import kotlinx.datetime.Instant
+import kotlin.time.Instant
 import org.multipaz.crypto.Algorithm
 
 /**
@@ -30,6 +30,7 @@ import org.multipaz.crypto.Algorithm
  *
  * @param encodedMobileSecurityObject The bytes of `MobileSecurityObject`.
  */
+@Deprecated(message = "Deprecated, use MobileSecurityObject instead")
 class MobileSecurityObjectParser(
     private var encodedMobileSecurityObject: ByteArray
 ) {

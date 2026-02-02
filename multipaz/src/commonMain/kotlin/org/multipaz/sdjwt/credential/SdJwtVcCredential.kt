@@ -1,10 +1,16 @@
 package org.multipaz.sdjwt.credential
 
-import org.multipaz.claim.Claim
-import org.multipaz.claim.VcClaim
+import kotlinx.io.bytestring.ByteString
+import kotlinx.io.bytestring.decodeToString
+import kotlinx.serialization.json.add
+import kotlinx.serialization.json.buildJsonArray
+import org.multipaz.claim.JsonClaim
 import org.multipaz.credential.Credential
 import org.multipaz.documenttype.DocumentTypeRepository
-import org.multipaz.sdjwt.SdJwtVerifiableCredential
+import org.multipaz.sdjwt.SdJwt
+import kotlin.time.Clock
+import kotlin.time.Duration.Companion.days
+import kotlin.time.Instant
 
 /**
  * A SD-JWT VC credential, according to [draft-ietf-oauth-sd-jwt-vc-03]
@@ -26,25 +32,42 @@ interface SdJwtVcCredential {
      * This data must be the encoded string containing the SD-JWT VC. The SD-JWT VC itself is by
      * disclosures: `<header>.<body>.<signature>~<Disclosure 1>~<Disclosure 2>~...~<Disclosure N>~`
      */
-    val issuerProvidedData: ByteArray
+    val issuerProvidedData: ByteString
 
-    fun getClaimsImpl(
+    suspend fun getClaimsImpl(
         documentTypeRepository: DocumentTypeRepository?
-    ): List<VcClaim> {
-        val ret = mutableListOf<VcClaim>()
-        val sdJwt = SdJwtVerifiableCredential.fromString(issuerProvidedData.decodeToString())
-        val dt = documentTypeRepository?.getDocumentTypeForVc(vct)
-        for (disclosure in sdJwt.disclosures) {
-            val attribute = dt?.vcDocumentType?.claims?.get(disclosure.key)
+    ): List<JsonClaim> {
+        val ret = mutableListOf<JsonClaim>()
+        val sdJwt = SdJwt.fromCompactSerialization(issuerProvidedData.decodeToString())
+        val issuerKey = sdJwt.x5c!!.certificates.first().ecPublicKey
+        val processedJwt = sdJwt.verify(issuerKey)
+
+        // By design, we only include the top-level claims.
+        val dt = documentTypeRepository?.getDocumentTypeForJson(vct)
+        for ((claimName, claimValue) in processedJwt) {
+            val attribute = dt?.jsonDocumentType?.claims?.get(claimName)
             ret.add(
-                VcClaim(
-                    displayName = dt?.vcDocumentType?.claims?.get(disclosure.key)?.displayName ?: disclosure.key,
+                JsonClaim(
+                    displayName = dt?.jsonDocumentType?.claims?.get(claimName)?.displayName ?: claimName,
                     attribute = attribute,
-                    claimName = disclosure.key,
-                    value = disclosure.value
+                    claimPath = buildJsonArray { add(claimName) },
+                    value = claimValue
                 )
             )
         }
         return ret
+    }
+
+    /**
+     * Extracts validity from the credential
+     *
+     * @return a `Pair(validFrom, validUntil)`
+     */
+    suspend fun extractValidityFromIssuerDataImpl(): Pair<Instant, Instant> {
+        val sdJwt = SdJwt.fromCompactSerialization(issuerProvidedData.decodeToString())
+        // If SD-JWT somehow does not specify these values, treat it as effectively non-expiring
+        val validFrom = sdJwt.validFrom ?: Instant.fromEpochMilliseconds(0)
+        val validUntil = sdJwt.validUntil ?: Instant.fromEpochMilliseconds(Long.MAX_VALUE)
+        return Pair(validFrom, validUntil)
     }
 }

@@ -7,11 +7,18 @@ import kotlinx.cinterop.allocArrayOf
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.usePinned
 import platform.Foundation.NSData
+import platform.Foundation.NSDate
 import platform.Foundation.NSError
 import platform.Foundation.create
+import platform.Foundation.timeIntervalSince1970
 import platform.posix.memcpy
+import kotlin.time.Clock
+import kotlin.time.Duration
+import kotlin.time.DurationUnit
+import kotlin.time.Instant
+import kotlin.time.toDuration
 
-// Various iOS related utilities
+// Various iOS related utilities.
 //
 
 @OptIn(ExperimentalForeignApi::class)
@@ -35,3 +42,19 @@ fun ByteArray.toNSData(): NSData = memScoped {
 fun NSError.toKotlinError(): Error {
     return Error("NSError domain=${this.domain} code=${this.code}: ${this.localizedDescription}")
 }
+
+/**
+ * Converts a [NSDate] to [Instant].
+ *
+ * @return an [Instant] representing the same time.
+ */
+fun NSDate.toKotlinInstant(): Instant {
+    val epochSeconds = this.timeIntervalSince1970.toLong()
+    val nanosecondAdjustment = ((this.timeIntervalSince1970 - epochSeconds) * 1_000_000_000).toInt()
+    return Instant.fromEpochSeconds(epochSeconds, nanosecondAdjustment)
+}
+
+fun Clock.Companion.getSystem(): Clock = Clock.System
+
+// Helper to create duration from simple seconds (Double)
+fun Duration.Companion.fromSeconds(seconds: Double): Duration = seconds.toDuration(DurationUnit.SECONDS)

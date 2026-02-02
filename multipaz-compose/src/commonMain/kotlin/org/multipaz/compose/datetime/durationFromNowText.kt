@@ -24,9 +24,9 @@ import org.multipaz.multipaz_compose.generated.resources.duration_year
 import org.multipaz.multipaz_compose.generated.resources.duration_years_and_months
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.datetime.Clock
+import kotlin.time.Clock
 import kotlinx.datetime.DateTimePeriod
-import kotlinx.datetime.Instant
+import kotlin.time.Instant
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.monthsUntil
 import kotlinx.datetime.plus
@@ -54,7 +54,7 @@ fun durationFromNowText(instant: Instant, now: Instant = Clock.System.now()): St
     val coroutineScope = rememberCoroutineScope()
 
     val tick = remember { mutableIntStateOf(0) }
-    tick.intValue  // reading value ensures update when tick changes
+    val unused = tick.intValue  // reading value ensures update when tick changes
     val (text, updateAt) = durationFromNowTextCore(instant, now)
     val delayDuration = maxOf(updateAt - now, 16.milliseconds)
     SideEffect {

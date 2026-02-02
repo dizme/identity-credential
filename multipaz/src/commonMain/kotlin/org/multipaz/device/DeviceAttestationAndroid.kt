@@ -14,21 +14,23 @@ import org.multipaz.crypto.SignatureVerificationException
 data class DeviceAttestationAndroid(
     val certificateChain: X509CertChain
 ) : DeviceAttestation() {
-    override fun validate(validationData: DeviceAttestationValidationData) {
+    override suspend fun validate(validationData: DeviceAttestationValidationData) {
         try {
             validateAndroidKeyAttestation(
-                certificateChain,
-                validationData.attestationChallenge,
-                validationData.androidGmsAttestation,
-                validationData.androidVerifiedBootGreen,
-                validationData.androidAppSignatureCertificateDigests
+                chain = certificateChain,
+                challenge = validationData.attestationChallenge,
+                requireGmsAttestation = validationData.androidGmsAttestation,
+                requireVerifiedBootGreen = validationData.androidVerifiedBootGreen,
+                requireKeyMintSecurityLevel = validationData.androidRequiredKeyMintSecurityLevel,
+                requireAppSignatureCertificateDigests = validationData.androidAppSignatureCertificateDigests,
+                requireAppPackages = validationData.androidAppPackageNames
             )
         } catch (err: Exception) {
             throw DeviceAttestationException("Failed Android device attestation", err)
         }
     }
 
-    override fun validateAssertion(assertion: DeviceAssertion) {
+    override suspend fun validateAssertion(assertion: DeviceAssertion) {
         val signature =
             EcSignature.fromCoseEncoded(assertion.platformAssertion.toByteArray())
         try {

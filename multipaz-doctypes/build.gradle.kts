@@ -1,3 +1,7 @@
+@file:OptIn(ExperimentalWasmDsl::class)
+
+import org.jetbrains.kotlin.gradle.ExperimentalWasmDsl
+
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
     id("maven-publish")
@@ -9,7 +13,25 @@ val projectVersionName: String by rootProject.extra
 kotlin {
     jvmToolchain(17)
 
+    compilerOptions {
+        optIn.add("kotlin.time.ExperimentalTime")
+    }
+
     jvm()
+
+    js {
+        outputModuleName = "multipaz-doctypes"
+        browser {
+        }
+        binaries.executable()
+    }
+
+    wasmJs {
+        outputModuleName = "multipaz-doctypes"
+        browser {
+        }
+        binaries.executable()
+    }
 
     listOf(
         iosX64(),
@@ -36,6 +58,7 @@ kotlin {
                 implementation(libs.kotlinx.datetime)
                 implementation(libs.kotlinx.io.bytestring)
                 implementation(libs.kotlinx.serialization.json)
+                api(project(":multipaz"))
             }
         }
 
@@ -48,16 +71,18 @@ kotlin {
 
         val jvmMain by getting {
             dependencies {
-                implementation(libs.bouncy.castle.bcprov)
-                implementation(libs.bouncy.castle.bcpkix)
                 implementation(libs.tink)
             }
         }
 
         val jvmTest by getting {
             dependencies {
-                implementation(libs.bouncy.castle.bcprov)
-                implementation(libs.bouncy.castle.bcpkix)
+            }
+        }
+
+        val jsTest by getting {
+            dependencies {
+                implementation(libs.kotlin.wrappers.web)
             }
         }
     }
@@ -82,4 +107,8 @@ publishing {
             }
         }
     }
+}
+
+subprojects {
+	apply(plugin = "org.jetbrains.dokka")
 }

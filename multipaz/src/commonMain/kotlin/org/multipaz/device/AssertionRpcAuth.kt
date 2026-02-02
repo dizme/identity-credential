@@ -1,6 +1,6 @@
 package org.multipaz.device
 
-import kotlinx.datetime.Instant
+import kotlin.time.Instant
 import kotlinx.io.bytestring.ByteString
 import org.multipaz.rpc.handler.RpcAuthInspectorAssertion
 import org.multipaz.rpc.handler.RpcAuthIssuerAssertion
@@ -13,7 +13,7 @@ import org.multipaz.rpc.handler.RpcAuthIssuerAssertion
 class AssertionRpcAuth(
     val target: String,
     val method: String,
-    val nonce: String,
+    val nonce: ByteString,
     val timestamp: Instant,
     val clientId: String,
     val payloadHash: ByteString

@@ -4,7 +4,6 @@ import org.multipaz.cbor.Bstr
 import org.multipaz.cbor.Cbor
 import org.multipaz.cbor.Tagged
 import org.multipaz.crypto.Algorithm
-import org.multipaz.crypto.Crypto
 import org.multipaz.crypto.EcPublicKey
 import org.multipaz.util.Logger
 import org.multipaz.util.UUID
@@ -17,7 +16,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
 import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -28,6 +26,7 @@ import kotlinx.io.asSource
 import kotlinx.io.buffered
 import kotlinx.io.bytestring.ByteStringBuilder
 import kotlinx.io.readByteArray
+import org.multipaz.crypto.Hkdf
 import platform.CoreBluetooth.CBATTErrorSuccess
 import platform.CoreBluetooth.CBATTRequest
 import platform.CoreBluetooth.CBPeripheralManager
@@ -63,19 +62,22 @@ internal class BlePeripheralManagerIos: BlePeripheralManager {
     private lateinit var server2ClientCharacteristicUuid: UUID
     private var identCharacteristicUuid: UUID? = null
     private var l2capCharacteristicUuid: UUID? = null
+    private var startL2capServer = false
 
     override fun setUuids(
         stateCharacteristicUuid: UUID,
         client2ServerCharacteristicUuid: UUID,
         server2ClientCharacteristicUuid: UUID,
         identCharacteristicUuid: UUID?,
-        l2capCharacteristicUuid: UUID?
+        l2capCharacteristicUuid: UUID?,
+        startL2capServer: Boolean
     ) {
         this.stateCharacteristicUuid = stateCharacteristicUuid
         this.client2ServerCharacteristicUuid = client2ServerCharacteristicUuid
         this.server2ClientCharacteristicUuid = server2ClientCharacteristicUuid
         this.identCharacteristicUuid = identCharacteristicUuid
         this.l2capCharacteristicUuid = l2capCharacteristicUuid
+        this.startL2capServer = startL2capServer
     }
 
     private lateinit var onError: (error: Throwable) -> Unit
@@ -353,26 +355,28 @@ internal class BlePeripheralManagerIos: BlePeripheralManager {
                 permissions = CBAttributePermissionsReadable,
             )
         }
-        if (l2capCharacteristicUuid != null) {
+        if (l2capCharacteristicUuid != null || startL2capServer) {
             suspendCancellableCoroutine<Boolean> { continuation ->
                 setWaitCondition(WaitState.PUBLISH_L2CAP_CHANNEL, continuation)
                 peripheralManager.publishL2CAPChannelWithEncryption(false)
             }
             Logger.i(TAG, "Listening on PSM $_l2capPsm")
-            val bsb = ByteStringBuilder()
-            bsb.apply {
-                append((_l2capPsm!! shr 24).and(0xff).toByte())
-                append((_l2capPsm!! shr 16).and(0xff).toByte())
-                append((_l2capPsm!! shr 8).and(0xff).toByte())
-                append((_l2capPsm!! shr 0).and(0xff).toByte())
+            if (l2capCharacteristicUuid != null) {
+                val bsb = ByteStringBuilder()
+                bsb.apply {
+                    append((_l2capPsm!! shr 24).and(0xff).toByte())
+                    append((_l2capPsm!! shr 16).and(0xff).toByte())
+                    append((_l2capPsm!! shr 8).and(0xff).toByte())
+                    append((_l2capPsm!! shr 0).and(0xff).toByte())
+                }
+                val encodedPsm = bsb.toByteString().toByteArray()
+                l2capCharacteristic = CBMutableCharacteristic(
+                    type = CBUUID.UUIDWithString(l2capCharacteristicUuid.toString()),
+                    properties = CBCharacteristicPropertyRead,
+                    value = encodedPsm.toNSData(),
+                    permissions = CBAttributePermissionsReadable,
+                )
             }
-            val encodedPsm = bsb.toByteString().toByteArray()
-            l2capCharacteristic = CBMutableCharacteristic(
-                type = CBUUID.UUIDWithString(l2capCharacteristicUuid.toString()),
-                properties = CBCharacteristicPropertyRead,
-                value = encodedPsm.toNSData(),
-                permissions = CBAttributePermissionsReadable,
-            )
         }
 
         service!!.setCharacteristics((
@@ -397,8 +401,8 @@ internal class BlePeripheralManagerIos: BlePeripheralManager {
     override suspend fun setESenderKey(eSenderKey: EcPublicKey) {
         val ikm = Cbor.encode(Tagged(24, Bstr(Cbor.encode(eSenderKey.toCoseKey().toDataItem()))))
         val info = "BLEIdent".encodeToByteArray()
-        val salt = byteArrayOf()
-        identValue = Crypto.hkdf(Algorithm.HMAC_SHA256, ikm, salt, info, 16)
+        val salt = null
+        identValue = Hkdf.deriveKey(Algorithm.HMAC_SHA256, ikm, salt, info, 16)
     }
 
     override suspend fun waitForStateCharacteristicWriteOrL2CAPClient() {
@@ -455,12 +459,8 @@ internal class BlePeripheralManagerIos: BlePeripheralManager {
     }
 
     override fun close() {
-        // Delayed closed because there's no way to flush L2CAP connections...
         _l2capPsm?.let {
-            CoroutineScope(Dispatchers.IO).launch {
-                delay(5000)
-                peripheralManager.unpublishL2CAPChannel(it.toUShort())
-            }
+            peripheralManager.unpublishL2CAPChannel(it.toUShort())
         }
         peripheralManager.stopAdvertising()
         peripheralManager.removeAllServices()

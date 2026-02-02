@@ -28,12 +28,14 @@ import android.content.Context;
 import android.icu.util.Calendar;
 import android.os.SystemClock;
 
-import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.filters.LargeTest;
 
+import org.junit.runners.Parameterized;
+import org.junit.runners.Parameterized.Parameters;
 import org.multipaz.crypto.EcCurve;
+import org.multipaz.crypto.X509Cert;
+import org.multipaz.util.AndroidAttestationExtensionParser;
 
-import org.bouncycastle.jce.provider.BouncyCastleProvider;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -44,7 +46,6 @@ import java.security.KeyPair;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.NoSuchProviderException;
-import java.security.Security;
 import java.security.SignatureException;
 import java.security.cert.CertificateException;
 import java.security.cert.X509Certificate;
@@ -61,9 +62,11 @@ import javax.crypto.SecretKey;
 import co.nstant.in.cbor.CborBuilder;
 import co.nstant.in.cbor.CborEncoder;
 import co.nstant.in.cbor.CborException;
+import kotlin.Pair;
+import kotlinx.io.bytestring.ByteString;
 
 @LargeTest
-@RunWith(AndroidJUnit4.class)
+@RunWith(Parameterized.class)
 // TODO: We currently suppress deprecation warnings at this level (instead of at each call-site)
 //  since a lot of the tests use API on IdentityCredential which is deprecated in favor of
 //  PresentationSession. We should port the tests to use the new PresentationSession API instead.
@@ -71,11 +74,21 @@ import co.nstant.in.cbor.CborException;
 public class DynamicAuthTest {
     private static final String TAG = "DynamicAuthTest";
 
-    @Before
-    public void setup() {
-        Security.removeProvider(BouncyCastleProvider.PROVIDER_NAME);
-        Security.addProvider(new BouncyCastleProvider());
+    private final boolean useNewStoreStaticAuthDataMethod;
+
+    public DynamicAuthTest(boolean useNewStoreStaticAuthDataMethod) {
+        this.useNewStoreStaticAuthDataMethod = useNewStoreStaticAuthDataMethod;
     }
+
+    @Parameters(name = "{index}: Test with useNewStoreStaticAuthDataMethod={0}")
+    public static Collection<Object[]> data() {
+        return Arrays.asList(new Object[][]{
+            {false},
+            {true}
+        });
+    }
+
+    // Do NOT add BouncyCastle at setup time - we want to run tests against the normal AndroidOpenSSL JCA provider
 
     @SuppressWarnings("deprecation")
     @Test
@@ -161,6 +174,61 @@ public class DynamicAuthTest {
             byte[] icExtension = cert.getExtensionValue("1.3.6.1.4.1.11129.2.1.26");
             assertNotNull(icExtension);
             assertArrayEquals(proofOfProvisioningSha256, Util.getPopSha256FromAuthKeyCert(cert));
+        }
+
+        // ... and we're done. Clean up after ourselves.
+        store.deleteCredentialByName(credentialName);
+    }
+
+    @SuppressWarnings("deprecation")
+    @Test
+    public void checkAuthKeyChains() throws Exception {
+        Context appContext = androidx.test.InstrumentationRegistry.getTargetContext();
+        IdentityCredentialStore store = Utility.getIdentityCredentialStore(appContext);
+
+        String credentialName = "test";
+
+        store.deleteCredentialByName(credentialName);
+
+        WritableIdentityCredential wc = store.createCredential(credentialName,
+            "org.iso.18013-5.2019.mdl");
+
+        byte[] challenge = "TheChallenge".getBytes();
+        // Profile 0 (no authentication)
+        AccessControlProfile noAuthProfile =
+            new AccessControlProfile.Builder(new AccessControlProfileId(0))
+                .setUserAuthenticationRequired(false)
+                .build();
+        Collection<AccessControlProfileId> idsNoAuth = new ArrayList<AccessControlProfileId>();
+        idsNoAuth.add(new AccessControlProfileId(0));
+        String mdlNs = "org.iso.18013-5.2019";
+        PersonalizationData personalizationData =
+            new PersonalizationData.Builder()
+                .addAccessControlProfile(noAuthProfile)
+                .putEntry(mdlNs, "First name", idsNoAuth, Util.cborEncodeString("Alan"))
+                .putEntry(mdlNs, "Last name", idsNoAuth, Util.cborEncodeString("Turing"))
+                .build();
+        wc.personalize(personalizationData);
+
+        IdentityCredential credential = store.getCredentialByName(credentialName,
+            IdentityCredentialStore.CIPHERSUITE_ECDHE_HKDF_ECDSA_WITH_AES_256_GCM_SHA256);
+        assertNotNull(credential);
+        credential.setAvailableAuthenticationKeys(5, 3);
+        assertArrayEquals(
+            new int[]{0, 0, 0, 0, 0},
+            credential.getAuthenticationDataUsageCount());
+
+        List<List<X509Certificate>> certificateChains = null;
+        certificateChains = credential.getAuthKeyChainsNeedingCertification(challenge);
+
+        assertEquals(5, certificateChains.size());
+
+        for (List<X509Certificate> certificateChain: certificateChains) {
+            byte[] encoded = certificateChain.get(0).getEncoded();
+            AndroidAttestationExtensionParser parser = new AndroidAttestationExtensionParser(
+                new X509Cert(new ByteString(encoded, 0, encoded.length)));
+            // just testing one element from chain to confirm that the attestation extension is present.
+            assertArrayEquals(parser.getAttestationChallenge(), challenge);
         }
 
         // ... and we're done. Clean up after ourselves.
@@ -261,7 +329,7 @@ public class DynamicAuthTest {
         }
 
         try {
-            credential.storeStaticAuthenticationData(key0Cert, new byte[]{42, 43, 44});
+            storeStaticAuthenticationData(credential, key0Cert, new byte[]{42, 43, 44});
             certificates = credential.getAuthKeysNeedingCertification();
         } catch (IdentityCredentialException e) {
             e.printStackTrace();
@@ -284,7 +352,7 @@ public class DynamicAuthTest {
         }
 
         try {
-            credential.storeStaticAuthenticationData(key4Cert, new byte[]{43, 44, 45});
+            storeStaticAuthenticationData(credential, key4Cert, new byte[]{43, 44, 45});
             certificates = credential.getAuthKeysNeedingCertification();
         } catch (IdentityCredentialException e) {
             e.printStackTrace();
@@ -326,6 +394,12 @@ public class DynamicAuthTest {
             assertTrue(false);
         }
         */
+
+        // Check we can get the authentication keys and associated auth data...
+        List<Pair<String, byte[]>> listOfAuthKeys = ((KeystoreIdentityCredential) credential).getAuthenticationKeys();
+        assertEquals(2, listOfAuthKeys.size());
+        assertArrayEquals(new byte[] {42, 43, 44}, listOfAuthKeys.get(0).getSecond());
+        assertArrayEquals(new byte[] {43, 44, 45}, listOfAuthKeys.get(1).getSecond());
 
         // Now use one of the keys...
         entriesToRequest = new LinkedHashMap<>();
@@ -549,7 +623,7 @@ public class DynamicAuthTest {
         assertEquals(5, certificates.size());
         X509Certificate keyNewCert = certificates.iterator().next();
         try {
-            credential.storeStaticAuthenticationData(keyNewCert, new byte[]{10, 11, 12});
+            storeStaticAuthenticationData(credential, keyNewCert, new byte[]{10, 11, 12});
             certificates = credential.getAuthKeysNeedingCertification();
         } catch (IdentityCredentialException e) {
             e.printStackTrace();
@@ -638,7 +712,7 @@ public class DynamicAuthTest {
         tenSecondsFromNow.add(Calendar.SECOND, 10);
         try {
             X509Certificate key0Cert = certificates.iterator().next();
-            credential.storeStaticAuthenticationData(key0Cert,
+            storeStaticAuthenticationData(credential, key0Cert,
                     tenSecondsFromNow,
                     new byte[]{52, 53, 44});
             certificates = credential.getAuthKeysNeedingCertification();
@@ -766,7 +840,7 @@ public class DynamicAuthTest {
             try {
                 Calendar c = Calendar.getInstance();
                 c.setTimeInMillis(tenSecondsFromBeginning);
-                credential.storeStaticAuthenticationData(authKey,
+                storeStaticAuthenticationData(credential, authKey,
                         c,
                         new byte[]{52, 53, 44});
             } catch (IdentityCredentialException e) {
@@ -843,7 +917,7 @@ public class DynamicAuthTest {
             try {
                 Calendar c = Calendar.getInstance();
                 c.setTimeInMillis(fifteenSecondsFromBeginning);
-                credential.storeStaticAuthenticationData(authKey,
+                storeStaticAuthenticationData(credential, authKey,
                         c,
                         new byte[]{52, 53, 44});
             } catch (IdentityCredentialException e) {
@@ -981,10 +1055,10 @@ public class DynamicAuthTest {
                 expiration.setTimeInMillis(tenSecondsFromBeginning + n);
                 // For the fourth certificate, don't set expiration
                 if (n == 3) {
-                    credential.storeStaticAuthenticationData(authKey,
+                    storeStaticAuthenticationData(credential, authKey,
                             new byte[]{52, 53, 44});
                 } else {
-                    credential.storeStaticAuthenticationData(authKey,
+                    storeStaticAuthenticationData(credential, authKey,
                             expiration,
                             new byte[]{52, 53, 44});
                 }
@@ -1039,9 +1113,9 @@ public class DynamicAuthTest {
         // Certify authKeys 0 and 1
         //
         X509Certificate key0Cert = new ArrayList<X509Certificate>(certs).get(0);
-        credential.storeStaticAuthenticationData(key0Cert, new byte[]{42, 43, 44});
+        storeStaticAuthenticationData(credential, key0Cert, new byte[]{42, 43, 44});
         X509Certificate key1Cert = new ArrayList<X509Certificate>(certs).get(1);
-        credential.storeStaticAuthenticationData(key1Cert, new byte[]{43, 44, 45});
+        storeStaticAuthenticationData(credential, key1Cert, new byte[]{43, 44, 45});
 
         // Get ready to present...
         //
@@ -1100,9 +1174,9 @@ public class DynamicAuthTest {
         // Certify authKeys 0 and 1
         //
         X509Certificate key0Cert = new ArrayList<X509Certificate>(certs).get(0);
-        credential.storeStaticAuthenticationData(key0Cert, new byte[]{42, 43, 44});
+        storeStaticAuthenticationData(credential, key0Cert, new byte[]{42, 43, 44});
         X509Certificate key1Cert = new ArrayList<X509Certificate>(certs).get(1);
-        credential.storeStaticAuthenticationData(key1Cert, new byte[]{43, 44, 45});
+        storeStaticAuthenticationData(credential, key1Cert, new byte[]{43, 44, 45});
 
         // Get ready to present...
         //
@@ -1165,4 +1239,21 @@ public class DynamicAuthTest {
         assertArrayEquals(new byte[]{43, 44, 45}, rd.getStaticAuthenticationData());
     }
 
+    private void storeStaticAuthenticationData(IdentityCredential credential, X509Certificate certificate, byte[] staticAuthData)
+        throws UnknownAuthenticationKeyException {
+        if (useNewStoreStaticAuthDataMethod) {
+            credential.storeStaticAuthenticationData(certificate.getPublicKey(), staticAuthData);
+        } else {
+            credential.storeStaticAuthenticationData(certificate, staticAuthData);
+        }
+    }
+
+    private void storeStaticAuthenticationData(IdentityCredential credential, X509Certificate certificate, Calendar expirationDate, byte[] staticAuthData)
+        throws UnknownAuthenticationKeyException {
+        if (useNewStoreStaticAuthDataMethod) {
+            credential.storeStaticAuthenticationData(certificate.getPublicKey(), expirationDate, staticAuthData);
+        } else {
+            credential.storeStaticAuthenticationData(certificate, expirationDate, staticAuthData);
+        }
+    }
 }

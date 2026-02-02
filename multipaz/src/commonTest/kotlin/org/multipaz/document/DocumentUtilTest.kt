@@ -16,9 +16,7 @@
 package org.multipaz.document
 
 import org.multipaz.claim.Claim
-import org.multipaz.credential.CredentialLoader
 import org.multipaz.credential.SecureAreaBoundCredential
-import org.multipaz.crypto.EcCurve
 import org.multipaz.documenttype.DocumentTypeRepository
 import org.multipaz.securearea.CreateKeySettings
 import org.multipaz.securearea.SecureArea
@@ -27,37 +25,38 @@ import org.multipaz.securearea.software.SoftwareSecureArea
 import org.multipaz.storage.Storage
 import org.multipaz.storage.ephemeral.EphemeralStorage
 import kotlinx.coroutines.test.runTest
-import kotlinx.datetime.Instant;
+import kotlinx.io.bytestring.ByteString
+import org.multipaz.cbor.Cbor
+import org.multipaz.cbor.buildCborMap
+import org.multipaz.cbor.toDataItemDateTimeString
+import kotlin.time.Instant
 import kotlin.test.BeforeTest
 import kotlin.test.Test
-import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.time.Duration.Companion.milliseconds
 
 class DocumentUtilTest {
     private lateinit var storage: Storage
     private lateinit var secureAreaRepository: SecureAreaRepository
-    private lateinit var credentialLoader: CredentialLoader
 
     @BeforeTest
-    fun setup() {
+    fun setup() = runTest {
         storage = EphemeralStorage()
-        secureAreaRepository = SecureAreaRepository.build {
-            add(SoftwareSecureArea.create(storage))
-        }
-        credentialLoader = CredentialLoader()
-        credentialLoader.addCredentialImplementation(
-            TestSecureAreaBoundCredential::class
-        ) { document -> TestSecureAreaBoundCredential(document) }
+        secureAreaRepository = SecureAreaRepository.Builder()
+            .add(SoftwareSecureArea.create(storage))
+            .build()
     }
 
     @Test
     fun managedCredentialHelper() = runTest {
-        val documentStore = DocumentStore(
+        val documentStore = buildDocumentStore(
             storage = storage,
-            secureAreaRepository = secureAreaRepository,
-            credentialLoader = credentialLoader,
-            documentMetadataFactory = SimpleDocumentMetadata::create
-        )
+            secureAreaRepository = secureAreaRepository
+        ) {
+            addCredentialImplementation(TestSecureAreaBoundCredential.CREDENTIAL_TYPE) { document ->
+                TestSecureAreaBoundCredential(document)
+            }
+        }
         val secureArea: SecureArea =
             secureAreaRepository.getImplementation(SoftwareSecureArea.IDENTIFIER)!!
         val document = documentStore.createDocument()
@@ -66,7 +65,7 @@ class DocumentUtilTest {
         val authKeySettings = CreateKeySettings()
         val numCreds = 10
         val maxUsesPerCred = 5
-        val minValidTimeMillis = 10L
+        val minValidTime = 10.milliseconds
         var numCredsCreated: Int
         val managedCredDomain = "managedCredentials"
 
@@ -87,7 +86,7 @@ class DocumentUtilTest {
             Instant.fromEpochMilliseconds(100),
             numCreds,
             maxUsesPerCred,
-            minValidTimeMillis,
+            minValidTime,
             false
         )
         assertEquals(numCreds.toLong(), numCredsCreated.toLong())
@@ -97,11 +96,13 @@ class DocumentUtilTest {
         )
         var count = 0
         for (pak in document.getPendingCredentials()) {
-            pak.certify(
-                byteArrayOf(0, count++.toByte()),
-                Instant.fromEpochMilliseconds(100),
-                Instant.fromEpochMilliseconds(200)
+            val issuerData = TestIssuerData(
+                validFrom = Instant.fromEpochMilliseconds(100),
+                validUntil = Instant.fromEpochMilliseconds(200),
+                major = 0,
+                minor = count++
             )
+            pak.certify(issuerData.serialize())
         }
         // We should now have |numCreds| certified credentials and none pending
         assertEquals(0, document.getPendingCredentials().size.toLong())
@@ -123,7 +124,7 @@ class DocumentUtilTest {
             Instant.fromEpochMilliseconds(100),
             numCreds,
             maxUsesPerCred,
-            minValidTimeMillis,
+            minValidTime,
             false
         )
         assertEquals(0, numCredsCreated.toLong())
@@ -150,7 +151,7 @@ class DocumentUtilTest {
             Instant.fromEpochMilliseconds(100),
             numCreds,
             maxUsesPerCred,
-            minValidTimeMillis,
+            minValidTime,
             false
         )
         assertEquals(0, numCredsCreated.toLong())
@@ -180,7 +181,7 @@ class DocumentUtilTest {
             Instant.fromEpochMilliseconds(100),
             numCreds,
             maxUsesPerCred,
-            minValidTimeMillis,
+            minValidTime,
             false
         )
         assertEquals(5, numCredsCreated.toLong())
@@ -188,11 +189,13 @@ class DocumentUtilTest {
         count = 0
         for (pak in document.getPendingCredentials()) {
             assertEquals(managedCredDomain, pak.domain)
-            pak.certify(
-                byteArrayOf(1, count++.toByte()),
-                Instant.fromEpochMilliseconds(100),
-                Instant.fromEpochMilliseconds(210)
+            val issuerData = TestIssuerData(
+                validFrom = Instant.fromEpochMilliseconds(100),
+                validUntil = Instant.fromEpochMilliseconds(210),
+                major = 1,
+                minor = count++
             )
+            pak.certify(issuerData.serialize())
         }
         // We should now have |numCreds| certified credentials and none pending
         assertEquals(0, document.getPendingCredentials().size.toLong())
@@ -201,20 +204,21 @@ class DocumentUtilTest {
         // We rely on some implementation details on how ordering works... also cross-reference
         // with data passed into certify() functions above.
         count = 0
+        val expectedData = arrayOf(
+            Pair(0, 5),
+            Pair(0, 6),
+            Pair(0, 7),
+            Pair(0, 8),
+            Pair(0, 9),
+            Pair(1, 0),
+            Pair(1, 1),
+            Pair(1, 2),
+            Pair(1, 3),
+            Pair(1, 4)
+        )
         for (cred in document.getCertifiedCredentials()) {
-            val expectedData = arrayOf(
-                byteArrayOf(0, 5),
-                byteArrayOf(0, 6),
-                byteArrayOf(0, 7),
-                byteArrayOf(0, 8),
-                byteArrayOf(0, 9),
-                byteArrayOf(1, 0),
-                byteArrayOf(1, 1),
-                byteArrayOf(1, 2),
-                byteArrayOf(1, 3),
-                byteArrayOf(1, 4)
-            )
-            assertContentEquals(expectedData[count++], cred.issuerProvidedData)
+            val data = TestIssuerData.parse(cred.issuerProvidedData)
+            assertEquals(expectedData[count++], Pair(data.major, data.minor))
         }
 
         // Now move close to the expiration date of the original five credentials.
@@ -235,7 +239,7 @@ class DocumentUtilTest {
             Instant.fromEpochMilliseconds(195),
             numCreds,
             maxUsesPerCred,
-            minValidTimeMillis,
+            minValidTime,
             false
         )
         assertEquals(5, numCredsCreated.toLong())
@@ -243,11 +247,13 @@ class DocumentUtilTest {
         count = 0
         for (pak in document.getPendingCredentials()) {
             assertEquals(managedCredDomain, pak.domain)
-            pak.certify(
-                byteArrayOf(2, count++.toByte()),
-                Instant.fromEpochMilliseconds(100),
-                Instant.fromEpochMilliseconds(210)
+            val issuerData = TestIssuerData(
+                validFrom = Instant.fromEpochMilliseconds(100),
+                validUntil = Instant.fromEpochMilliseconds(210),
+                major = 2,
+                minor = count++
             )
+            pak.certify(issuerData.serialize())
         }
         // We should now have |numCreds| certified credentials and none pending
         assertEquals(0, document.getPendingCredentials().size.toLong())
@@ -256,25 +262,53 @@ class DocumentUtilTest {
         // We rely on some implementation details on how ordering works... also cross-reference
         // with data passed into certify() functions above.
         count = 0
+        val newExpectedData = arrayOf(
+            Pair(1, 0),
+            Pair(1, 1),
+            Pair(1, 2),
+            Pair(1, 3),
+            Pair(1, 4),
+            Pair(2, 0),
+            Pair(2, 1),
+            Pair(2, 2),
+            Pair(2, 3),
+            Pair(2, 4)
+        )
         for (credential in document.getCertifiedCredentials()) {
-            val expectedData = arrayOf(
-                byteArrayOf(1, 0),
-                byteArrayOf(1, 1),
-                byteArrayOf(1, 2),
-                byteArrayOf(1, 3),
-                byteArrayOf(1, 4),
-                byteArrayOf(2, 0),
-                byteArrayOf(2, 1),
-                byteArrayOf(2, 2),
-                byteArrayOf(2, 3),
-                byteArrayOf(2, 4)
-            )
-            assertContentEquals(expectedData[count++], credential.issuerProvidedData)
+            val data = TestIssuerData.parse(credential.issuerProvidedData)
+            assertEquals(newExpectedData[count++], Pair(data.major, data.minor))
+        }
+    }
+    data class TestIssuerData(
+        val validFrom: Instant,
+        val validUntil: Instant,
+        val major: Int = 0,
+        val minor: Int = 0
+    ) {
+        fun serialize(): ByteString = ByteString(Cbor.encode(buildCborMap {
+            put("from", validFrom.toDataItemDateTimeString())
+            put("until", validUntil.toDataItemDateTimeString())
+            put("major", major)
+            put("minor", minor)
+        }))
+
+        companion object {
+            fun parse(data: ByteString): TestIssuerData {
+                val map = Cbor.decode(data.toByteArray())
+                return TestIssuerData(
+                    validFrom = map["from"].asDateTimeString,
+                    validUntil = map["until"].asDateTimeString,
+                    major = map["major"].asNumber.toInt(),
+                    minor = map["minor"].asNumber.toInt(),
+                )
+            }
         }
     }
 
     class TestSecureAreaBoundCredential : SecureAreaBoundCredential {
         companion object {
+            const val CREDENTIAL_TYPE = "test-key-bound"
+
             suspend fun create(
                 document: Document,
                 asReplacementForIdentifier: String?,
@@ -298,15 +332,22 @@ class DocumentUtilTest {
             asReplacementForIdentifier: String?,
             domain: String,
             secureArea: SecureArea,
-        ) : super(document, asReplacementForIdentifier, domain, secureArea) {
-        }
+        ) : super(document, asReplacementForIdentifier, domain, secureArea)
 
         constructor(
             document: Document
-        ) : super(document) {}
+        ) : super(document)
 
-        override fun getClaims(documentTypeRepository: DocumentTypeRepository?): List<Claim> {
+        override val credentialType: String
+            get() = CREDENTIAL_TYPE
+
+        override suspend fun getClaims(documentTypeRepository: DocumentTypeRepository?): List<Claim> {
             throw NotImplementedError()
+        }
+
+        override suspend fun extractValidityFromIssuerData(): Pair<Instant, Instant> {
+            val parsed = TestIssuerData.parse(issuerProvidedData)
+            return Pair(parsed.validFrom, parsed.validUntil)
         }
     }
 

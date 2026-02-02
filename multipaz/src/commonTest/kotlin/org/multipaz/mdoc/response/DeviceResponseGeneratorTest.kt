@@ -25,12 +25,10 @@ import org.multipaz.cbor.toDataItem
 import org.multipaz.cose.Cose
 import org.multipaz.cose.CoseLabel
 import org.multipaz.cose.CoseNumberLabel
-import org.multipaz.credential.CredentialLoader
 import org.multipaz.mdoc.credential.MdocCredential
 import org.multipaz.document.Document
 import org.multipaz.document.DocumentRequest
 import org.multipaz.document.DocumentRequest.DataElement
-import org.multipaz.document.DocumentStore
 import org.multipaz.document.NameSpacedData
 import org.multipaz.crypto.Algorithm
 import org.multipaz.crypto.X509Cert
@@ -49,8 +47,13 @@ import org.multipaz.securearea.software.SoftwareSecureArea
 import org.multipaz.storage.Storage
 import org.multipaz.storage.ephemeral.EphemeralStorage
 import kotlinx.coroutines.test.runTest
-import kotlinx.datetime.Clock
-import kotlinx.datetime.Instant
+import kotlinx.io.bytestring.ByteString
+import org.multipaz.cbor.DiagnosticOption
+import org.multipaz.crypto.AsymmetricKey
+import kotlin.time.Clock
+import kotlin.time.Instant
+import org.multipaz.document.buildDocumentStore
+import org.multipaz.prompt.Reason
 import kotlin.random.Random
 import kotlin.test.BeforeTest
 import kotlin.test.Test
@@ -62,7 +65,6 @@ import kotlin.test.assertTrue
 class DeviceResponseGeneratorTest {
     private lateinit var storage: Storage
     private lateinit var secureAreaRepository: SecureAreaRepository
-    private lateinit var credentialLoader: CredentialLoader
 
     private lateinit var mdocCredentialSign: MdocCredential
     private lateinit var mdocCredentialMac: MdocCredential
@@ -74,28 +76,25 @@ class DeviceResponseGeneratorTest {
     private lateinit var dsCert: X509Cert
 
     @BeforeTest
-    fun setup() {
+    fun setup() = runTest {
         storage = EphemeralStorage()
-        secureAreaRepository = SecureAreaRepository.build {
-            add(SoftwareSecureArea.create(storage))
-        }
-        credentialLoader = CredentialLoader()
-        credentialLoader.addCredentialImplementation(MdocCredential::class) {
-            document -> MdocCredential(document)
-        }
+        secureAreaRepository = SecureAreaRepository.Builder()
+            .add(SoftwareSecureArea.create(storage))
+            .build()
     }
 
     // This isn't really used, we only use a single domain.
     private val AUTH_KEY_DOMAIN = "domain"
-    private val MDOC_CREDENTIAL_IDENTIFIER = "MdocCredential"
 
     private suspend fun provisionDocument() {
-        val documentStore = DocumentStore(
-            storage,
-            secureAreaRepository,
-            credentialLoader,
-            TestDocumentMetadata::create
-        )
+        val documentStore = buildDocumentStore(
+            storage = storage,
+            secureAreaRepository = secureAreaRepository
+        ) {
+            setDocumentMetadataFactory(TestDocumentMetadata::create)
+        }
+
+        val randomProvider = Random(42)
 
         // Create the document...
         document = documentStore.createDocument()
@@ -106,7 +105,9 @@ class DeviceResponseGeneratorTest {
             .putEntryString("ns2", "bar1", "foo1")
             .putEntryString("ns2", "bar2", "foo2")
             .build()
-        document.testMetadata.setNameSpacedData(nameSpacedData)
+        document.edit {
+            metadata = TestDocumentMetadata(nameSpacedData)
+        }
         val overrides: MutableMap<String, Map<String, ByteArray>> = HashMap()
         val overridesForNs1: MutableMap<String, ByteArray> = HashMap()
         overridesForNs1["foo3"] = Cbor.encode(Tstr("bar3_override"))
@@ -151,8 +152,7 @@ class DeviceResponseGeneratorTest {
         dsKey = Crypto.createEcPrivateKey(EcCurve.P256)
         dsCert = X509Cert.Builder(
             publicKey = dsKey.publicKey,
-            signingKey = dsKey,
-            signatureAlgorithm = Algorithm.ES256,
+            signingKey = AsymmetricKey.anonymous(dsKey, Algorithm.ES256),
             serialNumber = ASN1Integer(1),
             subject = X500Name.fromName("CN=State of Utopia DS Key"),
             issuer = X500Name.fromName("CN=State of Utopia DS Key"),
@@ -168,7 +168,7 @@ class DeviceResponseGeneratorTest {
             msoGenerator.setValidityInfo(timeSigned, timeValidityBegin, timeValidityEnd, null)
             val issuerNameSpaces = MdocUtil.generateIssuerNameSpaces(
                 nameSpacedData,
-                Random,
+                randomProvider,
                 16,
                 overrides
             )
@@ -215,11 +215,7 @@ class DeviceResponseGeneratorTest {
             ).generate()
 
             // Now that we have issuer-provided authentication data we certify the authentication key.
-            mdocCredential.certify(
-                issuerProvidedAuthenticationData,
-                timeValidityBegin,
-                timeValidityEnd
-            )
+            mdocCredential.certify(ByteString(issuerProvidedAuthenticationData))
         }
     }
 
@@ -240,7 +236,7 @@ class DeviceResponseGeneratorTest {
         val request = DocumentRequest(dataElements)
         val encodedSessionTranscript = Cbor.encode(Tstr("Doesn't matter"))
 
-        val staticAuthData = StaticAuthDataParser(mdocCredentialSign.issuerProvidedData)
+        val staticAuthData = StaticAuthDataParser(mdocCredentialSign.issuerProvidedData.toByteArray())
             .parse()
         val mergedIssuerNamespaces: Map<String, List<ByteArray>> =
             MdocUtil.mergeIssuerNamesSpaces(
@@ -256,7 +252,7 @@ class DeviceResponseGeneratorTest {
                     NameSpacedData.Builder().build(),
                     mdocCredentialSign.secureArea,
                     mdocCredentialSign.alias,
-                    null,
+                    Reason.Unspecified
                 )
                 .generate()
         )
@@ -303,6 +299,46 @@ class DeviceResponseGeneratorTest {
         assertEquals("ns2", doc.issuerNamespaces[1])
         assertEquals(1, doc.getIssuerEntryNames("ns2").size.toLong())
         assertEquals("foo1", doc.getIssuerEntryString("ns2", "bar1"))
+
+        // Check the new DeviceResponse class can parse the data
+        val dr = DeviceResponse.fromDataItem(Cbor.decode(encodedDeviceResponse))
+        dr.verify(
+            sessionTranscript = Cbor.decode(encodedSessionTranscript),
+            atTime = timeValidityBegin
+        )
+        assertEquals(
+            """
+                {
+                  "ns1": [24(<< {
+                    "digestID": 0,
+                    "random": h'2b714e4520aabd26420972f8d80c48fa',
+                    "elementIdentifier": "foo1",
+                    "elementValue": "bar1"
+                  } >>), 24(<< {
+                    "digestID": 4,
+                    "random": h'46905e101902b697c6132dacdfbf5a4b',
+                    "elementIdentifier": "foo2",
+                    "elementValue": "bar2"
+                  } >>), 24(<< {
+                    "digestID": 2,
+                    "random": h'55b35d23743b5af1e1f2d3976124091d',
+                    "elementIdentifier": "foo3",
+                    "elementValue": "bar3_override"
+                  } >>)],
+                  "ns2": [24(<< {
+                    "digestID": 1,
+                    "random": h'320908313266a9a296f81c7b45ffdecd',
+                    "elementIdentifier": "bar1",
+                    "elementValue": "foo1"
+                  } >>)]
+                }
+            """.trimIndent(),
+            Cbor.toDiagnostics(dr.documents[0].issuerNamespaces.toDataItem(), setOf(DiagnosticOption.PRETTY_PRINT))
+        )
+        assertEquals(
+            "{}",
+            Cbor.toDiagnostics(dr.documents[0].deviceNamespaces.toDataItem(), setOf(DiagnosticOption.PRETTY_PRINT))
+        )
     }
 
     @Test
@@ -322,9 +358,12 @@ class DeviceResponseGeneratorTest {
         )
         val request = DocumentRequest(dataElements)
         val encodedSessionTranscript = Cbor.encode(Tstr("Doesn't matter"))
-        val staticAuthData = StaticAuthDataParser(mdocCredentialMac.issuerProvidedData)
+        val staticAuthData = StaticAuthDataParser(mdocCredentialMac.issuerProvidedData.toByteArray())
             .parse()
-        val eReaderKey = Crypto.createEcPrivateKey(EcCurve.P256)
+        val eReaderKey = AsymmetricKey.anonymous(
+            privateKey = Crypto.createEcPrivateKey(EcCurve.P256),
+            algorithm = Algorithm.ECDH_P256
+        )
         val mergedIssuerNamespaces: Map<String, List<ByteArray>> = MdocUtil.mergeIssuerNamesSpaces(
             request,
             document.testMetadata.nameSpacedData,
@@ -338,8 +377,8 @@ class DeviceResponseGeneratorTest {
                     NameSpacedData.Builder().build(),
                     mdocCredentialMac.secureArea,
                     mdocCredentialMac.alias,
-                    null,
-                    eReaderKey.publicKey
+                    eReaderKey.publicKey,
+                    Reason.Unspecified
                 )
                 .generate()
         )
@@ -355,6 +394,47 @@ class DeviceResponseGeneratorTest {
         val doc = deviceResponse.documents[0]
         assertTrue(doc.deviceSignedAuthenticated)
         assertFalse(doc.deviceSignedAuthenticatedViaSignature)
+
+        // Check the new DeviceResponse class can parse the data
+        val dr = DeviceResponse.fromDataItem(Cbor.decode(encodedDeviceResponse))
+        dr.verify(
+            sessionTranscript = Cbor.decode(encodedSessionTranscript),
+            eReaderKey = eReaderKey as AsymmetricKey.Anonymous,
+            atTime = timeValidityBegin
+        )
+        assertEquals(
+            """
+                {
+                  "ns1": [24(<< {
+                    "digestID": 0,
+                    "random": h'b18c4204e313c872303161e877fa9b38',
+                    "elementIdentifier": "foo1",
+                    "elementValue": "bar1"
+                  } >>), 24(<< {
+                    "digestID": 3,
+                    "random": h'e87d6c40e62fcc6a385acc823a163ac7',
+                    "elementIdentifier": "foo2",
+                    "elementValue": "bar2"
+                  } >>), 24(<< {
+                    "digestID": 2,
+                    "random": h'9c0b3524dc833aaefe8225fa49535898',
+                    "elementIdentifier": "foo3",
+                    "elementValue": "bar3_override"
+                  } >>)],
+                  "ns2": [24(<< {
+                    "digestID": 4,
+                    "random": h'd2f519b1fc0fccc92fdfc1eecf8f02fc',
+                    "elementIdentifier": "bar1",
+                    "elementValue": "foo1"
+                  } >>)]
+                }
+            """.trimIndent(),
+            Cbor.toDiagnostics(dr.documents[0].issuerNamespaces.toDataItem(), setOf(DiagnosticOption.PRETTY_PRINT))
+        )
+        assertEquals(
+            "{}",
+            Cbor.toDiagnostics(dr.documents[0].deviceNamespaces.toDataItem(), setOf(DiagnosticOption.PRETTY_PRINT))
+        )
     }
 
     @Test
@@ -369,10 +449,13 @@ class DeviceResponseGeneratorTest {
             DataElement("ns2", "does_not_exist", false, false),
             DataElement("ns_does_not_exist", "boo", false, false)
         )
-        val eReaderKey = Crypto.createEcPrivateKey(EcCurve.P256)
+        val eReaderKey = AsymmetricKey.anonymous(
+            privateKey = Crypto.createEcPrivateKey(EcCurve.P256),
+            algorithm = Algorithm.ECDH_P256
+        )
         val request = DocumentRequest(dataElements)
         val encodedSessionTranscript = Cbor.encode(Tstr("Doesn't matter"))
-        val staticAuthData = StaticAuthDataParser(mdocCredentialSign.issuerProvidedData)
+        val staticAuthData = StaticAuthDataParser(mdocCredentialSign.issuerProvidedData.toByteArray())
             .parse()
         val mergedIssuerNamespaces: Map<String, List<ByteArray>> = MdocUtil.mergeIssuerNamesSpaces(
             request,
@@ -395,7 +478,7 @@ class DeviceResponseGeneratorTest {
                     deviceSignedData,
                     mdocCredentialSign.secureArea,
                     mdocCredentialSign.alias,
-                    null
+                    Reason.Unspecified
                 )
                 .generate()
         )
@@ -433,6 +516,59 @@ class DeviceResponseGeneratorTest {
         assertEquals(2, doc.getDeviceEntryNames("ns4").size.toLong())
         assertEquals("bah2", doc.getDeviceEntryString("ns4", "baz2"))
         assertEquals("bah3", doc.getDeviceEntryString("ns4", "baz3"))
+
+        // Check the new DeviceResponse class can parse the data
+        val dr = DeviceResponse.fromDataItem(Cbor.decode(encodedDeviceResponse))
+        dr.verify(
+            sessionTranscript = Cbor.decode(encodedSessionTranscript),
+            atTime = timeValidityBegin
+        )
+        assertEquals(
+            """
+                {
+                  "ns1": [24(<< {
+                    "digestID": 0,
+                    "random": h'2b714e4520aabd26420972f8d80c48fa',
+                    "elementIdentifier": "foo1",
+                    "elementValue": "bar1"
+                  } >>), 24(<< {
+                    "digestID": 4,
+                    "random": h'46905e101902b697c6132dacdfbf5a4b',
+                    "elementIdentifier": "foo2",
+                    "elementValue": "bar2"
+                  } >>), 24(<< {
+                    "digestID": 2,
+                    "random": h'55b35d23743b5af1e1f2d3976124091d',
+                    "elementIdentifier": "foo3",
+                    "elementValue": "bar3_override"
+                  } >>)],
+                  "ns2": [24(<< {
+                    "digestID": 1,
+                    "random": h'320908313266a9a296f81c7b45ffdecd',
+                    "elementIdentifier": "bar1",
+                    "elementValue": "foo1"
+                  } >>)]
+                }
+            """.trimIndent(),
+            Cbor.toDiagnostics(dr.documents[0].issuerNamespaces.toDataItem(), setOf(DiagnosticOption.PRETTY_PRINT))
+        )
+        assertEquals(
+            """
+                {
+                  "ns1": {
+                    "foo1": "bar1_override"
+                  },
+                  "ns3": {
+                    "baz1": "bah1"
+                  },
+                  "ns4": {
+                    "baz2": "bah2",
+                    "baz3": "bah3"
+                  }
+                }
+            """.trimIndent(),
+            Cbor.toDiagnostics(dr.documents[0].deviceNamespaces.toDataItem(), setOf(DiagnosticOption.PRETTY_PRINT))
+        )
     }
 
     @Test
@@ -440,7 +576,7 @@ class DeviceResponseGeneratorTest {
         provisionDocument()
 
         val encodedSessionTranscript = Cbor.encode(Tstr("Doesn't matter"))
-        val staticAuthData = StaticAuthDataParser(mdocCredentialSign.issuerProvidedData)
+        val staticAuthData = StaticAuthDataParser(mdocCredentialSign.issuerProvidedData.toByteArray())
             .parse()
 
         // Check that DeviceSigned works.
@@ -450,7 +586,10 @@ class DeviceResponseGeneratorTest {
             .putEntryString("ns4", "baz2", "bah2")
             .putEntryString("ns4", "baz3", "bah3")
             .build()
-        val eReaderKey = Crypto.createEcPrivateKey(EcCurve.P256)
+        val eReaderKey = AsymmetricKey.anonymous(
+            privateKey = Crypto.createEcPrivateKey(EcCurve.P256),
+            algorithm = Algorithm.ECDH_P256
+        )
         val deviceResponseGenerator = DeviceResponseGenerator(0)
         deviceResponseGenerator.addDocument(
             DocumentGenerator(DOC_TYPE, staticAuthData.issuerAuth, encodedSessionTranscript)
@@ -458,7 +597,7 @@ class DeviceResponseGeneratorTest {
                     deviceSignedData,
                     mdocCredentialSign.secureArea,
                     mdocCredentialSign.alias,
-                    null
+                    Reason.Unspecified
                 )
                 .generate()
         )
@@ -487,6 +626,34 @@ class DeviceResponseGeneratorTest {
         assertEquals(2, doc.getDeviceEntryNames("ns4").size.toLong())
         assertEquals("bah2", doc.getDeviceEntryString("ns4", "baz2"))
         assertEquals("bah3", doc.getDeviceEntryString("ns4", "baz3"))
+
+        // Check the new DeviceResponse class can parse the data
+        val dr = DeviceResponse.fromDataItem(Cbor.decode(encodedDeviceResponse))
+        dr.verify(
+            sessionTranscript = Cbor.decode(encodedSessionTranscript),
+            atTime = timeValidityBegin
+        )
+        assertEquals(
+            "{}",
+            Cbor.toDiagnostics(dr.documents[0].issuerNamespaces.toDataItem(), setOf(DiagnosticOption.PRETTY_PRINT))
+        )
+        assertEquals(
+            """
+                {
+                  "ns1": {
+                    "foo1": "bar1_override"
+                  },
+                  "ns3": {
+                    "baz1": "bah1"
+                  },
+                  "ns4": {
+                    "baz2": "bah2",
+                    "baz3": "bah3"
+                  }
+                }
+            """.trimIndent(),
+            Cbor.toDiagnostics(dr.documents[0].deviceNamespaces.toDataItem(), setOf(DiagnosticOption.PRETTY_PRINT))
+        )
     }
 
     @Test
@@ -506,7 +673,7 @@ class DeviceResponseGeneratorTest {
         val request = DocumentRequest(dataElements)
         val encodedSessionTranscript = Cbor.encode(Tstr("Doesn't matter"))
 
-        val staticAuthData = StaticAuthDataParser(mdocCredentialSign.issuerProvidedData)
+        val staticAuthData = StaticAuthDataParser(mdocCredentialSign.issuerProvidedData.toByteArray())
             .parse()
         val mergedIssuerNamespaces: Map<String, List<ByteArray>> =
             MdocUtil.mergeIssuerNamesSpaces(
@@ -522,7 +689,7 @@ class DeviceResponseGeneratorTest {
                     NameSpacedData.Builder().build(),
                     mdocCredentialSign.secureArea,
                     mdocCredentialSign.alias,
-                    null
+                    Reason.Unspecified
                 )
                 .generate()
         )
@@ -569,9 +736,16 @@ class DeviceResponseGeneratorTest {
         assertEquals("ns2", doc.issuerNamespaces[1])
         assertEquals(1, doc.getIssuerEntryNames("ns2").size.toLong())
         assertEquals("foo1", doc.getIssuerEntryString("ns2", "bar1"))
+
+        // Check the new DeviceResponse class can parse the data
+        val dr = DeviceResponse.fromDataItem(Cbor.decode(encodedDeviceResponse))
+        dr.verify(
+            sessionTranscript = Cbor.decode(encodedSessionTranscript),
+            atTime = timeValidityBegin
+        )
     }
 
     companion object {
-        const val DOC_TYPE = "com.example.document_xyz"
+        private const val DOC_TYPE = "com.example.document_xyz"
     }
 }

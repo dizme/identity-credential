@@ -24,6 +24,7 @@ import org.multipaz.crypto.EcPrivateKey
 import org.multipaz.crypto.EcPublicKey
 import kotlinx.io.bytestring.ByteStringBuilder
 import org.multipaz.cbor.buildCborMap
+import org.multipaz.crypto.Hkdf
 import org.multipaz.mdoc.role.MdocRole
 
 /**
@@ -47,24 +48,30 @@ import org.multipaz.mdoc.role.MdocRole
 class SessionEncryption(
     val role: MdocRole,
     private val eSelfKey: EcPrivateKey,
-    remotePublicKey: EcPublicKey,
-    encodedSessionTranscript: ByteArray
+    private val remotePublicKey: EcPublicKey,
+    private val encodedSessionTranscript: ByteArray
 ) {
     private var sessionEstablishmentSent = false
-    private val skRemote: ByteArray
-    private val skSelf: ByteArray
+    private lateinit var skRemote: ByteArray
+    private lateinit var skSelf: ByteArray
     private var decryptedCounter = 1
     private var encryptedCounter = 1
     private var sendSessionEstablishment = true
 
-    init {
+    private var initialized: Boolean = false
+
+    private suspend fun ensureInitialized() {
+        if (initialized) {
+            return
+        }
+        initialized = true
         val sharedSecret = Crypto.keyAgreement(eSelfKey, remotePublicKey)
         val sessionTranscriptBytes = Cbor.encode(Tagged(24, Bstr(encodedSessionTranscript)))
         val salt = Crypto.digest(Algorithm.SHA256, sessionTranscriptBytes)
         var info = "SKDevice".encodeToByteArray()
-        val deviceSK = Crypto.hkdf(Algorithm.HMAC_SHA256, sharedSecret, salt, info, 32)
+        val deviceSK = Hkdf.deriveKey(Algorithm.HMAC_SHA256, sharedSecret, salt, info, 32)
         info = "SKReader".encodeToByteArray()
-        val readerSK = Crypto.hkdf(Algorithm.HMAC_SHA256, sharedSecret, salt, info, 32)
+        val readerSK = Hkdf.deriveKey(Algorithm.HMAC_SHA256, sharedSecret, salt, info, 32)
         if (role == MdocRole.MDOC) {
             skSelf = deviceSK
             skRemote = readerSK
@@ -109,10 +116,11 @@ class SessionEncryption(
      * @return the bytes of the `SessionEstablishment` or `SessionData`
      * CBOR as described above.
      */
-    fun encryptMessage(
+    suspend fun encryptMessage(
         messagePlaintext: ByteArray?,
         statusCode: Long?
     ): ByteArray {
+        ensureInitialized()
         var messageCiphertext: ByteArray? = null
         if (messagePlaintext != null) {
             // The IV and these constants are specified in ISO/IEC 18013-5:2021 clause 9.1.1.5.
@@ -159,9 +167,10 @@ class SessionEncryption(
      * @exception IllegalArgumentException if the passed in data does not conform to the CDDL.
      * @exception IllegalStateException if decryption fails.
      */
-    fun decryptMessage(
+    suspend fun decryptMessage(
         messageData: ByteArray
     ): Pair<ByteArray?, Long?> {
+        ensureInitialized()
         val map = Cbor.decode(messageData)
         val dataDataItem = map.getOrNull("data")
         var messageCiphertext: ByteArray? = null
@@ -217,13 +226,15 @@ class SessionEncryption(
         /**
          * Gets the ephemeral reader key in a `SessionEstablishment` message.
          *
-         * @param the bytes of a `SessionEstablishment` message.
-         * @return the reader key, as a [EcPublicKey].
+         * @param sessionEstablishmentMessage the bytes of a `SessionEstablishment` message.
+         * @return the reader key, as an [EReaderKey], which contains both the decoded
+         * public key and original encoded bytes.
          */
-        fun getEReaderKey(sessionEstablishmentMessage: ByteArray): EcPublicKey {
+        fun getEReaderKey(sessionEstablishmentMessage: ByteArray): EReaderKey {
             val map = Cbor.decode(sessionEstablishmentMessage)
-            val encodedEReaderKey = map["eReaderKey"].asTagged.asBstr
-            return Cbor.decode(encodedEReaderKey).asCoseKey.ecPublicKey
+            val encodedCoseKey = map["eReaderKey"].asTagged.asBstr
+            val publicKey = Cbor.decode(encodedCoseKey).asCoseKey.ecPublicKey
+            return EReaderKey(publicKey, encodedCoseKey)
         }
     }
 }

@@ -1,5 +1,8 @@
+@file:OptIn(ExperimentalWasmDsl::class)
+
 import org.gradle.kotlin.dsl.implementation
 import org.jetbrains.kotlin.gradle.ExperimentalKotlinGradlePluginApi
+import org.jetbrains.kotlin.gradle.ExperimentalWasmDsl
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
@@ -7,20 +10,33 @@ plugins {
     alias(libs.plugins.androidApplication)
     alias(libs.plugins.jetbrainsCompose)
     alias(libs.plugins.compose.compiler)
+    alias(libs.plugins.kotlinSerialization)
     alias(libs.plugins.buildconfig)
     alias(libs.plugins.ksp)
+    alias(libs.plugins.skie)
 }
 
 val projectVersionCode: Int by rootProject.extra
 val projectVersionName: String by rootProject.extra
 
+// If changing it here, it must also be changed in XCode "Signing and Capabilities", under
+// "Associated Domains"
+val applinkHost = "apps.multipaz.org"
+
 buildConfig {
     packageName("org.multipaz.testapp")
-    buildConfigField("VERSION", projectVersionName)
+    buildConfigField("TEST_APP_UPDATE_URL", System.getenv("TEST_APP_UPDATE_URL") ?: "")
+    buildConfigField("TEST_APP_UPDATE_WEBSITE_URL", System.getenv("TEST_APP_UPDATE_WEBSITE_URL") ?: "")
+    buildConfigField("APPLINK_HOST", applinkHost)
     useKotlinOutput { internalVisibility = false }
 }
 
 kotlin {
+    compilerOptions {
+        optIn.add("kotlin.time.ExperimentalTime")
+        freeCompilerArgs.add("-Xexpect-actual-classes")
+    }
+
     androidTarget {
         @OptIn(ExperimentalKotlinGradlePluginApi::class)
         compilerOptions {
@@ -28,16 +44,30 @@ kotlin {
             allWarningsAsErrors = true
         }
     }
-    
+
+    wasmJs {
+        browser {
+        }
+        binaries.executable()
+    }
+
     listOf(
         iosX64(),
         iosArm64(),
         iosSimulatorArm64()
     ).forEach { iosTarget ->
         iosTarget.binaries.framework {
-            baseName = "TestApp"
+            baseName = "Multipaz"
             isStatic = true
-            linkerOpts.add("-framework CoreVideo")
+            export(project(":multipaz"))
+            export(project(":multipaz-doctypes"))
+            export(project(":multipaz-longfellow"))
+            export(libs.ktor.client.darwin)
+            export(libs.kotlinx.io.bytestring)
+            export(libs.kotlinx.datetime)
+            export(libs.kotlinx.coroutines.core)
+            export(libs.kotlinx.serialization.json)
+            export(libs.ktor.client.core)
         }
     }
 
@@ -49,6 +79,16 @@ kotlin {
                 implementation(libs.ktor.client.darwin)
                 implementation(libs.androidx.sqlite)
                 implementation(libs.androidx.sqlite.framework)
+
+                api(project(":multipaz"))
+                api(project(":multipaz-doctypes"))
+                api(project(":multipaz-longfellow"))
+                api(libs.ktor.client.darwin)
+                api(libs.kotlinx.io.bytestring)
+                api(libs.kotlinx.datetime)
+                api(libs.kotlinx.coroutines.core)
+                api(libs.kotlinx.serialization.json)
+                api(libs.ktor.client.core)
             }
         }
 
@@ -71,9 +111,14 @@ kotlin {
                 implementation(libs.bouncy.castle.bcprov)
                 implementation(libs.androidx.biometrics)
                 implementation(libs.ktor.client.android)
-                implementation(libs.play.services.identity.credentials)
-                implementation(libs.androidx.credentials)
-                implementation(libs.androidx.credentials.registry.provider)
+                implementation(libs.process.phoenix)
+                implementation(libs.accompanist.drawablepainter)
+            }
+        }
+
+        val wasmJsMain by getting {
+            dependencies {
+                implementation(libs.ktor.client.js)
             }
         }
 
@@ -92,12 +137,13 @@ kotlin {
                 implementation(libs.jetbrains.lifecycle.viewmodel.compose)
                 implementation(libs.ktor.client.core)
                 implementation(libs.ktor.network)
+                implementation(libs.semver)
 
                 implementation(project(":multipaz"))
-                implementation(project(":multipaz-models"))
-                implementation(project(":multipaz-doctypes"))
-                implementation(project(":multipaz-provisioning-api"))
                 implementation(project(":multipaz-compose"))
+                implementation(project(":multipaz-dcapi"))
+                implementation(project(":multipaz-doctypes"))
+                implementation(project(":multipaz-longfellow"))
                 implementation(libs.kotlinx.datetime)
                 implementation(libs.kotlinx.io.core)
                 implementation(libs.ktor.client.core)
@@ -105,6 +151,8 @@ kotlin {
                 implementation(libs.kotlinx.serialization.json)
                 implementation(libs.ktor.client.content.negotiation)
                 implementation(libs.ktor.serialization.kotlinx.json)
+                implementation(libs.coil.compose)
+                implementation(libs.coil.ktor3)
             }
         }
     }
@@ -119,6 +167,7 @@ android {
 
     defaultConfig {
         applicationId = "org.multipaz.testapp"
+        manifestPlaceholders["applinkHost"] = applinkHost
         minSdk = libs.versions.android.minSdk.get().toInt()
         targetSdk = libs.versions.android.targetSdk.get().toInt()
         versionCode = projectVersionCode
@@ -140,6 +189,7 @@ android {
                     "proguard-rules.pro"
                 )
             )
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
     flavorDimensions.addAll(listOf("standard"))
@@ -178,3 +228,8 @@ tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().all {
 tasks["compileKotlinIosX64"].dependsOn("kspCommonMainKotlinMetadata")
 tasks["compileKotlinIosArm64"].dependsOn("kspCommonMainKotlinMetadata")
 tasks["compileKotlinIosSimulatorArm64"].dependsOn("kspCommonMainKotlinMetadata")
+tasks["compileKotlinWasmJs"].dependsOn("kspCommonMainKotlinMetadata")
+
+subprojects {
+	apply(plugin = "org.jetbrains.dokka")
+}

@@ -1,7 +1,9 @@
 package org.multipaz.util
 
+import kotlinx.io.bytestring.ByteString
+
 private val HEX_DIGITS_LOWER = "0123456789abcdef".toCharArray()
-private val HEX_DIGITS_UPPER = "0123456789abcdef".toCharArray()
+private val HEX_DIGITS_UPPER = "0123456789ABCDEF".toCharArray()
 
 object HexUtil {
     /**
@@ -72,7 +74,15 @@ object HexUtil {
 fun ByteArray.toHex(upperCase: Boolean = false, byteDivider: String = "", decodeAsString: Boolean = false): String =
     HexUtil.toHex(this, upperCase = upperCase, byteDivider = byteDivider, decodeAsString = decodeAsString)
 
+fun ByteString.toHex(upperCase: Boolean = false, byteDivider: String = "", decodeAsString: Boolean = false): String =
+    HexUtil.toHex(toByteArray(), upperCase = upperCase, byteDivider = byteDivider, decodeAsString = decodeAsString)
+
 /**
  * Extension to decode a [ByteArray] from a string with hexadecimal numbers.
  */
 fun String.fromHex(): ByteArray = HexUtil.fromHex(this)
+
+/**
+ * Extension to decode a [ByteString] from a string with hexadecimal numbers.
+ */
+fun String.fromHexByteString(): ByteString = ByteString(HexUtil.fromHex(this))

@@ -1,7 +1,11 @@
+@file:OptIn(ExperimentalWasmDsl::class)
+
+import org.gradle.api.tasks.testing.logging.TestExceptionFormat
+import org.gradle.kotlin.dsl.implementation
 import org.gradle.kotlin.dsl.dependencies
 import org.gradle.kotlin.dsl.get
-import org.gradle.kotlin.dsl.implementation
 import org.jetbrains.kotlin.gradle.ExperimentalKotlinGradlePluginApi
+import org.jetbrains.kotlin.gradle.ExperimentalWasmDsl
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.konan.target.HostManager
 
@@ -9,14 +13,26 @@ plugins {
     alias(libs.plugins.kotlinMultiplatform)
     alias(libs.plugins.androidLibrary)
     alias(libs.plugins.ksp)
+    alias(libs.plugins.buildconfig)
     id("maven-publish")
 }
 
 val projectVersionCode: Int by rootProject.extra
 val projectVersionName: String by rootProject.extra
 
+buildConfig {
+    packageName("org.multipaz.util")
+    buildConfigField("VERSION", projectVersionName)
+    useKotlinOutput { internalVisibility = true }
+}
+
 kotlin {
     jvmToolchain(17)
+
+    compilerOptions {
+        optIn.add("kotlin.time.ExperimentalTime")
+        freeCompilerArgs.add("-Xexpect-actual-classes")
+    }
 
     jvm()
 
@@ -27,6 +43,20 @@ kotlin {
         }
 
         publishLibraryVariants("release")
+    }
+
+    js {
+        outputModuleName = "multipaz"
+        browser {
+        }
+        binaries.executable()
+    }
+
+    wasmJs {
+        outputModuleName = "multipaz"
+        browser {
+        }
+        binaries.executable()
     }
 
     listOf(
@@ -81,6 +111,14 @@ kotlin {
                 implementation(libs.kotlinx.coroutines.core)
                 implementation(libs.kotlinx.serialization.json)
                 implementation(libs.ktor.client.core)
+                implementation(libs.skie.annotations)
+                api(libs.kotlinx.io.bytestring)
+                api(libs.kotlinx.io.core)
+                api(libs.kotlinx.datetime)
+                api(libs.kotlinx.coroutines.core)
+                api(libs.kotlinx.serialization.json)
+                api(libs.ktor.client.core)
+                api(libs.skie.annotations)
             }
         }
 
@@ -91,26 +129,21 @@ kotlin {
                 implementation(libs.bouncy.castle.bcpkix)
                 implementation(libs.kotlin.test)
                 implementation(libs.kotlinx.coroutines.test)
+                implementation(libs.ktor.client.mock)
+                implementation(project(":multipaz-doctypes"))
             }
         }
 
         val javaSharedMain by creating {
             dependsOn(commonMain)
             dependencies {
-                implementation(libs.bouncy.castle.bcprov)
-                implementation(libs.bouncy.castle.bcpkix)
-                implementation(libs.tink)
-                // TODO: remove when JsonWebEncryption is implemented fully in Kotlin
-                implementation(libs.nimbus.oauth2.oidc.sdk)
             }
         }
 
         val jvmMain by getting {
             dependsOn(javaSharedMain)
             dependencies {
-                implementation(libs.bouncy.castle.bcprov)
-                implementation(libs.bouncy.castle.bcpkix)
-                implementation(libs.tink)
+                implementation(libs.ktor.client.java)
             }
         }
 
@@ -141,17 +174,25 @@ kotlin {
                 implementation(libs.postgresql)
                 implementation(libs.nimbus.oauth2.oidc.sdk)
                 implementation(libs.kotlinx.serialization.json)
+                implementation(libs.tink)
             }
         }
 
         val androidInstrumentedTest by getting {
             dependsOn(commonTest)
             dependencies {
+                implementation(libs.bouncy.castle.bcprov)
+                implementation(libs.bouncy.castle.bcpkix)
+                implementation(project(":multipaz-doctypes"))
+                implementation(project(":multipaz-dcapi"))
+                implementation(project(":multipaz-dcapi:matcherTest"))
                 implementation(libs.androidx.sqlite)
                 implementation(libs.androidx.sqlite.framework)
                 implementation(libs.androidx.sqlite.bundled)
                 implementation(libs.androidx.test.junit)
                 implementation(libs.androidx.espresso.core)
+                implementation(libs.kotlin.test)
+                implementation(libs.kotlinx.coroutines.test)
                 implementation(libs.kotlinx.coroutines.android)
                 implementation(libs.ktor.client.mock)
                 implementation(project(":multipaz-csa"))
@@ -163,6 +204,13 @@ kotlin {
                 implementation(libs.androidx.sqlite)
                 implementation(libs.androidx.sqlite.framework)
                 implementation(libs.androidx.sqlite.bundled)
+            }
+        }
+
+        val webMain by getting {
+            dependencies {
+                implementation(libs.kotlin.wrappers.web)
+                implementation(libs.kotlinx.browser)
             }
         }
     }
@@ -177,7 +225,7 @@ tasks.all {
     if (name == "compileDebugKotlinAndroid" || name == "compileReleaseKotlinAndroid" ||
         name == "androidReleaseSourcesJar" || name == "iosArm64SourcesJar" ||
         name == "iosSimulatorArm64SourcesJar" || name == "iosX64SourcesJar" ||
-        name == "jvmSourcesJar" || name == "sourcesJar") {
+        name == "jsSourcesJar" || name == "wasmJsSourcesJar"  || name == "jvmSourcesJar" || name == "sourcesJar") {
         dependsOn("kspCommonMainKotlinMetadata")
     }
 }
@@ -186,7 +234,14 @@ tasks["compileKotlinIosX64"].dependsOn("kspCommonMainKotlinMetadata")
 tasks["compileKotlinIosArm64"].dependsOn("kspCommonMainKotlinMetadata")
 tasks["compileKotlinIosSimulatorArm64"].dependsOn("kspCommonMainKotlinMetadata")
 tasks["compileKotlinJvm"].dependsOn("kspCommonMainKotlinMetadata")
+tasks["compileKotlinJs"].dependsOn("kspCommonMainKotlinMetadata")
+tasks["compileKotlinWasmJs"].dependsOn("kspCommonMainKotlinMetadata")
 
+tasks.withType<Test> {
+    testLogging {
+        exceptionFormat = TestExceptionFormat.FULL
+    }
+}
 android {
     namespace = "org.multipaz"
     compileSdk = libs.versions.android.compileSdk.get().toInt()
@@ -201,8 +256,6 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    dependencies {
-    }
 
     packaging {
         resources {
@@ -215,6 +268,10 @@ android {
         singleVariant("release") {
             withSourcesJar()
         }
+    }
+
+    testOptions {
+        unitTests.isReturnDefaultValues = true
     }
 }
 
@@ -237,4 +294,8 @@ publishing {
             }
         }
     }
+}
+
+subprojects {
+	apply(plugin = "org.jetbrains.dokka")
 }

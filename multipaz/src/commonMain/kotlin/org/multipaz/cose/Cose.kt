@@ -1,8 +1,6 @@
 package org.multipaz.cose
 
 import org.multipaz.cbor.Cbor
-import org.multipaz.cbor.CborArray
-import org.multipaz.cbor.CborMap
 import org.multipaz.cbor.DataItem
 import org.multipaz.cbor.buildCborArray
 import org.multipaz.cbor.buildCborMap
@@ -13,7 +11,9 @@ import org.multipaz.crypto.EcPrivateKey
 import org.multipaz.crypto.EcPublicKey
 import org.multipaz.crypto.EcSignature
 import org.multipaz.crypto.SignatureVerificationException
+import org.multipaz.crypto.AsymmetricKey
 import org.multipaz.securearea.KeyUnlockData
+import org.multipaz.prompt.Reason
 import org.multipaz.securearea.SecureArea
 
 /**
@@ -90,9 +90,26 @@ object Cose {
     const val COSE_LABEL_ALG = 1L
 
     /**
+     * The COSE label for conveying the token type (tstr or uint) similar to JWT `typ`.
+     *
+     * Note: this is not the content type of the data in COSE body, instead this this the type of
+     * the overall COSE token.
+     *
+     * Reference: https://www.iana.org/assignments/cose/cose.xhtml
+     */
+    const val COSE_LABEL_TYP: Long = 16L
+
+    /**
+     * The COSE label for conveying the key id (bstr) in the COSE header.
+     *
+     * Reference: https://www.iana.org/assignments/cose/cose.xhtml
+     */
+    const val COSE_LABEL_KID: Long = 4L
+
+    /**
      * The COSE label for conveying an X.509 certificate chain.
      *
-     * Reference: https://www.iana.org/assignments/cose/cose.xhtml#header-parameters
+     * Reference: https://www.iana.org/assignments/cose/cose.xhtml
      */
     const val COSE_LABEL_X5CHAIN = 33L
     
@@ -127,7 +144,7 @@ object Cose {
      * @throws IllegalArgumentException if not exactly one of `detachedData` and `signature.payload` are non-`null`.
      * @throws SignatureVerificationException if the signature check fails.
      */
-    fun coseSign1Check(
+    suspend fun coseSign1Check(
         publicKey: EcPublicKey,
         detachedData: ByteArray?,
         signature: CoseSign1,
@@ -161,6 +178,62 @@ object Cose {
     /**
      * Creates a COSE_Sign1 signature.
      *
+     * By default, the [Cose.COSE_LABEL_ALG] header is included in the protected header with the
+     * algorithm specified in the key. If [protectedHeaders] already contain [Cose.COSE_LABEL_ALG]
+     * it will not be replaced.
+     *
+     * The app can include additional headers, for example if certification is needed, [Cose.COSE_LABEL_X5CHAIN]
+     * can be included in either the unprotected or protected header.
+     *
+     * @param signingKey key to sign with.
+     * @param message the data to sign.
+     * @param includeMessageInPayload whether to include the message in the COSE_Sign1 payload.
+     * @param protectedHeaders the protected headers to include.
+     * @param unprotectedHeaders the unprotected headers to include.
+     */
+    suspend fun coseSign1Sign(
+        signingKey: AsymmetricKey,
+        message: ByteArray,
+        includeMessageInPayload: Boolean,
+        protectedHeaders: Map<CoseLabel, DataItem>,
+        unprotectedHeaders: Map<CoseLabel, DataItem>,
+    ): CoseSign1 {
+        val adjustedProtectedHeaders = mutableMapOf<CoseLabel, DataItem>()
+        adjustedProtectedHeaders.putAll(protectedHeaders)
+
+        // This is important - our key likely has a fully defined algorithm (e.g. ESP256) but
+        // it's likely the receiver doesn't understand this. So downgrade to a non-fully-defined
+        // algorithm via EcCurve.defaultSigningAlgorithm (e.g. ES256) unless the caller already
+        // explicitly set the algorithm.
+        //
+        if (!protectedHeaders.containsKey(CoseNumberLabel(COSE_LABEL_ALG))) {
+            val signingAlgorithmToConvey = signingKey.algorithm
+            check(signingAlgorithmToConvey.coseAlgorithmIdentifier != null) {
+                "Key algorithm doesn't have a COSE identifier"
+            }
+            adjustedProtectedHeaders[CoseNumberLabel(COSE_LABEL_ALG)] =
+                signingAlgorithmToConvey.coseAlgorithmIdentifier.toDataItem()
+        }
+
+        val encodedProtectedHeaders = Cbor.encode(
+            buildCborMap {
+                adjustedProtectedHeaders.forEach { (label, di) -> put(label.toDataItem(), di) }
+            }
+        )
+        val toBeSigned = coseBuildToBeSigned(encodedProtectedHeaders, message)
+        val signature = signingKey.sign(toBeSigned)
+
+        return CoseSign1(
+            protectedHeaders = adjustedProtectedHeaders.toMap(),
+            unprotectedHeaders = unprotectedHeaders,
+            signature = signature.toCoseEncoded(),
+            payload = if (includeMessageInPayload) message else null
+        )
+    }
+
+    /**
+     * Creates a COSE_Sign1 signature.
+     *
      * By default, the [Cose.COSE_LABEL_ALG] header is included in the protected header with the non-fully-defined
      * [Algorithm] set of the key. For example for a key with [Algorithm.ESP256], the value [Algorithm.ES256]
      * is included. If [protectedHeaders] already contain [Cose.COSE_LABEL_ALG] it will not be replaced.
@@ -172,6 +245,9 @@ object Cose {
      * [EcPrivateKey], see the other function with the same name but taking a [EcPrivateKey]
      * instead.
      *
+     * This method remains for compatibility. New code should used
+     * [AsymmetricKey]-based method instead.
+     *
      * @param secureArea the [SecureArea] holding the private key.
      * @param alias the alias for the private key to use to sign with.
      * @param message the data to sign.
@@ -180,6 +256,7 @@ object Cose {
      * @param unprotectedHeaders the unprotected headers to include.
      * @param keyUnlockData a [KeyUnlockData] for unlocking the key in the [SecureArea].
      */
+    @Deprecated(message = "Use SigningKey-based method instead")
     suspend fun coseSign1Sign(
         secureArea: SecureArea,
         alias: String,
@@ -187,7 +264,7 @@ object Cose {
         includeMessageInPayload: Boolean,
         protectedHeaders: Map<CoseLabel, DataItem>,
         unprotectedHeaders: Map<CoseLabel, DataItem>,
-        keyUnlockData: KeyUnlockData?
+        unlockReason: Reason = Reason.Unspecified
     ): CoseSign1 {
         val adjustedProtectedHeaders = mutableMapOf<CoseLabel, DataItem>()
         adjustedProtectedHeaders.putAll(protectedHeaders)
@@ -213,7 +290,7 @@ object Cose {
             }
         )
         val toBeSigned = coseBuildToBeSigned(encodedProtectedHeaders, message)
-        val signature = secureArea.sign(alias, toBeSigned, keyUnlockData)
+        val signature = secureArea.sign(alias, toBeSigned, unlockReason)
 
         return CoseSign1(
             protectedHeaders = adjustedProtectedHeaders.toMap(),
@@ -234,14 +311,18 @@ object Cose {
      * Secure Area see the other function with the same name but taking a [SecureArea]
      * and alias.
      *
+     * This method remains for compatibility. New code should used
+     * [AsymmetricKey]-based method instead.
+     *
      * @param key the private key to sign with.
-     * @param message the data to sign.
-     * @param includeMessageInPayload whether to include the message in the COSE_Sign1 payload.
+     * @param dataToSign the data to sign.
+     * @param includeDataInPayload whether to include the message in the COSE_Sign1 payload.
      * @param signatureAlgorithm the signature algorithm to use.
      * @param protectedHeaders the protected headers to include.
      * @param unprotectedHeaders the unprotected headers to include.
      */
-    fun coseSign1Sign(
+    @Deprecated(message = "Use SigningKey-based method instead")
+    suspend fun coseSign1Sign(
         key: EcPrivateKey,
         dataToSign: ByteArray,
         includeDataInPayload: Boolean,
@@ -282,7 +363,7 @@ object Cose {
      * @param protectedHeaders the protected headers to include.
      * @param unprotectedHeaders the unprotected headers to include.
      */
-    fun coseMac0(
+    suspend fun coseMac0(
         algorithm: Algorithm,
         key: ByteArray,
         message: ByteArray,

@@ -3,11 +3,12 @@ package org.multipaz.sdjwt.credential
 import org.multipaz.cbor.CborBuilder
 import org.multipaz.cbor.DataItem
 import org.multipaz.cbor.MapBuilder
-import org.multipaz.claim.Claim
-import org.multipaz.claim.VcClaim
+import org.multipaz.claim.JsonClaim
 import org.multipaz.credential.Credential
 import org.multipaz.document.Document
 import org.multipaz.documenttype.DocumentTypeRepository
+import org.multipaz.securearea.SecureArea
+import kotlin.time.Instant
 
 class KeylessSdJwtVcCredential : Credential, SdJwtVcCredential {
     override lateinit var vct: String
@@ -42,7 +43,11 @@ class KeylessSdJwtVcCredential : Credential, SdJwtVcCredential {
      */
     constructor(document: Document) : super(document)
 
+    override val credentialType: String
+        get() = CREDENTIAL_TYPE
+
     override suspend fun deserialize(dataItem: DataItem) {
+        super.deserialize(dataItem)
         vct = dataItem["vct"].asTstr
     }
 
@@ -51,7 +56,25 @@ class KeylessSdJwtVcCredential : Credential, SdJwtVcCredential {
         builder.put("vct", vct)
     }
 
+    override suspend fun getClaims(documentTypeRepository: DocumentTypeRepository?): List<JsonClaim> {
+        return getClaimsImpl(documentTypeRepository)
+    }
+
+    override suspend fun extractValidityFromIssuerData(): Pair<Instant, Instant> =
+        extractValidityFromIssuerDataImpl()
+
     companion object {
+        const val CREDENTIAL_TYPE: String = "KeylessSdJwtVcCredential"
+
+        /**
+         * Create a [KeyBoundSdJwtVcCredential].
+         *
+         * @param document The document to add the credential to.
+         * @param asReplacementForIdentifier the identifier for the [Credential] this will replace when certified.
+         * @param domain The domain for the credential.
+         * @param vct The Verifiable Credential Type for the credential.
+         * @return an uncertified [Credential] which has been added to [document].
+         */
         suspend fun create(
             document: Document,
             asReplacementForIdentifier: String?,
@@ -67,9 +90,5 @@ class KeylessSdJwtVcCredential : Credential, SdJwtVcCredential {
                 addToDocument()
             }
         }
-    }
-
-    override fun getClaims(documentTypeRepository: DocumentTypeRepository?): List<VcClaim> {
-        return getClaimsImpl(documentTypeRepository)
     }
 }

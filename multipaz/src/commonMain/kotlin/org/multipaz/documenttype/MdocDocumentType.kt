@@ -19,10 +19,10 @@ package org.multipaz.documenttype
 import org.multipaz.cbor.DataItem
 
 /**
- * Class containing the metadata of an mDoc Document Type.
+ * Class containing the metadata of an ISO mdoc Document Type.
  *
- * @param docType the docType of the mDoc Document Type.
- * @param namespaces the namespaces of the mDoc Document Type.
+ * @property docType the ISO mdoc doc type e.g. `org.iso.18013.5.1.mDL`.
+ * @property namespaces the namespaces of the doc type.
  */
 class MdocDocumentType private constructor(
     val docType: String,
@@ -31,24 +31,24 @@ class MdocDocumentType private constructor(
     /**
      * Builder class for class [MdocDocumentType].
      *
-     * @param docType the docType of the mDoc Document Type.
-     * @param namespaces the namespaces of the mDoc Document Type.
+     * @param docType the docType of the ISO mdoc Document Type.
      */
     data class Builder(
         val docType: String,
-        val namespaces: MutableMap<String, MdocNamespace.Builder> = mutableMapOf()
+        internal val namespaces: MutableMap<String, MdocNamespace.Builder> = mutableMapOf(),
     ) {
         /**
-         * Add a data element to a namespace in the mDoc Document Type.
+         * Add a data element to a namespace in the ISO mdoc Document Type.
          *
-         * @param namespace the namespace of the mDoc attribute.
+         * @param namespace the namespace of the ISO mdoc attribute.
          * @param type the datatype of this attribute.
          * @param identifier the identifier of this attribute.
          * @param displayName the name suitable for display of the attribute.
          * @param description a description of the attribute.
-         * @param mandatory indication whether the mDoc attribute is mandatory.
+         * @param mandatory indication whether the ISO mdoc attribute is mandatory.
          * @param icon the icon, if available.
          * @param sampleValue a sample value for the attribute, if available.
+         * @return the builder.
          */
         fun addDataElement(
             namespace: String,
@@ -72,6 +72,29 @@ class MdocDocumentType private constructor(
                 icon,
                 sampleValue
             )
+        }
+
+        /**
+         * Adds an existing namespace to this type.
+         *
+         * @param namespace the existing namespace to add.
+         * @return the builder.
+         */
+        fun addNamespace(
+            namespace: MdocNamespace
+        ) = apply {
+            namespace.dataElements.forEach { (dataElementName, dataElement) ->
+                addDataElement(
+                    namespace = namespace.namespace,
+                    type = dataElement.attribute.type,
+                    identifier = dataElement.attribute.identifier,
+                    displayName = dataElement.attribute.displayName,
+                    description = dataElement.attribute.description,
+                    mandatory = dataElement.mandatory,
+                    icon = dataElement.attribute.icon,
+                    sampleValue = dataElement.attribute.sampleValueMdoc
+                )
+            }
         }
 
         /**

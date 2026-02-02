@@ -2,9 +2,10 @@ package org.multipaz.securearea.cloud
 
 import org.multipaz.securearea.CreateKeySettings
 import org.multipaz.securearea.config.SecureAreaConfigurationCloud
-import kotlinx.datetime.Instant
+import kotlin.time.Instant
 import kotlinx.io.bytestring.ByteString
 import org.multipaz.crypto.Algorithm
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * Holds cloud-specific settings related to key creation.
@@ -17,31 +18,22 @@ class CloudCreateKeySettings private constructor(
      */
     val attestationChallenge: ByteString,
 
-    /**
-     * Whether user authentication is required.
-     */
-    val userAuthenticationRequired: Boolean,
+    userAuthenticationRequired: Boolean,
 
     /**
      * User authentication types permitted.
      */
     val userAuthenticationTypes: Set<CloudUserAuthType>,
 
-    /**
-     * Point in time before which the key is not valid, if available.
-     */
-    val validFrom: Instant?,
+    validFrom: Instant?,
 
-    /**
-     * Point in time after which the key is not valid, if available.
-     */
-    val validUntil: Instant?,
+    validUntil: Instant?,
 
     /**
      * Whether the key is protected by a passphrase.
      */
     val passphraseRequired: Boolean,
-) : CreateKeySettings(algorithm, attestationChallenge) {
+) : CreateKeySettings(algorithm, attestationChallenge, userAuthenticationRequired, 0.seconds, validFrom, validUntil) {
 
     /**
      * A builder for [CloudCreateKeySettings].

@@ -17,15 +17,12 @@ package org.multipaz.document
 
 import org.multipaz.claim.Claim
 import org.multipaz.credential.Credential
-import org.multipaz.credential.CredentialLoader
 import org.multipaz.credential.SecureAreaBoundCredential
-import org.multipaz.crypto.EcCurve
 import org.multipaz.documenttype.DocumentTypeRepository
 import org.multipaz.securearea.CreateKeySettings
 import org.multipaz.securearea.SecureArea
 import org.multipaz.securearea.SecureAreaRepository
 import org.multipaz.securearea.software.SoftwareSecureArea
-import org.multipaz.storage.Storage
 import org.multipaz.storage.ephemeral.EphemeralStorage
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -38,10 +35,14 @@ import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.yield
-import kotlinx.datetime.Instant;
+import kotlin.time.Instant
 import kotlinx.io.bytestring.ByteString
-import kotlinx.io.bytestring.buildByteString
-import org.multipaz.crypto.Algorithm
+import kotlinx.io.bytestring.encodeToByteString
+import org.multipaz.cbor.Cbor
+import org.multipaz.cbor.buildCborMap
+import org.multipaz.cbor.toDataItemDateTimeString
+import org.multipaz.storage.StorageTableSpec
+import kotlin.random.Random
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
@@ -53,62 +54,87 @@ import kotlin.test.assertNotSame
 import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
+import kotlin.time.Clock
+import kotlin.time.Duration.Companion.seconds
 
 class DocumentStoreTest {
-    private lateinit var storage: Storage
+    private lateinit var storage: EphemeralStorage
     private lateinit var secureAreaRepository: SecureAreaRepository
-    private lateinit var credentialLoader: CredentialLoader
-
-    // This isn't really used, we only use a single domain.
-    private val CREDENTIAL_DOMAIN = "domain"
 
     @BeforeTest
-    fun setup() {
+    fun setup() = runTest {
+        Document.customSchema0_97_0_MigrationFn = null
         storage = EphemeralStorage()
-        secureAreaRepository = SecureAreaRepository.build {
-            add(SoftwareSecureArea.create(storage))
-        }
-        credentialLoader = CredentialLoader()
-        credentialLoader.addCredentialImplementation(
-            TestSecureAreaBoundCredential::class
-        ) { document -> TestSecureAreaBoundCredential(document) }
-        credentialLoader.addCredentialImplementation(
-            TestCredential::class
-        ) { document -> TestCredential(document) }
+        secureAreaRepository = SecureAreaRepository.Builder()
+            .add(SoftwareSecureArea.create(storage))
+            .build()
     }
 
     private fun runDocumentTest(testBody: suspend TestScope.(docStore: DocumentStore) -> Unit) {
         runTest {
-            val documentStore = DocumentStore(
+            val documentStore = buildDocumentStore(
                 storage = storage,
-                secureAreaRepository = secureAreaRepository,
-                credentialLoader = credentialLoader,
-                documentMetadataFactory = SimpleDocumentMetadata::create
-            )
+                secureAreaRepository = secureAreaRepository
+            ) {
+                addCredentialImplementation(TestSecureAreaBoundCredential.CREDENTIAL_TYPE) { document ->
+                    TestSecureAreaBoundCredential(document)
+                }
+                addCredentialImplementation(TestCredential.CREDENTIAL_TYPE) { document ->
+                    TestCredential(document)
+                }
+            }
             testBody(documentStore)
         }
     }
-    
+
     @Test
-    fun testListDocuments() = runDocumentTest { documentStore ->
-        assertEquals(0, documentStore.listDocuments().size.toLong())
+    fun testListDocumentIds() = runDocumentTest { documentStore ->
+        assertEquals(0, documentStore.listDocumentIds().size.toLong())
         val documents = (0..9).map { documentStore.createDocument() }
-        assertEquals(10, documentStore.listDocuments().size.toLong())
+        assertEquals(10, documentStore.listDocumentIds().size.toLong())
         val deletedId = documents[1].identifier
         documentStore.deleteDocument(deletedId)
         val remainingIds = documents.map { it.identifier }.filter { it != deletedId }.toSet()
-        assertEquals(remainingIds, documentStore.listDocuments().toSet())
+        assertEquals(remainingIds, documentStore.listDocumentIds().toSet())
+    }
+
+    @Test
+    fun testListDocuments() = runDocumentTest { documentStore ->
+        assertTrue(documentStore.listDocuments().isEmpty())
+        var time = Instant.parse("2026-01-12T12:30:00Z")
+        val documents = (0..9).map { index ->
+            time -= 1.seconds
+            documentStore.createDocument(
+                displayName = "doc $index",
+                created = time
+            )
+        }
+
+        // Expect reverse order, since creation time was decreasing
+        assertEquals(documents.reversed(), documentStore.listDocuments())
+
+        // Use ordering
+        documents.withIndex().forEach { (index, document) ->
+            document.edit {
+                orderingKey = "order $index"
+            }
+        }
+
+        // Check that the order has changed
+        assertEquals(documents, documentStore.listDocuments())
     }
 
     @OptIn(ExperimentalCoroutinesApi::class)
     @Test
     fun testEventFlow() = runTest {
-        val documentStore = DocumentStore(
+        val documentStore = buildDocumentStore(
             storage = storage,
-            secureAreaRepository = secureAreaRepository,
-            credentialLoader = credentialLoader,
-            documentMetadataFactory = SimpleDocumentMetadata::create
-        )
+            secureAreaRepository = secureAreaRepository
+        ) {
+            addCredentialImplementation(TestSecureAreaBoundCredential.CREDENTIAL_TYPE) { document ->
+                TestSecureAreaBoundCredential(document)
+            }
+        }
 
         val events = mutableListOf<DocumentEvent>()
         backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
@@ -127,11 +153,14 @@ class DocumentStoreTest {
         runCurrent()
         assertEquals(DocumentAdded(doc2.identifier), events.last())
 
-        doc2.simpleMetadata.markAsProvisioned()
+        doc2.edit { provisioned = true }
         runCurrent()
         assertEquals(DocumentUpdated(doc2.identifier), events.last())
 
-        doc1.simpleMetadata.setBasicProperties("foo", "bar", null, null)
+        doc1.edit {
+            displayName = "foo"
+            typeDisplayName = "bar"
+        }
         runCurrent()
         assertEquals(DocumentUpdated(doc1.identifier), events.last())
 
@@ -194,7 +223,7 @@ class DocumentStoreTest {
         assertNull(document.findCredential(CREDENTIAL_DOMAIN, timeDuringValidity))
 
         // Create ten credentials...
-        for (n in 0..9) {
+        repeat(10) {
             TestCredential(
                 document,
                 null,
@@ -205,15 +234,13 @@ class DocumentStoreTest {
         assertEquals(10, document.getPendingCredentials().size.toLong())
 
         // ... and certify all of them
-        var n = 0
-        for (pendingCredential in document.getPendingCredentials()) {
-            val issuerProvidedAuthenticationData = byteArrayOf(1, 2, n.toByte())
-            pendingCredential.certify(
-                issuerProvidedAuthenticationData,
-                timeValidityBegin,
-                timeValidityEnd
-            )
-            n += 1
+        for ((n, pendingCredential) in document.getPendingCredentials().withIndex()) {
+            val issuerProvidedAuthenticationData = TestIssuerData(
+                validFrom = timeValidityBegin,
+                validUntil = timeValidityEnd,
+                identifier = n
+            ).serialize()
+            pendingCredential.certify(issuerProvidedAuthenticationData)
         }
         assertEquals(10, document.getCertifiedCredentials().size.toLong())
         assertEquals(0, document.getPendingCredentials().size.toLong())
@@ -230,25 +257,23 @@ class DocumentStoreTest {
         assertEquals(0, credential.usageCount.toLong())
 
         // B/c of how findCredential(CREDENTIAL_DOMAIN) we know we get the first credential. Match
-        // up with expected issuer signed data as per above.
-        assertEquals(0.toByte().toLong(), credential.issuerProvidedData[2].toLong())
+        // up with expected issuer signed as per above.
+        val data = TestIssuerData.parse(credential.issuerProvidedData)
+        assertEquals(0, data.identifier)
         assertEquals(0, credential.usageCount.toLong())
         credential.increaseUsageCount()
         assertEquals(1, credential.usageCount.toLong())
 
         // Simulate nine more presentations, all of them should now be used up
-        n = 0
-        while (n < 9) {
+        repeat(9) { n ->
             credential = document.findCredential(CREDENTIAL_DOMAIN, timeDuringValidity)
             assertNotNull(credential)
 
             // B/c of how findCredential(CREDENTIAL_DOMAIN) we know we get the credentials after
-            // the first one in order. Match up with expected issuer signed data as per above.
-            assertEquals(
-                (n + 1).toByte().toLong(), credential!!.issuerProvidedData[2].toLong()
-            )
+            // the first one in order. Match up with expected issuer data as per above.
+            val data = TestIssuerData.parse(credential.issuerProvidedData)
+            assertEquals(n + 1, data.identifier)
             credential.increaseUsageCount()
-            n++
         }
 
         // All ten credentials should now have a use count of 1.
@@ -257,12 +282,10 @@ class DocumentStoreTest {
         }
 
         // Simulate ten more presentations
-        n = 0
-        while (n < 10) {
+        repeat(10) {
             credential = document.findCredential(CREDENTIAL_DOMAIN, timeDuringValidity)
             assertNotNull(credential)
             credential.increaseUsageCount()
-            n++
         }
 
         // All ten credentials should now have a use count of 2.
@@ -273,8 +296,7 @@ class DocumentStoreTest {
         val secureArea = secureAreaRepository.getImplementation(SoftwareSecureArea.IDENTIFIER)!!
 
         // Create and certify five replacements
-        n = 0
-        while (n < 5) {
+        repeat (5) {
             TestSecureAreaBoundCredential.create(
                 document,
                 null,
@@ -282,30 +304,27 @@ class DocumentStoreTest {
                 secureArea,
                 CreateKeySettings()
             )
-            n++
         }
         assertEquals(10, document.getCertifiedCredentials().size.toLong())
         assertEquals(5, document.getPendingCredentials().size.toLong())
-        n = 10
         for (pendingCredential in document.getPendingCredentials()) {
-            pendingCredential.certify(
-                ByteArray(0),
-                timeValidityBegin,
-                timeValidityEnd
-            )
-            n++
+            val issuerProvidedAuthenticationData = TestIssuerData(
+                validFrom = timeValidityBegin,
+                validUntil = timeValidityEnd,
+                identifier = -1
+            ).serialize()
+            pendingCredential.certify(issuerProvidedAuthenticationData)
         }
         assertEquals(15, document.getCertifiedCredentials().size.toLong())
         assertEquals(0, document.getPendingCredentials().size.toLong())
 
         // Simulate ten presentations and check we get the newly created ones
-        n = 0
-        while (n < 10) {
+        repeat(10) {
             credential = document.findCredential(CREDENTIAL_DOMAIN, timeDuringValidity)
             assertNotNull(credential)
-            assertEquals(0, credential!!.issuerProvidedData.size.toLong())
+            val data = TestIssuerData.parse(credential.issuerProvidedData)
+            assertEquals(-1, data.identifier)
             credential.increaseUsageCount()
-            n++
         }
 
         // All fifteen credentials should now have a use count of 2.
@@ -314,12 +333,10 @@ class DocumentStoreTest {
         }
 
         // Simulate 15 more presentations
-        n = 0
-        while (n < 15) {
+        repeat(15) {
             credential = document.findCredential(CREDENTIAL_DOMAIN, timeDuringValidity)
             assertNotNull(credential)
-            credential!!.increaseUsageCount()
-            n++
+            credential.increaseUsageCount()
         }
 
         // All fifteen credentials should now have a use count of 3. This shows that
@@ -332,14 +349,14 @@ class DocumentStoreTest {
     @OptIn(ExperimentalCoroutinesApi::class)
     @Test
     fun testCredentialPersistence() = runTest {
-        val documentStore = DocumentStore(
+        val documentStore = buildDocumentStore(
             storage = storage,
-            secureAreaRepository = secureAreaRepository,
-            credentialLoader = credentialLoader,
-            documentMetadataFactory = SimpleDocumentMetadata::create
-        )
-
-        var n: Int
+            secureAreaRepository = secureAreaRepository
+        ) {
+            addCredentialImplementation(TestSecureAreaBoundCredential.CREDENTIAL_TYPE) { document ->
+                TestSecureAreaBoundCredential(document)
+            }
+        }
         val timeValidityBegin = Instant.fromEpochMilliseconds(50)
         val timeValidityEnd = Instant.fromEpochMilliseconds(150)
         val document = documentStore.createDocument()
@@ -349,7 +366,7 @@ class DocumentStoreTest {
         val secureArea = secureAreaRepository.getImplementation(SoftwareSecureArea.IDENTIFIER)!!
 
         // Create ten pending credentials and certify four of them
-        n = 0
+        var n = 0
         while (n < 4) {
             TestSecureAreaBoundCredential.create(
                 document,
@@ -366,12 +383,13 @@ class DocumentStoreTest {
         for (credential in document.getPendingCredentials()) {
             // Because we check that we serialize things correctly below, make sure
             // the data and validity times vary for each credential...
-            credential.certify(
-                byteArrayOf(1, 2, n.toByte()),
-                Instant.fromEpochMilliseconds(timeValidityBegin.toEpochMilliseconds() + n),
-                Instant.fromEpochMilliseconds(timeValidityEnd.toEpochMilliseconds() + 2 * n)
-            )
-            for (m in 0 until n) {
+            val issuerProvidedAuthenticationData = TestIssuerData(
+                validFrom = Instant.fromEpochMilliseconds(timeValidityBegin.toEpochMilliseconds() + n),
+                validUntil = Instant.fromEpochMilliseconds(timeValidityEnd.toEpochMilliseconds() + 2 * n),
+                identifier = n
+            ).serialize()
+            credential.certify(issuerProvidedAuthenticationData)
+            repeat(n) {
                 credential.increaseUsageCount()
             }
             assertEquals(n.toLong(), credential.usageCount.toLong())
@@ -396,12 +414,14 @@ class DocumentStoreTest {
         assertEquals(6, pending.size.toLong())
 
         runCurrent()
-        val documentStore2 = DocumentStore(
+        val documentStore2 = buildDocumentStore(
             storage = storage,
-            secureAreaRepository = secureAreaRepository,
-            credentialLoader = credentialLoader,
-            documentMetadataFactory = SimpleDocumentMetadata::create
-        )
+            secureAreaRepository = secureAreaRepository
+        ) {
+            addCredentialImplementation(TestSecureAreaBoundCredential.CREDENTIAL_TYPE) { document ->
+                TestSecureAreaBoundCredential(document)
+            }
+        }
 
         val document2 = documentStore2.lookupDocument(document.identifier)
         assertNotNull(document2)
@@ -424,7 +444,7 @@ class DocumentStoreTest {
             assertEquals(doc1.validFrom, doc2.validFrom)
             assertEquals(doc1.validUntil, doc2.validUntil)
             assertEquals(doc1.usageCount.toLong(), doc2.usageCount.toLong())
-            assertContentEquals(doc1.issuerProvidedData, doc2.issuerProvidedData)
+            assertEquals(doc1.issuerProvidedData, doc2.issuerProvidedData)
             assertEquals(doc1.getAttestation(), doc2.getAttestation())
             n++
         }
@@ -443,37 +463,43 @@ class DocumentStoreTest {
 
     @Test
     fun testDocumentMetadata() = runTest {
-        val documentStore = DocumentStore(
+        val documentStore = buildDocumentStore(
             storage = storage,
-            secureAreaRepository = secureAreaRepository,
-            credentialLoader = credentialLoader,
-            documentMetadataFactory = SimpleDocumentMetadata::create
-        )
-        val document = documentStore.createDocument {
-            val appData = it as SimpleDocumentMetadata
-            appData.setBasicProperties("init", "", null, null)
+            secureAreaRepository = secureAreaRepository
+        ) {
+            addCredentialImplementation(TestSecureAreaBoundCredential.CREDENTIAL_TYPE) { document ->
+                TestSecureAreaBoundCredential(document)
+            }
         }
-        val appData = document.simpleMetadata
-        assertFalse(appData.provisioned)
-        assertEquals("init", appData.displayName)
-        appData.markAsProvisioned()
-        assertTrue(appData.provisioned)
-        appData.setBasicProperties("foo", "bar", ByteString(1, 2, 3), null)
-        assertEquals("foo", appData.displayName)
-        assertEquals(ByteString(1, 2, 3), appData.cardArt)
-
-        val documentStore2 = DocumentStore(
-            storage = storage,
-            secureAreaRepository = secureAreaRepository,
-            credentialLoader = credentialLoader,
-            documentMetadataFactory = SimpleDocumentMetadata::create
+        val document = documentStore.createDocument(
+            displayName = "init",
+            typeDisplayName = ""
         )
+        assertFalse(document.provisioned)
+        assertEquals("init", document.displayName)
+        document.edit { provisioned = true }
+        assertTrue(document.provisioned)
+        document.edit {
+            displayName = "foo"
+            typeDisplayName = "bar"
+            cardArt = ByteString(1, 2, 3)
+        }
+        assertEquals("foo", document.displayName)
+        assertEquals(ByteString(1, 2, 3), document.cardArt)
+
+        val documentStore2 = buildDocumentStore(
+            storage = storage,
+            secureAreaRepository = secureAreaRepository
+        ) {
+            addCredentialImplementation(TestSecureAreaBoundCredential.CREDENTIAL_TYPE) { document ->
+                TestSecureAreaBoundCredential(document)
+            }
+        }
         val document2 = documentStore2.lookupDocument(document.identifier)
         assertNotNull(document2)
-        val appData2 = document2.simpleMetadata
-        assertTrue(appData2.provisioned)
-        assertEquals("foo", appData2.displayName)
-        assertEquals(ByteString(1, 2, 3), appData2.cardArt)
+        assertTrue(document2.provisioned)
+        assertEquals("foo", document2.displayName)
+        assertEquals(ByteString(1, 2, 3), document2.cardArt)
     }
 
     @OptIn(ExperimentalCoroutinesApi::class)
@@ -496,8 +522,8 @@ class DocumentStoreTest {
 
         val secureArea = secureAreaRepository.getImplementation(SoftwareSecureArea.IDENTIFIER)!!
 
-        // Create and certify ten credentials. Put age_in_years as the issuer provided data so we can
-        // check it below.
+        // Create and certify ten credentials. Put age_in_years as the issuer provided data (as
+        // identifier) so we can check it below.
         var n = 0
         while (n < 10) {
             TestSecureAreaBoundCredential.create(
@@ -514,11 +540,20 @@ class DocumentStoreTest {
         assertEquals(10, pendingCredentials.size.toLong())
         n = 0
         for (pendingCredential in pendingCredentials) {
-            if (n < 5) {
-                pendingCredential.certify(byteArrayOf(17), timeValidityBegin, timeOfBirthday)
+            val issuerProvidedAuthenticationData = if (n < 5) {
+                TestIssuerData(
+                    validFrom = timeValidityBegin,
+                    validUntil = timeOfBirthday,
+                    identifier = 17
+                )
             } else {
-                pendingCredential.certify(byteArrayOf(18), timeOfBirthday, timeValidityEnd)
+                TestIssuerData(
+                    validFrom = timeOfBirthday,
+                    validUntil = timeValidityEnd,
+                    identifier = 18
+                )
             }
+            pendingCredential.certify(issuerProvidedAuthenticationData.serialize())
             n++
         }
 
@@ -529,9 +564,8 @@ class DocumentStoreTest {
                 document.findCredential(CREDENTIAL_DOMAIN, timeOfUseBeforeBirthday)
             assertNotNull(credential)
             // Check we got a credential with age 17.
-            assertEquals(
-                17.toByte().toLong(), credential!!.issuerProvidedData[0].toLong()
-            )
+            val data = TestIssuerData.parse(credential.issuerProvidedData)
+            assertEquals(17, data.identifier)
             credential.increaseUsageCount()
             n++
         }
@@ -543,9 +577,8 @@ class DocumentStoreTest {
                 document.findCredential(CREDENTIAL_DOMAIN, timeOfUseAfterBirthday)
             assertNotNull(credential)
             // Check we got a credential with age 18.
-            assertEquals(
-                18.toByte().toLong(), credential!!.issuerProvidedData[0].toLong()
-            )
+            val data = TestIssuerData.parse(credential.issuerProvidedData)
+            assertEquals(18, data.identifier)
             credential.increaseUsageCount()
             n++
         }
@@ -568,7 +601,7 @@ class DocumentStoreTest {
         assertEquals(0, document.getCertifiedCredentials().size.toLong())
         assertEquals(0, document.getPendingCredentials().size.toLong())
         val secureArea = secureAreaRepository.getImplementation(SoftwareSecureArea.IDENTIFIER)!!
-        for (n in 0..9) {
+        repeat(10) { n ->
             val pendingCredential = TestSecureAreaBoundCredential.create(
                 document,
                 null,
@@ -576,18 +609,20 @@ class DocumentStoreTest {
                 secureArea,
                 CreateKeySettings()
             )
-            pendingCredential.certify(
-                byteArrayOf(0, n.toByte()),
-                Instant.fromEpochMilliseconds(100),
-                Instant.fromEpochMilliseconds(200)
+            val issuerProvidedData = TestIssuerData(
+                validFrom = Instant.fromEpochMilliseconds(100),
+                validUntil = Instant.fromEpochMilliseconds(200),
+                identifier = n
             )
+            pendingCredential.certify(issuerProvidedData.serialize())
         }
         assertEquals(0, document.getPendingCredentials().size.toLong())
         assertEquals(10, document.getCertifiedCredentials().size.toLong())
 
         // Now replace the fifth credential
         val credToReplace = document.getCertifiedCredentials()[5] as SecureAreaBoundCredential
-        assertContentEquals(byteArrayOf(0, 5), credToReplace.issuerProvidedData)
+        val data = TestIssuerData.parse(credToReplace.issuerProvidedData)
+        assertEquals(5, data.identifier)
         val pendingCredential = TestSecureAreaBoundCredential.create(
             document,
             credToReplace.identifier,
@@ -598,11 +633,12 @@ class DocumentStoreTest {
         // ... it's not replaced until certify() is called
         assertEquals(1, document.getPendingCredentials().size.toLong())
         assertEquals(10, document.getCertifiedCredentials().size.toLong())
-        pendingCredential.certify(
-            byteArrayOf(1, 0),
-            Instant.fromEpochMilliseconds(100),
-            Instant.fromEpochMilliseconds(200)
-        )
+
+        pendingCredential.certify(TestIssuerData(
+                validFrom = Instant.fromEpochMilliseconds(100),
+                validUntil = Instant.fromEpochMilliseconds(200),
+                identifier = 10
+            ).serialize())
         // ... now it should be gone.
         assertEquals(0, document.getPendingCredentials().size.toLong())
         assertEquals(10, document.getCertifiedCredentials().size.toLong())
@@ -611,20 +647,10 @@ class DocumentStoreTest {
         // We rely on some implementation details on how ordering works... also cross-reference
         // with data passed into certify() functions above.
         var count = 0
+        val expectedData = arrayOf(0, 1, 2, 3, 4, 6, 7, 8, 9, 10)
         for (credential in document.getCertifiedCredentials()) {
-            val expectedData = arrayOf(
-                byteArrayOf(0, 0),
-                byteArrayOf(0, 1),
-                byteArrayOf(0, 2),
-                byteArrayOf(0, 3),
-                byteArrayOf(0, 4),
-                byteArrayOf(0, 6),
-                byteArrayOf(0, 7),
-                byteArrayOf(0, 8),
-                byteArrayOf(0, 9),
-                byteArrayOf(1, 0)
-            )
-            assertContentEquals(expectedData[count++], credential.issuerProvidedData)
+            val data = TestIssuerData.parse(credential.issuerProvidedData)
+            assertEquals(expectedData[count++], data.identifier)
         }
 
         // Test the case where the replacement credential is prematurely deleted. The credential
@@ -663,18 +689,21 @@ class DocumentStoreTest {
         // (imitating UI) and another repeatedly adds and deletes a document
         val frontEndJob = CoroutineScope(Dispatchers.Default).launch {
             while (true) {
-                for (documentId in documentStore.listDocuments()) {
+                for (documentId in documentStore.listDocumentIds()) {
                     // May be deleted before we load it
                     val document = documentStore.lookupDocument(documentId) ?: continue
+                    if (Random.nextBoolean()) {
+                        document.deleteCache()
+                    }
                     document.getCredentials()
                 }
                 yield()  // so that this coroutine does not spin without a chance to be cancelled
             }
         }
         // this imitates back-end
-        for (m in 0..300) {
+        repeat(301) {
             val document = documentStore.createDocument()
-            for (n in 0..9) {
+            repeat(10) {
                 TestCredential(
                     document,
                     null,
@@ -682,24 +711,191 @@ class DocumentStoreTest {
                 ).addToDocument()
                 yield()
             }
-            documentStore.deleteDocument(document.identifier)
+            if (Random.nextBoolean()) {
+                documentStore.deleteDocument(document.identifier)
+            }
         }
         frontEndJob.cancelAndJoin()
     }
 
+    @Test
+    fun documentSchemaChangeDefault() = runTest {
+        // Tests the case when AbstractDocumentMetadata was implemented using
+        // the default implementation (DocumentMetadata) or in a way which is compatible to it.
+        val documentTable = storage.getTable(documentTable)
+        val testCardArt = "cardArt".encodeToByteString()
+        val testIssuerLogo = "issuerLogo".encodeToByteString()
+        val testOther = "other".encodeToByteString()
+        val testAuthorizationData = "authorization".encodeToByteString()
+        // Metadata as it was stored before schema change
+        val metadata = buildCborMap {
+            put("provisioned", true)
+            put("displayName", "foo")
+            put("typeDisplayName", "foobar")
+            put("cardArt", testCardArt.toByteArray())
+            put("issuerLogo", testIssuerLogo.toByteArray())
+            put("authorizationData", testAuthorizationData.toByteArray())
+            put("other", testOther.toByteArray())
+        }
+        documentTable.insert("foo", ByteString(Cbor.encode(metadata)))
+        val newStorage = EphemeralStorage.deserialize(storage.serialize())
+        // Document schema will be upgraded here.
+        val documentStore = buildDocumentStore(
+            storage = newStorage,
+            secureAreaRepository = secureAreaRepository
+        ) {
+            setDocumentMetadataFactory { _, data -> TestMetadata(data) }
+        }
+        val document = documentStore.lookupDocument("foo")!!
+        assertTrue(document.provisioned)
+        assertEquals("foo", document.displayName)
+        assertEquals("foobar", document.typeDisplayName)
+        assertEquals(testCardArt, document.cardArt)
+        assertEquals(testIssuerLogo, document.issuerLogo)
+        assertEquals(testAuthorizationData, document.authorizationData)
+        assertEquals(testOther, document.metadata!!.serialize())
+    }
+
+    @Test
+    fun documentSchemaChangeCustomSerialization() = runTest {
+        // Tests the case when AbstractDocumentMetadata was implemented in some custom
+        // manner, not serialized in a way that is compatible with the default implementation
+        // (DocumentMetadata).
+        val documentTable = storage.getTable(documentTable)
+        val metadata = buildCborMap {  // Note "provisioned" field is missing
+            put("provisioningId", "foo")
+            put("accountId", "bar")
+        }
+        documentTable.insert("foo", ByteString(Cbor.encode(metadata)))
+        val newStorage = EphemeralStorage.deserialize(storage.serialize())
+        // Document schema will be upgraded here.
+        val documentStore = buildDocumentStore(
+            storage = newStorage,
+            secureAreaRepository = secureAreaRepository
+        ) {
+            setDocumentMetadataFactory { _, data -> TestMetadata(data) }
+        }
+        val document = documentStore.lookupDocument("foo")!!
+        assertFalse(document.provisioned)
+        assertNull(document.displayName)
+        assertNull(document.typeDisplayName)
+        assertNull(document.cardArt)
+        assertNull(document.issuerLogo)
+        assertNull(document.authorizationData)
+        val migratedMetadata = Cbor.decode(document.metadata!!.serialize().toByteArray())
+        assertEquals("foo", migratedMetadata["provisioningId"].asTstr)
+        assertEquals("bar", migratedMetadata["accountId"].asTstr)
+    }
+
+    @Test
+    fun documentSchemaChangeCustomCborSerialization() = runTest {
+        // Tests the case when AbstractDocumentMetadata was implemented using CBOR serialization,
+        // but not in a way that can be confused with the default implementation (DocumentMetadata).
+        val documentTable = storage.getTable(documentTable)
+        val customData = "foobar".encodeToByteString()
+        documentTable.insert("foo", customData)
+        val newStorage = EphemeralStorage.deserialize(storage.serialize())
+        // Document schema will be upgraded here.
+        val documentStore = buildDocumentStore(
+            storage = newStorage,
+            secureAreaRepository = secureAreaRepository
+        ) {
+            setDocumentMetadataFactory { _, data -> TestMetadata(data) }
+        }
+        val document = documentStore.lookupDocument("foo")!!
+        assertFalse(document.provisioned)
+        assertNull(document.displayName)
+        assertNull(document.typeDisplayName)
+        assertNull(document.cardArt)
+        assertNull(document.issuerLogo)
+        assertNull(document.authorizationData)
+        assertEquals(customData, document.metadata!!.serialize())
+    }
+
+    @Test
+    fun documentSchemaChangeCustomMigration() = runTest {
+        // Tests the case when AbstractDocumentMetadata was implemented in some custom
+        // manner, not serialized in a way that is compatible with the default implementation
+        // (DocumentMetadata).
+        val customData = "foobar".encodeToByteString()
+        Document.customSchema0_97_0_MigrationFn = { _, data ->
+            ByteString(Cbor.encode(buildCborMap {
+                put("provisioned", true)
+                put("created", Clock.System.now().toDataItemDateTimeString())
+                put("displayName", "Custom")
+                put("metadata", data.toByteArray())
+            }))
+        }
+        val documentTable = storage.getTable(documentTable)
+        documentTable.insert("foo", customData)
+        val newStorage = EphemeralStorage.deserialize(storage.serialize())
+        // Document schema will be upgraded here.
+        val documentStore = buildDocumentStore(
+            storage = newStorage,
+            secureAreaRepository = secureAreaRepository
+        ) {
+            setDocumentMetadataFactory { _, data -> TestMetadata(data) }
+        }
+        val document = documentStore.lookupDocument("foo")!!
+        assertTrue(document.provisioned)
+        assertEquals("Custom", document.displayName)
+        assertNull(document.typeDisplayName)
+        assertNull(document.cardArt)
+        assertNull(document.issuerLogo)
+        assertNull(document.authorizationData)
+        assertEquals(customData, document.metadata!!.serialize())
+    }
+
+    data class TestIssuerData(
+        val validFrom: Instant,
+        val validUntil: Instant,
+        val identifier: Int = 0
+    ) {
+        fun serialize(): ByteString = ByteString(Cbor.encode(buildCborMap {
+            put("from", validFrom.toDataItemDateTimeString())
+            put("until", validUntil.toDataItemDateTimeString())
+            put("id", identifier)
+        }))
+
+        companion object {
+            fun parse(data: ByteString): TestIssuerData {
+                val map = Cbor.decode(data.toByteArray())
+                return TestIssuerData(
+                    validFrom = map["from"].asDateTimeString,
+                    validUntil = map["until"].asDateTimeString,
+                    identifier = map["id"].asNumber.toInt(),
+                )
+            }
+        }
+    }
+
     class TestCredential: Credential {
         constructor(document: Document, asReplacementFor: String?, domain: String)
-            : super(document, asReplacementFor, domain) {}
+            : super(document, asReplacementFor, domain)
 
         constructor(document: Document) : super(document)
 
-        override fun getClaims(documentTypeRepository: DocumentTypeRepository?): List<Claim> {
+        override val credentialType: String
+            get() = CREDENTIAL_TYPE
+
+        override suspend fun extractValidityFromIssuerData(): Pair<Instant, Instant> {
+            val parsed = TestIssuerData.parse(issuerProvidedData)
+            return Pair(parsed.validFrom, parsed.validUntil)
+        }
+
+        override suspend fun getClaims(documentTypeRepository: DocumentTypeRepository?): List<Claim> {
             throw NotImplementedError()
+        }
+
+        companion object {
+            const val CREDENTIAL_TYPE = "keyless"
         }
     }
 
     class TestSecureAreaBoundCredential : SecureAreaBoundCredential {
         companion object {
+            const val CREDENTIAL_TYPE = "key-bound"
+
             suspend fun create(
                 document: Document,
                 asReplacementForIdentifier: String?,
@@ -723,18 +919,38 @@ class DocumentStoreTest {
             asReplacementForIdentifier: String?,
             domain: String,
             secureArea: SecureArea,
-        ) : super(document, asReplacementForIdentifier, domain, secureArea) {
-        }
+        ) : super(document, asReplacementForIdentifier, domain, secureArea)
 
         constructor(
             document: Document
-        ) : super(document) {}
+        ) : super(document)
 
-        override fun getClaims(documentTypeRepository: DocumentTypeRepository?): List<Claim> {
+        override val credentialType: String
+            get() = CREDENTIAL_TYPE
+
+        override suspend fun getClaims(documentTypeRepository: DocumentTypeRepository?): List<Claim> {
             throw NotImplementedError()
+        }
+
+        override suspend fun extractValidityFromIssuerData(): Pair<Instant, Instant> {
+            val parsed = TestIssuerData.parse(issuerProvidedData)
+            return Pair(parsed.validFrom, parsed.validUntil)
         }
     }
 
-    val Document.simpleMetadata: SimpleDocumentMetadata
-        get() = metadata as SimpleDocumentMetadata
+    class TestMetadata(val data: ByteString): AbstractDocumentMetadata {
+        override fun serialize(): ByteString = data
+    }
+
+    companion object {
+        // This isn't really used, we only use a single domain.
+        private const val CREDENTIAL_DOMAIN = "domain"
+
+        val documentTable = StorageTableSpec(
+            name = "Documents",  // Intentionally named to match Document.defaultTableSpec
+            supportPartitions = false,
+            supportExpiration = false,
+            schemaVersion = 0
+        )
+    }
 }

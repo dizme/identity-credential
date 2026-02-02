@@ -1,55 +1,128 @@
 package org.multipaz.crypto
 
-import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import org.multipaz.securearea.KeyUnlockData
+import org.multipaz.prompt.Reason
+import org.multipaz.securearea.SecureArea
+import org.multipaz.util.fromBase64Url
+import org.multipaz.util.toBase64Url
 
 /**
  * JSON Web Signature support
  */
 object JsonWebSignature {
-
     /**
      * Sign a claims set.
      *
+     * Use [org.multipaz.webtoken.buildJwt] instead.
+     *
      * @param key the key to sign with.
-     * @param signatureAlgorithm the signature algorithm to use.
+     * @param signatureAlgorithm a fully-specified signature algorithm to use.
      * @param claimsSet the claims set.
      * @param type the value to put in the "typ" header parameter or `null`.
      * @param x5c: the certificate chain to put in the "x5c" header parameter or `null`.
-     * @return a [JsonElement] with the JWS.
+     * @return the compact serialization with the JWS.
      */
-    fun sign(
+    @Deprecated("Use org.multipaz.jwt.buildJwt instead")
+    suspend fun sign(
         key: EcPrivateKey,
         signatureAlgorithm: Algorithm,
         claimsSet: JsonObject,
         type: String?,
         x5c: X509CertChain?
-    ): JsonElement {
-        return Crypto.jwsSign(
+    ): String {
+        require(signatureAlgorithm.fullySpecified) {
+            "signatureAlgorithm must be fully specified"
+        }
+        val headerStr = buildJsonObject {
+            put("alg", JsonPrimitive(signatureAlgorithm.joseAlgorithmIdentifier!!))
+            type?.let { put("typ", JsonPrimitive(it)) }
+            x5c?.let { put("x5c", x5c.toX5c(excludeRoot = true)) }
+        }.toString().encodeToByteArray().toBase64Url()
+        val bodyStr = claimsSet.toString().encodeToByteArray().toBase64Url()
+        val toBeSigned = "$headerStr.$bodyStr".encodeToByteArray()
+
+        val signature = Crypto.sign(
             key = key,
             signatureAlgorithm = signatureAlgorithm,
-            claimsSet = claimsSet,
-            type = type,
-            x5c = x5c
+            message = toBeSigned
         )
+        val signatureStr = (signature.r + signature.s).toBase64Url()
+        return "$headerStr.$bodyStr.$signatureStr"
+    }
+
+    /**
+     * Sign a claims set using a [SecureArea].
+     *
+     * Use [org.multipaz.webtoken.buildJwt] instead.
+     *
+     * @param secureArea the [SecureArea] for the key to sign with.
+     * @param alias the alias for key to sign with.
+     * @param keyUnlockData the [KeyUnlockData] to use or `null`.
+     * @param claimsSet the claims set.
+     * @param type the value to put in the "typ" header parameter or `null`.
+     * @param x5c: the certificate chain to put in the "x5c" header parameter or `null`.
+     * @return the compact serialization of the JWS.
+     */
+    @Deprecated("Use org.multipaz.jwt.buildJwt instead")
+    suspend fun sign(
+        secureArea: SecureArea,
+        alias: String,
+        unlockReason: Reason,
+        claimsSet: JsonObject,
+        type: String?,
+        x5c: X509CertChain?
+    ): String {
+        val headerStr = buildJsonObject {
+            put("alg", JsonPrimitive(secureArea.getKeyInfo(alias).algorithm.joseAlgorithmIdentifier!!))
+            type?.let { put("typ", JsonPrimitive(it)) }
+            x5c?.let { put("x5c", x5c.toX5c(excludeRoot = true)) }
+        }.toString().encodeToByteArray().toBase64Url()
+        val bodyStr = claimsSet.toString().encodeToByteArray().toBase64Url()
+        val toBeSigned = "$headerStr.$bodyStr".encodeToByteArray()
+
+        val signature = secureArea.sign(
+            alias = alias,
+            dataToSign = toBeSigned,
+            unlockReason = unlockReason
+        )
+        val signatureStr = (signature.r + signature.s).toBase64Url()
+        return "$headerStr.$bodyStr.$signatureStr"
     }
 
     /**
      * Verify the signature of a JWS.
      *
-     * @param jws the JWS.
+     * @param jws the compact serialization of the JWS.
      * @param publicKey the key to use for verification
      * @throws Throwable if verification fails.
      */
-    fun verify(
-        jws: JsonElement,
+    suspend fun verify(
+        jws: String,
         publicKey: EcPublicKey
     ) {
-        Crypto.jwsVerify(jws, publicKey)
+        val splits = jws.split(".")
+        require(splits.size == 3) { "Malformed JWS" }
+        val (headerStr, bodyStr, signatureStr) = splits
+        val headerObj = Json.decodeFromString(JsonObject.serializer(), headerStr.fromBase64Url().decodeToString())
+
+        val toBeVerified = "$headerStr.$bodyStr".encodeToByteArray()
+        val signature = EcSignature.fromCoseEncoded(signatureStr.fromBase64Url())
+        val algorithm = Algorithm.fromJoseAlgorithmIdentifier(headerObj["alg"]!!.jsonPrimitive.content)
+        Crypto.checkSignature(
+            publicKey = publicKey,
+            message = toBeVerified,
+            algorithm = algorithm,
+            signature = signature
+        )
     }
 
     /**
-     * Information about a JWS.
+     * Information about a JSON Web Signature.
      *
      * @property claimsSet the claims set being signed.
      * @property type the value of the `typ` header element of `null.
@@ -64,15 +137,19 @@ object JsonWebSignature {
     /**
      * Get information about a JWS.
      *
-     * @param jws the JWS.
+     * @param jws the compact serialization of the JWS.
      * @return a [JwsInfo] with information about the JWS.
      */
-    fun getInfo(jws: JsonElement): JwsInfo {
-        val res = Crypto.jwsGetInfo(jws)
+    fun getInfo(jws: String): JwsInfo {
+        val splits = jws.split(".")
+        require(splits.size == 3) { "Malformed JWS" }
+        val (headerStr, bodyStr, _) = splits
+        val headerObj = Json.decodeFromString(JsonObject.serializer(), headerStr.fromBase64Url().decodeToString())
+        val claimsObj = Json.decodeFromString(JsonObject.serializer(), bodyStr.fromBase64Url().decodeToString())
         return JwsInfo(
-            claimsSet = res.claimsSet,
-            type = res.type,
-            x5c = res.x5c
+            claimsSet = claimsObj,
+            type = headerObj["typ"]!!.jsonPrimitive.content,
+            x5c = headerObj["x5c"]?.let { X509CertChain.fromX5c(it) }
         )
     }
 }

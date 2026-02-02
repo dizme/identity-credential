@@ -17,31 +17,19 @@ package org.multipaz.credential
 
 import org.multipaz.cbor.Cbor
 import org.multipaz.document.Document
+import org.multipaz.mdoc.credential.MdocCredential
+import org.multipaz.sdjwt.credential.KeyBoundSdJwtVcCredential
+import org.multipaz.sdjwt.credential.KeylessSdJwtVcCredential
 import kotlin.reflect.KClass
 
 /**
  * A class that aids in creation of credentials from serialized data.
  *
- * The [CredentialLoader] is initially empty, but in the
- * [org.multipaz.credential] package, there are well known [Credential] implementations
- * which can be added using the [addCredentialImplementation] method. In addition,
- * applications may add their own [Credential] implementations.
+ * Use [CredentialLoaderBuilder] class to build one
  */
-class CredentialLoader {
-    private val createCredentialFunctions:
-            MutableMap<String, suspend (Document) -> Credential> = mutableMapOf()
-
-    /**
-     * Add a new [Credential] implementation to the repository.
-     *
-     * @param credentialType the credential type
-     * @param createCredentialFunction a function to create a [Credential] of the given type.
-     */
-    fun addCredentialImplementation(
-        credentialType: KClass<out Credential>,
-        createCredentialFunction: suspend (Document) -> Credential
-    ) = createCredentialFunctions.put(credentialType.simpleName!!, createCredentialFunction)
-
+internal class CredentialLoader(
+    private val createCredentialFunctions: Map<String, suspend (Document) -> Credential>
+) {
     /**
      * Loads a [Credential] from storage
      *
@@ -55,10 +43,15 @@ class CredentialLoader {
         val dataItem = Cbor.decode(blob.toByteArray())
         val credentialType = dataItem["credentialType"].asTstr
         val createCredentialFunction = createCredentialFunctions[credentialType]
-            ?: throw IllegalStateException("Credential type $credentialType not registered")
+            ?: throw IllegalStateException(
+                "Credential type '$credentialType' not registered, have: ${createCredentialFunctions.keys.joinToString(", ") { "'$it'" }}")
         val credential = createCredentialFunction.invoke(document)
         credential._identifier = identifier
         credential.deserialize(dataItem)
+        if (credential.credentialType != credentialType) {
+            throw IllegalStateException(
+                "Inconsistent credential type: '$credentialType' vs '${credential.credentialType}")
+        }
         return credential
     }
 }

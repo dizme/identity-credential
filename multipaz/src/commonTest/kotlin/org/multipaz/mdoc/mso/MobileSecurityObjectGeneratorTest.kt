@@ -15,6 +15,8 @@
  */
 package org.multipaz.mdoc.mso
 
+import kotlinx.coroutines.test.runTest
+import org.multipaz.cbor.Cbor
 import org.multipaz.crypto.Algorithm
 import org.multipaz.crypto.Crypto
 import org.multipaz.crypto.EcCurve
@@ -22,7 +24,7 @@ import org.multipaz.crypto.EcPublicKeyDoubleCoordinate
 import org.multipaz.mdoc.TestVectors
 import org.multipaz.util.fromHex
 import org.multipaz.util.toHex
-import kotlinx.datetime.Instant
+import kotlin.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
@@ -43,7 +45,7 @@ class MobileSecurityObjectGeneratorTest {
         }
     }
 
-    private fun generateISODigest(digestAlgorithm: Algorithm): Map<Long, ByteArray> {
+    private suspend fun generateISODigest(digestAlgorithm: Algorithm): Map<Long, ByteArray> {
         val isoDigestIDs = mutableMapOf<Long, ByteArray>()
         isoDigestIDs[0L] = Crypto.digest(digestAlgorithm, "aardvark".encodeToByteArray())
         isoDigestIDs[1L] = Crypto.digest(digestAlgorithm, "alligator".encodeToByteArray())
@@ -61,7 +63,7 @@ class MobileSecurityObjectGeneratorTest {
         return isoDigestIDs
     }
 
-    private fun generateISOUSDigest(digestAlgorithm: Algorithm): Map<Long, ByteArray> {
+    private suspend fun generateISOUSDigest(digestAlgorithm: Algorithm): Map<Long, ByteArray> {
         val isoUSDigestIDs: MutableMap<Long, ByteArray> = HashMap()
         isoUSDigestIDs[0L] = Crypto.digest(digestAlgorithm, "jaguar".encodeToByteArray())
         isoUSDigestIDs[1L] = Crypto.digest(digestAlgorithm, "jellyfish".encodeToByteArray())
@@ -70,7 +72,7 @@ class MobileSecurityObjectGeneratorTest {
         return isoUSDigestIDs
     }
 
-    private fun checkISODigest(isoDigestIDs: Map<Long, ByteArray>?, digestAlgorithm: Algorithm) {
+    private suspend fun checkISODigest(isoDigestIDs: Map<Long, ByteArray>?, digestAlgorithm: Algorithm) {
         assertEquals(
             setOf(0L, 1L, 2L, 3L, 4L, 5L, 6L, 7L, 8L, 9L, 10L, 11L, 12L),
             isoDigestIDs!!.keys
@@ -129,7 +131,7 @@ class MobileSecurityObjectGeneratorTest {
         )
     }
 
-    private fun checkISOUSDigest(isoUSDigestIDs: Map<Long, ByteArray>?, digestAlgorithm: Algorithm) {
+    private suspend fun checkISOUSDigest(isoUSDigestIDs: Map<Long, ByteArray>?, digestAlgorithm: Algorithm) {
         assertEquals(setOf(0L, 1L, 2L, 3L), isoUSDigestIDs!!.keys)
         assertContentEquals(
             Crypto.digest(digestAlgorithm, "jaguar".encodeToByteArray()),
@@ -149,7 +151,7 @@ class MobileSecurityObjectGeneratorTest {
         )
     }
 
-    private fun testFullMSO(digestAlgorithm: Algorithm) {
+    private suspend fun testFullMSO(digestAlgorithm: Algorithm) {
         val deviceKeyFromVector = EcPublicKeyDoubleCoordinate(
             EcCurve.P256,
             TestVectors.ISO_18013_5_ANNEX_D_STATIC_DEVICE_KEY_X.fromHex(),
@@ -205,10 +207,13 @@ class MobileSecurityObjectGeneratorTest {
         assertEquals(validFromTimestamp, mso.validFrom)
         assertEquals(validUntilTimestamp, mso.validUntil)
         assertEquals(expectedTimestamp, mso.expectedUpdate)
+
+        // Check we can decode with the new MobileSecurityObject class.
+        val msoNew = MobileSecurityObject.fromDataItem(Cbor.decode(encodedMSO))
     }
 
     @Test
-    fun testBasicMSO() {
+    fun testBasicMSO() = runTest {
         val deviceKeyFromVector = EcPublicKeyDoubleCoordinate(
             EcCurve.P256,
             TestVectors.ISO_18013_5_ANNEX_D_STATIC_DEVICE_KEY_X.fromHex(),
@@ -245,25 +250,28 @@ class MobileSecurityObjectGeneratorTest {
         assertEquals(validFromTimestamp, mso.validFrom)
         assertEquals(validUntilTimestamp, mso.validUntil)
         assertNull(mso.expectedUpdate)
+
+        // Check we can decode with the new MobileSecurityObject class.
+        val msoNew = MobileSecurityObject.fromDataItem(Cbor.decode(encodedMSO))
     }
 
     @Test
-    fun testFullMSO_Sha256() {
+    fun testFullMSO_Sha256() = runTest {
         testFullMSO(Algorithm.SHA256)
     }
 
     @Test
-    fun testFullMSO_Sha384() {
+    fun testFullMSO_Sha384() = runTest {
         testFullMSO(Algorithm.SHA384)
     }
 
     @Test
-    fun testFullMSO_Sha512() {
+    fun testFullMSO_Sha512() = runTest {
         testFullMSO(Algorithm.SHA512)
     }
 
     @Test
-    fun testMSOExceptions() {
+    fun testMSOExceptions() = runTest {
         val deviceKeyFromVector = EcPublicKeyDoubleCoordinate(
             EcCurve.P256,
             TestVectors.ISO_18013_5_ANNEX_D_STATIC_DEVICE_KEY_X.fromHex(),
@@ -357,7 +365,7 @@ class MobileSecurityObjectGeneratorTest {
     // Checks that fractional parts of timestamps are dropped by MobileSecurityObjectGenerator, as
     // required by 18013-5 clause 9.1.2.4
     @Test
-    fun testNoFractionalSeconds() {
+    fun testNoFractionalSeconds() = runTest {
         val deviceKeyFromVector = EcPublicKeyDoubleCoordinate(
             EcCurve.P256,
             TestVectors.ISO_18013_5_ANNEX_D_STATIC_DEVICE_KEY_X.fromHex(),
@@ -385,5 +393,8 @@ class MobileSecurityObjectGeneratorTest {
         assertEquals(validUntilTimestampWholeSeconds, mso.validUntil)
         assertEquals(validFromTimestampWholeSeconds, mso.validFrom)
         assertEquals(expectedUpdateTimestampWholeSeconds, mso.expectedUpdate)
+
+        // Check we can decode with the new MobileSecurityObject class.
+        val msoNew = MobileSecurityObject.fromDataItem(Cbor.decode(encodedMSO))
     }
 }

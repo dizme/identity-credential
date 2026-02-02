@@ -7,7 +7,6 @@ import org.multipaz.nfc.CommandApdu
 import org.multipaz.nfc.NfcIsoTag
 import org.multipaz.nfc.ResponseApdu
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.test.runTest
 import org.multipaz.mdoc.role.MdocRole
@@ -34,11 +33,17 @@ class NfcTransportTests {
 
         override var maxTransceiveLength = 0xfeff
 
+        override suspend fun close() {
+            transcript.appendLine("close")
+        }
+
+        override suspend fun updateDialogMessage(message: String) {}
+
         @OptIn(ExperimentalCoroutinesApi::class)
         override suspend fun transceive(command: CommandApdu): ResponseApdu {
             transcript.appendLine("${command.toString().truncateTo(100)} (${command.encode().size} bytes)")
             val response = suspendCancellableCoroutine<ResponseApdu> { continuation ->
-                runBlocking {
+                runTest {
                     transport.processApdu(
                         command = command,
                         sendResponse = { response ->
@@ -108,6 +113,7 @@ CommandApdu(cla=0, ins=192, p1=0, p2=0, payload=ByteString(size=0), le=65272) (7
 ResponseApdu(status=24869, payload=ByteString(size=65272 hex=000000000000000000000000000000000000000... (65274 bytes)
 CommandApdu(cla=0, ins=192, p1=0, p2=0, payload=ByteString(size=0), le=37) (5 bytes)
 ResponseApdu(status=36864, payload=ByteString(size=8989 hex=0000000000000000000000000000000000000000... (8991 bytes)
+close
             """.trimIndent().trim(),
             tag.transcript.toString().trim()
         )
@@ -167,6 +173,7 @@ CommandApdu(cla=0, ins=192, p1=0, p2=0, payload=ByteString(size=0), le=39) (5 by
 ResponseApdu(status=24878, payload=ByteString(size=4089 hex=0000000000000000000000000000000000000000... (4091 bytes)
 CommandApdu(cla=0, ins=192, p1=0, p2=0, payload=ByteString(size=0), le=46) (5 bytes)
 ResponseApdu(status=36864, payload=ByteString(size=39 hex=000000000000000000000000000000000000000000... (41 bytes)
+close
             """.trimIndent().trim(),
             tag.transcript.toString().trim()
         )

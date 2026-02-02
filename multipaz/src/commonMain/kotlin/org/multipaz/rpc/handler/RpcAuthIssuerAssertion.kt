@@ -1,6 +1,7 @@
 package org.multipaz.rpc.handler
 
-import kotlinx.datetime.Clock
+import kotlinx.coroutines.currentCoroutineContext
+import kotlin.time.Clock
 import kotlinx.io.bytestring.ByteString
 import org.multipaz.cbor.Bstr
 import org.multipaz.cbor.DataItem
@@ -12,8 +13,6 @@ import org.multipaz.device.DeviceCheck
 import org.multipaz.device.DeviceAssertion
 import org.multipaz.device.toDataItem
 import org.multipaz.securearea.SecureArea
-import org.multipaz.util.toBase64Url
-import kotlin.random.Random
 
 /**
  * [RpcAuthIssuer] implementation that authorizes each call with using [AssertionRpcAuth] object
@@ -26,11 +25,13 @@ class RpcAuthIssuerAssertion(
     private val deviceAttestationId: String
 ): RpcAuthIssuer {
     override suspend fun auth(target: String, method: String, payload: Bstr): DataItem {
+        val sessionContext = currentCoroutineContext()[RpcAuthClientSession.Key]
+            ?: throw IllegalStateException("RpcAuthClientSession must be provided")
         val assertion = AssertionRpcAuth(
             target = target,
             method = method,
             clientId = clientId,
-            nonce = Random.Default.nextBytes(12).toBase64Url(),
+            nonce = sessionContext.nonce,
             timestamp = Clock.System.now(),
             payloadHash = ByteString(Crypto.digest(Algorithm.SHA256, payload.value))
         )

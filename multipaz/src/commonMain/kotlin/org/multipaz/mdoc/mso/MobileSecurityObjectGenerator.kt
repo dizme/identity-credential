@@ -24,7 +24,7 @@ import org.multipaz.crypto.Algorithm
 import org.multipaz.crypto.EcPublicKey
 import org.multipaz.mdoc.issuersigned.IssuerNamespaces
 import org.multipaz.util.Logger
-import kotlinx.datetime.Instant
+import kotlin.time.Instant
 import org.multipaz.cbor.DataItem
 import org.multipaz.cbor.buildCborMap
 import org.multipaz.cbor.putCborArray
@@ -41,6 +41,7 @@ import org.multipaz.cbor.putCborMap
  * @throws IllegalArgumentException if the `digestAlgorithm` is not one of
  *     {Algorithm.SHA256, Algorithm.SHA-384, Algorithm.SHA-512}.
  */
+@Deprecated(message = "Deprecated, use MobileSecurityObject instead")
 class MobileSecurityObjectGenerator(
     digestAlgorithm: Algorithm,
     docType: String,
@@ -105,9 +106,9 @@ class MobileSecurityObjectGenerator(
         valueDigestsInner.end()
     }
 
-    fun addValueDigests(
+    suspend fun addValueDigests(
         issuerNamespaces: IssuerNamespaces
-    ) {
+    ) = apply {
         digestEmpty = false
         for ((namespaceName, innerMap) in issuerNamespaces.data) {
             val valueDigestsInner = mValueDigestsOuter.putMap(namespaceName)
@@ -236,7 +237,7 @@ class MobileSecurityObjectGenerator(
         if (validUntil.nanosecondsOfSecond != 0 ) {
             Logger.w(TAG, "Dropping non-zero fractional seconds for timestamp validUntil")
         }
-        if (expectedUpdate?.nanosecondsOfSecond != 0 ) {
+        if (expectedUpdate != null && expectedUpdate.nanosecondsOfSecond != 0 ) {
             Logger.w(TAG, "Dropping non-zero fractional seconds for timestamp expectedUpdate")
         }
         mSigned = Instant.fromEpochSeconds(signed.epochSeconds, 0)

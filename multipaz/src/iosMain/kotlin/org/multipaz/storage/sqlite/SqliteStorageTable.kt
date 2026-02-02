@@ -2,14 +2,13 @@ package org.multipaz.storage.sqlite
 
 import androidx.sqlite.SQLiteException
 import androidx.sqlite.execSQL
-import androidx.sqlite.use
 import org.multipaz.storage.KeyExistsStorageException
 import org.multipaz.storage.NoRecordStorageException
 import org.multipaz.storage.base.BaseStorageTable
 import org.multipaz.storage.StorageTableSpec
 import org.multipaz.storage.base.SqlStatementMaker
 import org.multipaz.util.toBase64Url
-import kotlinx.datetime.Instant
+import kotlin.time.Instant
 import kotlinx.io.bytestring.ByteString
 import kotlin.random.Random
 
@@ -216,9 +215,9 @@ class SqliteStorageTable(
         return storage.withConnection { connection ->
             connection.prepare(
                 if (limit < Int.MAX_VALUE) {
-                    sql.enumerateWithLimitStatement
+                    sql.enumerateWithLimitStatement(withData = false)
                 } else {
-                    sql.enumerateStatement
+                    sql.enumerateStatement(withData = false)
                 }
             ).use { statement ->
                 var index = 1
@@ -235,6 +234,44 @@ class SqliteStorageTable(
                 val list = mutableListOf<String>()
                 while (statement.step()) {
                     list.add(statement.getText(0))
+                }
+                list
+            }
+        }
+    }
+
+    override suspend fun enumerateWithData(
+        partitionId: String?,
+        afterKey: String?,
+        limit: Int
+    ): List<Pair<String, ByteString>> {
+        checkPartition(partitionId)
+        checkLimit(limit)
+        if (limit == 0) {
+            return listOf()
+        }
+        return storage.withConnection { connection ->
+            connection.prepare(
+                if (limit < Int.MAX_VALUE) {
+                    sql.enumerateWithLimitStatement(withData = true)
+                } else {
+                    sql.enumerateStatement(withData = true)
+                }
+            ).use { statement ->
+                var index = 1
+                statement.bindText(index++, afterKey ?: "")
+                if (spec.supportPartitions) {
+                    statement.bindText(index++, partitionId!!)
+                }
+                if (spec.supportExpiration) {
+                    statement.bindLong(index++, storage.clock.now().epochSeconds)
+                }
+                if (limit < Int.MAX_VALUE) {
+                    statement.bindInt(index, limit)
+                }
+                val list = mutableListOf<Pair<String, ByteString>>()
+                while (statement.step()) {
+                    list.add(Pair(statement.getText(0), ByteString(statement.getBlob(1))))
                 }
                 list
             }

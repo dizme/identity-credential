@@ -21,10 +21,9 @@ import android.content.pm.FeatureInfo
 import android.content.pm.PackageManager
 import android.os.Build
 import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyInfo
 import android.security.keystore.KeyProperties
 import android.security.keystore.UserNotAuthenticatedException
-import org.multipaz.R
-import org.multipaz.securearea.AndroidKeystoreSecureArea.Capabilities
 import org.multipaz.context.applicationContext
 import org.multipaz.crypto.Algorithm
 import org.multipaz.crypto.EcCurve
@@ -33,20 +32,19 @@ import org.multipaz.crypto.EcSignature
 import org.multipaz.crypto.X509Cert
 import org.multipaz.crypto.X509CertChain
 import org.multipaz.crypto.javaPublicKey
-import org.multipaz.prompt.showBiometricPrompt
 import org.multipaz.storage.Storage
 import org.multipaz.storage.StorageTable
 import org.multipaz.storage.StorageTableSpec
 import org.multipaz.util.Logger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import kotlinx.datetime.Instant
+import kotlin.time.Instant
 import kotlinx.io.bytestring.ByteString
 import kotlinx.io.bytestring.buildByteString
-import org.bouncycastle.asn1.ASN1InputStream
-import org.bouncycastle.asn1.ASN1Integer
-import org.bouncycastle.asn1.ASN1Sequence
-import java.io.ByteArrayInputStream
+import org.multipaz.asn1.ASN1
+import org.multipaz.asn1.ASN1Integer
+import org.multipaz.asn1.ASN1Sequence
+import org.multipaz.prompt.Reason
 import java.io.IOException
 import java.security.InvalidAlgorithmParameterException
 import java.security.KeyFactory
@@ -64,6 +62,9 @@ import java.security.spec.ECGenParameterSpec
 import java.security.spec.InvalidKeySpecException
 import java.sql.Date
 import javax.crypto.KeyAgreement
+import kotlin.coroutines.coroutineContext
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * An implementation of [SecureArea] using Android Keystore.
@@ -161,9 +162,23 @@ class AndroidKeystoreSecureArea private constructor(
             createKeySettings
         } else {
             // If user passed in a generic SecureArea.CreateKeySettings, honor them.
-            AndroidKeystoreCreateKeySettings.Builder(createKeySettings.nonce)
+            val builder = AndroidKeystoreCreateKeySettings.Builder(createKeySettings.nonce)
                 .setAlgorithm(createKeySettings.algorithm)
-                .build()
+                .setUserAuthenticationRequired(
+                    required = createKeySettings.userAuthenticationRequired,
+                    timeout = createKeySettings.userAuthenticationTimeout,
+                    userAuthenticationTypes = setOf(
+                        UserAuthenticationType.LSKF,
+                        UserAuthenticationType.BIOMETRIC
+                    )
+                )
+            if (createKeySettings.validFrom != null && createKeySettings.validUntil != null) {
+                builder.setValidityPeriod(
+                    validFrom = createKeySettings.validFrom,
+                    validUntil = createKeySettings.validUntil
+                )
+            }
+            builder.build()
         }
 
         try {
@@ -171,41 +186,53 @@ class AndroidKeystoreSecureArea private constructor(
                 KeyProperties.KEY_ALGORITHM_EC, "AndroidKeyStore"
             )
             var purposes = 0
-            if (aSettings.algorithm.isSigning) {
-                purposes = purposes or KeyProperties.PURPOSE_SIGN
-            }
-            if (aSettings.algorithm.isKeyAgreement) {
-                purposes = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                    purposes or KeyProperties.PURPOSE_AGREE_KEY
+            if (aSettings.algorithm == Algorithm.ANDROID_KEYSTORE_ATTEST_KEY) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    purposes = KeyProperties.PURPOSE_ATTEST_KEY
                 } else {
                     throw IllegalArgumentException(
                         "PURPOSE_AGREE_KEY not supported on this device"
                     )
                 }
-
-                // Android KeyStore tries to be "helpful" by creating keys in Software if
-                // the Secure World (Keymint) lacks support for the requested feature, for
-                // example ECDH. This will never work (for RWI, the document issuer will
-                // detect it when examining the attestation) so just bail early if this
-                // is the case.
-                if (aSettings.useStrongBox) {
-                    require(keymintSbFeatureLevel >= 100) {
-                        "PURPOSE_AGREE_KEY not supported on " +
-                                "this StrongBox KeyMint version"
+            } else {
+                if (aSettings.algorithm.isSigning) {
+                    purposes = purposes or KeyProperties.PURPOSE_SIGN
+                }
+                if (aSettings.algorithm.isKeyAgreement) {
+                    purposes = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        purposes or KeyProperties.PURPOSE_AGREE_KEY
+                    } else {
+                        throw IllegalArgumentException(
+                            "PURPOSE_AGREE_KEY not supported on this device"
+                        )
                     }
-                } else {
-                    require(keymintTeeFeatureLevel >= 100) {
-                        "PURPOSE_AGREE_KEY not supported on " +
-                                "this KeyMint version"
+
+                    // Android KeyStore tries to be "helpful" by creating keys in Software if
+                    // the Secure World (Keymint) lacks support for the requested feature, for
+                    // example ECDH. This will never work (for RWI, the document issuer will
+                    // detect it when examining the attestation) so just bail early if this
+                    // is the case.
+                    if (aSettings.useStrongBox) {
+                        require(keymintSbFeatureLevel >= 100) {
+                            "PURPOSE_AGREE_KEY not supported on " +
+                                    "this StrongBox KeyMint version"
+                        }
+                    } else {
+                        require(keymintTeeFeatureLevel >= 100) {
+                            "PURPOSE_AGREE_KEY not supported on " +
+                                    "this KeyMint version"
+                        }
                     }
                 }
             }
             val builder = KeyGenParameterSpec.Builder(newKeyAlias, purposes)
-            when (aSettings.algorithm.curve) {
-                EcCurve.P256 -> builder.setDigests(KeyProperties.DIGEST_SHA256)
-                EcCurve.ED25519 -> builder.setAlgorithmParameterSpec(ECGenParameterSpec("ed25519"))
-                EcCurve.X25519 -> builder.setAlgorithmParameterSpec(ECGenParameterSpec("x25519"))
-                else -> throw IllegalArgumentException("Curve is not supported")
+            if (aSettings.algorithm != Algorithm.ANDROID_KEYSTORE_ATTEST_KEY) {
+                when (aSettings.algorithm.curve) {
+                    EcCurve.P256 -> builder.setDigests(KeyProperties.DIGEST_SHA256)
+                    EcCurve.ED25519 -> builder.setAlgorithmParameterSpec(ECGenParameterSpec("ed25519"))
+                    EcCurve.X25519 -> builder.setAlgorithmParameterSpec(ECGenParameterSpec("x25519"))
+                    else -> throw IllegalArgumentException("Curve is not supported")
+                }
             }
             if (aSettings.userAuthenticationRequired) {
                 val keyguardManager =
@@ -216,7 +243,7 @@ class AndroidKeystoreSecureArea private constructor(
                     )
                 }
                 builder.setUserAuthenticationRequired(true)
-                val timeoutMillis = aSettings.userAuthenticationTimeoutMillis
+                val timeoutMillis = aSettings.userAuthenticationTimeout.inWholeMilliseconds
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                     val userAuthenticationTypes = aSettings.userAuthenticationTypes
                     var type = 0
@@ -281,12 +308,12 @@ class AndroidKeystoreSecureArea private constructor(
                 ks.load(null)
             }
             ks.getCertificateChain(newKeyAlias).forEach { certificate ->
-                attestationCerts.add(X509Cert(certificate.encoded))
+                attestationCerts.add(X509Cert(ByteString(certificate.encoded)))
             }
         } catch (e: Exception) {
             throw IllegalStateException(e)
         }
-        Logger.d(TAG, "EC key with alias '$alias' created")
+        //Logger.d(TAG, "EC key with alias '$alias' created")
         saveKeyMetadata(newKeyAlias, aSettings, X509CertChain(attestationCerts))
         return getKeyInfo(newKeyAlias)
     }
@@ -316,11 +343,11 @@ class AndroidKeystoreSecureArea private constructor(
         val entry = ks.getEntry(existingAlias, null)
             ?: throw IllegalArgumentException("A key with this alias doesn't exist")
 
-        val keyInfo: android.security.keystore.KeyInfo = try {
+        val keyInfo: KeyInfo = try {
             val privateKey = (entry as KeyStore.PrivateKeyEntry).privateKey
             val factory = KeyFactory.getInstance(privateKey.algorithm, "AndroidKeyStore")
             try {
-                factory.getKeySpec(privateKey, android.security.keystore.KeyInfo::class.java)
+                factory.getKeySpec(privateKey, KeyInfo::class.java)
             } catch (e: InvalidKeySpecException) {
                 throw IllegalStateException("Given key is not an Android Keystore key", e)
             }
@@ -350,7 +377,7 @@ class AndroidKeystoreSecureArea private constructor(
                 keyStore.load(null)
             }
             keyStore.getCertificateChain(existingAlias).forEach { certificate ->
-                attestationCerts.add(X509Cert(certificate.encoded))
+                attestationCerts.add(X509Cert(ByteString(certificate.encoded)))
             }
         } catch (e: Exception) {
             throw IllegalStateException(e)
@@ -388,7 +415,7 @@ class AndroidKeystoreSecureArea private constructor(
         }
         settingsBuilder.setUserAuthenticationRequired(
             keyInfo.isUserAuthenticationRequired,
-            keyInfo.userAuthenticationValidityDurationSeconds * 1000L,
+            keyInfo.userAuthenticationValidityDurationSeconds.seconds,
             userAuthenticationTypes
         )
         saveKeyMetadata(existingAlias, settingsBuilder.build(), X509CertChain(attestationCerts))
@@ -423,32 +450,16 @@ class AndroidKeystoreSecureArea private constructor(
     override suspend fun sign(
         alias: String,
         dataToSign: ByteArray,
-        keyUnlockData: KeyUnlockData?
-    ): EcSignature {
-        if (keyUnlockData !is KeyUnlockInteractive) {
-            return signNonInteractive(alias, dataToSign, keyUnlockData)
+        unlockReason: Reason
+    ): EcSignature =
+        try {
+            signNonInteractive(alias, dataToSign, null)
+        } catch (_: KeyLockedException) {
+            val unlockDataProvider = coroutineContext[KeyUnlockDataProvider.Key]
+                ?: AndroidKeystoreDefaultKeyUnlockDataProvider
+            val unlockData = unlockDataProvider.getKeyUnlockData(this, alias, unlockReason)
+            signNonInteractive(alias, dataToSign, unlockData)
         }
-        var unlockData: AndroidKeystoreKeyUnlockData? = null
-        do {
-            try {
-                return signNonInteractive(alias, dataToSign, unlockData)
-            } catch (_: KeyLockedException) {
-                unlockData = AndroidKeystoreKeyUnlockData(this, alias)
-                val res = applicationContext.resources
-                val keyInfo = getKeyInfo(alias)
-                if (!showBiometricPrompt(
-                        cryptoObject = unlockData.getCryptoObjectForSigning(),
-                        title = keyUnlockData.title ?: res.getString(R.string.aks_auth_default_title),
-                        subtitle = keyUnlockData.subtitle ?: res.getString(R.string.aks_auth_default_subtitle),
-                        userAuthenticationTypes = keyInfo.userAuthenticationTypes,
-                        requireConfirmation = keyUnlockData.requireConfirmation
-                    )
-                ) {
-                    throw KeyLockedException("User canceled authentication")
-                }
-            }
-        } while (true)
-    }
 
     private suspend fun signNonInteractive(
         alias: String,
@@ -500,29 +511,15 @@ class AndroidKeystoreSecureArea private constructor(
     override suspend fun keyAgreement(
         alias: String,
         otherKey: EcPublicKey,
-        keyUnlockData: KeyUnlockData?
+        unlockReason: Reason
     ): ByteArray {
-        if (keyUnlockData !is KeyUnlockInteractive) {
-            return keyAgreementNonInteractive(alias, otherKey)
-        }
-        var unlockData: AndroidKeystoreKeyUnlockData?
         do {
             try {
                 return keyAgreementNonInteractive(alias, otherKey)
             } catch (_: KeyLockedException) {
-                unlockData = AndroidKeystoreKeyUnlockData(this, alias)
-                val res = applicationContext.resources
-                val keyInfo = getKeyInfo(alias)
-                if (!showBiometricPrompt(
-                        cryptoObject = unlockData.cryptoObjectForKeyAgreement,
-                        title = keyUnlockData.title ?: res.getString(R.string.aks_auth_default_title),
-                        subtitle = keyUnlockData.title ?: res.getString(R.string.aks_auth_default_subtitle),
-                        userAuthenticationTypes = keyInfo.userAuthenticationTypes,
-                        requireConfirmation = keyUnlockData.requireConfirmation
-                    )
-                ) {
-                    throw KeyLockedException("User canceled authentication")
-                }
+                val unlockDataProvider = coroutineContext[KeyUnlockDataProvider.Key]
+                    ?: AndroidKeystoreDefaultKeyUnlockDataProvider
+                unlockDataProvider.getKeyUnlockData(this, alias, unlockReason)
             }
         } while (true)
     }
@@ -603,7 +600,7 @@ class AndroidKeystoreSecureArea private constructor(
             val keyInfo = if (entry != null) {
                 val privateKey = (entry as KeyStore.PrivateKeyEntry).privateKey
                 val factory = KeyFactory.getInstance(privateKey.algorithm, "AndroidKeyStore")
-                factory.getKeySpec(privateKey, android.security.keystore.KeyInfo::class.java)
+                factory.getKeySpec(privateKey, KeyInfo::class.java)
             } else {
                 null
             }
@@ -620,7 +617,14 @@ class AndroidKeystoreSecureArea private constructor(
                     keyInfo.keyValidityForOriginationEnd!!.time
                 )
             }
-            val attestationCertChain = keyMetadata.attestation
+            val attestationCertChain = if (keyMetadata.attestKeyAlias != null) {
+                X509CertChain(
+                    certificates = keyMetadata.attestation.certificates +
+                            getKeyInfo(keyMetadata.attestKeyAlias).attestation.certChain!!.certificates
+                )
+            } else {
+                keyMetadata.attestation
+            }
             val publicKey = attestationCertChain.certificates.first().ecPublicKey
 
             val userAuthenticationTypes = mutableSetOf<UserAuthenticationType>()
@@ -643,7 +647,7 @@ class AndroidKeystoreSecureArea private constructor(
                 KeyAttestation(publicKey, attestationCertChain),
                 keyMetadata.attestKeyAlias,
                 keyMetadata.userAuthenticationRequired,
-                keyMetadata.userAuthenticationTimeoutMillis,
+                keyMetadata.userAuthenticationTimeoutMillis.milliseconds,
                 userAuthenticationTypes,
                 keyMetadata.useStrongBox,
                 validFrom,
@@ -663,7 +667,7 @@ class AndroidKeystoreSecureArea private constructor(
             algorithm = settings.algorithm,
             attestKeyAlias = settings.attestKeyAlias,
             userAuthenticationRequired = settings.userAuthenticationRequired,
-            userAuthenticationTimeoutMillis = settings.userAuthenticationTimeoutMillis,
+            userAuthenticationTimeoutMillis = settings.userAuthenticationTimeout.inWholeMilliseconds,
             useStrongBox = settings.useStrongBox,
             attestation = attestation
         )
@@ -815,15 +819,9 @@ class AndroidKeystoreSecureArea private constructor(
         }
 
         internal fun signatureFromDer(curve: EcCurve, derEncodedSignature: ByteArray): EcSignature {
-            val asn1 = try {
-                ASN1InputStream(ByteArrayInputStream(derEncodedSignature)).readObject()
-            } catch (e: IOException) {
-                throw IllegalArgumentException("Error decoding DER signature", e)
-            }
-            val asn1Encodables = (asn1 as ASN1Sequence).toArray()
-            require(asn1Encodables.size == 2) { "Expected two items in sequence" }
-            val r = stripLeadingZeroes(((asn1Encodables[0].toASN1Primitive() as ASN1Integer).value).toByteArray())
-            val s = stripLeadingZeroes(((asn1Encodables[1].toASN1Primitive() as ASN1Integer).value).toByteArray())
+            val seq = ASN1.decode(derEncodedSignature) as ASN1Sequence
+            val r = stripLeadingZeroes((seq.elements[0] as ASN1Integer).value)
+            val s = stripLeadingZeroes((seq.elements[1] as ASN1Integer).value)
 
             val keySize = (curve.bitSize + 7)/8
             check(r.size <= keySize)

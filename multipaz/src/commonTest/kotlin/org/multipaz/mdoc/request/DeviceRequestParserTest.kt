@@ -15,21 +15,24 @@
  */
 package org.multipaz.mdoc.request
 
+import kotlinx.coroutines.test.runTest
 import org.multipaz.asn1.ASN1Integer
 import org.multipaz.cbor.Bstr
 import org.multipaz.cbor.Cbor
 import org.multipaz.cbor.Tstr
 import org.multipaz.cbor.toDataItem
-import org.multipaz.crypto.Algorithm
 import org.multipaz.crypto.X509CertChain
 import org.multipaz.crypto.Crypto
 import org.multipaz.crypto.EcCurve
+import org.multipaz.crypto.AsymmetricKey
 import org.multipaz.crypto.X500Name
 import org.multipaz.crypto.X509Cert
 import org.multipaz.mdoc.TestVectors
 import org.multipaz.util.fromHex
-import kotlinx.datetime.Clock
-import kotlinx.datetime.Instant
+import kotlin.time.Clock
+import kotlin.time.Instant
+import org.multipaz.testUtilSetupCryptoProvider
+import org.multipaz.util.fromHexByteString
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
@@ -38,8 +41,11 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class DeviceRequestParserTest {
+    @BeforeTest
+    fun setup() = testUtilSetupCryptoProvider()
+
     @Test
-    fun testDeviceRequestParserWithVectors() {
+    fun testDeviceRequestParserWithVectors() = runTest {
         // Strip the #6.24 tag since our APIs expects just the bytes of SessionTranscript.
         val encodedSessionTranscriptBytes =
             TestVectors.ISO_18013_5_ANNEX_D_SESSION_TRANSCRIPT_BYTES.fromHex()
@@ -61,9 +67,9 @@ class DeviceRequestParserTest {
         )
         val readerCertChain = dr.readerCertificateChain
         assertEquals(1, readerCertChain!!.certificates.size.toLong())
-        assertContentEquals(
-            TestVectors.ISO_18013_5_ANNEX_D_READER_CERT.fromHex(),
-            readerCertChain.certificates[0].encodedCertificate
+        assertEquals(
+            TestVectors.ISO_18013_5_ANNEX_D_READER_CERT.fromHexByteString(),
+            readerCertChain.certificates[0].encoded
         )
         assertContentEquals(
             TestVectors.ISO_18013_5_ANNEX_D_READER_AUTH.fromHex(),
@@ -93,7 +99,7 @@ class DeviceRequestParserTest {
     }
 
     @Test
-    fun testDeviceRequestParserWithVectorsMalformedReaderSignature() {
+    fun testDeviceRequestParserWithVectorsMalformedReaderSignature() = runTest {
         // Strip the #6.24 tag since our APIs expects just the bytes of SessionTranscript.
         val encodedSessionTranscriptBytes =
             TestVectors.ISO_18013_5_ANNEX_D_SESSION_TRANSCRIPT_BYTES.fromHex()
@@ -122,18 +128,18 @@ class DeviceRequestParserTest {
         )
         val readerCertChain = dr.readerCertificateChain
         assertEquals(1, readerCertChain!!.certificates.size.toLong())
-        assertContentEquals(
-            TestVectors.ISO_18013_5_ANNEX_D_READER_CERT.fromHex(),
-            readerCertChain.certificates[0].encodedCertificate
+        assertEquals(
+            TestVectors.ISO_18013_5_ANNEX_D_READER_CERT.fromHexByteString(),
+            readerCertChain.certificates[0].encoded
         )
         assertFalse(dr.readerAuthenticated)
     }
 
-    fun testDeviceRequestParserReaderAuthHelper(curve: EcCurve) {
+    fun testDeviceRequestParserReaderAuthHelper(curve: EcCurve) = runTest {
         // TODO: use assumeTrue() when available in kotlin-test
         if (!Crypto.supportedCurves.contains(curve)) {
             println("Curve $curve not supported on platform")
-            return
+            return@runTest
         }
 
         val encodedSessionTranscript = Cbor.encode(Bstr(byteArrayOf(0x01, 0x02)))
@@ -150,8 +156,7 @@ class DeviceRequestParserTest {
         )
         val readerCert = X509Cert.Builder(
             publicKey = readerKey.publicKey,
-            signingKey = readerKey,
-            signatureAlgorithm = curve.defaultSigningAlgorithm,
+            signingKey = AsymmetricKey.anonymous(readerKey, curve.defaultSigningAlgorithm),
             serialNumber = ASN1Integer(1),
             subject = X500Name.fromName("CN=Test Key"),
             issuer = X500Name.fromName("CN=Test Key"),

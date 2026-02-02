@@ -3,7 +3,6 @@ package org.multipaz.cose
 import kotlinx.coroutines.test.runTest
 import kotlinx.io.bytestring.ByteString
 import org.multipaz.cbor.Cbor
-import org.multipaz.cbor.CborMap
 import org.multipaz.cbor.DataItem
 import org.multipaz.cbor.buildCborMap
 import org.multipaz.cbor.toDataItem
@@ -11,10 +10,13 @@ import org.multipaz.crypto.Algorithm
 import org.multipaz.crypto.Crypto
 import org.multipaz.crypto.EcCurve
 import org.multipaz.crypto.EcPublicKeyDoubleCoordinate
+import org.multipaz.crypto.AsymmetricKey
 import org.multipaz.securearea.CreateKeySettings
 import org.multipaz.securearea.software.SoftwareSecureArea
 import org.multipaz.storage.ephemeral.EphemeralStorage
+import org.multipaz.testUtilSetupCryptoProvider
 import org.multipaz.util.fromHex
+import kotlin.test.BeforeTest
 
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
@@ -22,9 +24,11 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 class CoseTests {
+    @BeforeTest
+    fun setup() = testUtilSetupCryptoProvider()
 
     @Test
-    fun coseKeyDecode() {
+    fun coseKeyDecode() = runTest {
         // This checks we can decode the first key from the Example set in
         //
         //   https://datatracker.ietf.org/doc/html/rfc9052#name-public-keys
@@ -53,7 +57,7 @@ class CoseTests {
     }
 
     @Test
-    fun coseSign1() {
+    fun coseSign1() = runTest {
         val key = Crypto.createEcPrivateKey(EcCurve.P256)
         val dataToSign = "This is the data to sign.".encodeToByteArray()
         val coseSignature = Cose.coseSign1Sign(
@@ -74,7 +78,7 @@ class CoseTests {
     }
 
     @Test
-    fun coseSign1TestVector() {
+    fun coseSign1TestVector() = runTest {
         // This is the COSE_Sign1 example from
         //
         //  https://datatracker.ietf.org/doc/html/rfc9052#appendix-C.2.1
@@ -112,7 +116,7 @@ class CoseTests {
         )
     }
 
-    fun coseSign1_helper(curve: EcCurve) {
+    suspend fun coseSign1_helper(curve: EcCurve) {
         // TODO: use assumeTrue() when available in kotlin-test
         if (!Crypto.supportedCurves.contains(curve)) {
             println("Curve $curve not supported on platform")
@@ -145,15 +149,15 @@ class CoseTests {
         )
     }
 
-    @Test fun coseSign1_P256() = coseSign1_helper(EcCurve.P256)
-    @Test fun coseSign1_P384() = coseSign1_helper(EcCurve.P384)
-    @Test fun coseSign1_P521() = coseSign1_helper(EcCurve.P521)
-    @Test fun coseSign1_BRAINPOOLP256R1() = coseSign1_helper(EcCurve.BRAINPOOLP256R1)
-    @Test fun coseSign1_BRAINPOOLP320R1() = coseSign1_helper(EcCurve.BRAINPOOLP320R1)
-    @Test fun coseSign1_BRAINPOOLP384R1() = coseSign1_helper(EcCurve.BRAINPOOLP384R1)
-    @Test fun coseSign1_BRAINPOOLP512R1() = coseSign1_helper(EcCurve.BRAINPOOLP512R1)
-    @Test fun coseSign1_ED25519() = coseSign1_helper(EcCurve.ED25519)
-    @Test fun coseSign1_ED448() = coseSign1_helper(EcCurve.ED448)
+    @Test fun coseSign1_P256() = runTest { coseSign1_helper(EcCurve.P256) }
+    @Test fun coseSign1_P384() = runTest {  coseSign1_helper(EcCurve.P384) }
+    @Test fun coseSign1_P521() = runTest {  coseSign1_helper(EcCurve.P521) }
+    @Test fun coseSign1_BRAINPOOLP256R1() = runTest {  coseSign1_helper(EcCurve.BRAINPOOLP256R1) }
+    @Test fun coseSign1_BRAINPOOLP320R1() = runTest {  coseSign1_helper(EcCurve.BRAINPOOLP320R1) }
+    @Test fun coseSign1_BRAINPOOLP384R1() = runTest {  coseSign1_helper(EcCurve.BRAINPOOLP384R1) }
+    @Test fun coseSign1_BRAINPOOLP512R1() = runTest {  coseSign1_helper(EcCurve.BRAINPOOLP512R1) }
+    @Test fun coseSign1_ED25519() = runTest {  coseSign1_helper(EcCurve.ED25519) }
+    @Test fun coseSign1_ED448() = runTest {  coseSign1_helper(EcCurve.ED448) }
 
     fun coseSign1_SecureArea_helper(algorithm: Algorithm) = runTest {
         assertTrue(algorithm.fullySpecified)
@@ -178,8 +182,7 @@ class CoseTests {
             message = message,
             includeMessageInPayload = true,
             protectedHeaders = mapOf(),
-            unprotectedHeaders = mapOf(),
-            keyUnlockData = null
+            unprotectedHeaders = mapOf()
         )
         Cose.coseSign1Check(
             sa.getKeyInfo("testKey").publicKey,
@@ -187,10 +190,12 @@ class CoseTests {
             coseSignNoExplicitHeaderSet,
             algorithm
         )
-        assertEquals(
-            algorithm.curve!!.defaultSigningAlgorithm.coseAlgorithmIdentifier!!,
-            coseSignNoExplicitHeaderSet.protectedHeaders[Cose.COSE_LABEL_ALG.toCoseLabel]!!.asNumber.toInt()
-        )
+        // Refactored to avoid null value automatic type inference ambiguity.
+        algorithm.curve.defaultSigningAlgorithm.coseAlgorithmIdentifier?.let {
+            assertEquals(it,
+                coseSignNoExplicitHeaderSet.protectedHeaders[Cose.COSE_LABEL_ALG.toCoseLabel]!!.asNumber.toInt()
+            )
+        }
 
         // Second, check we can override it if we e.g. want the fully-specified algorithm there
         val protectedHeaders = mapOf<CoseLabel, DataItem>(
@@ -203,7 +208,6 @@ class CoseTests {
             includeMessageInPayload = true,
             protectedHeaders = protectedHeaders,
             unprotectedHeaders = mapOf(),
-            keyUnlockData = null
         )
         Cose.coseSign1Check(
             sa.getKeyInfo("testKey").publicKey,
@@ -212,7 +216,7 @@ class CoseTests {
             algorithm
         )
         assertEquals(
-            algorithm.coseAlgorithmIdentifier!!,
+            algorithm.coseAlgorithmIdentifier,
             coseSignExplicitHeaderSet.protectedHeaders[Cose.COSE_LABEL_ALG.toCoseLabel]!!.asNumber.toInt()
         )
     }
@@ -227,8 +231,79 @@ class CoseTests {
     @Test fun coseSign1_SecureArea_ED25519() = coseSign1_SecureArea_helper(Algorithm.ED25519)
     @Test fun coseSign1_SecureArea_ED448() = coseSign1_SecureArea_helper(Algorithm.ED448)
 
+    fun coseSign1_SigningKey_helper(algorithm: Algorithm) = runTest {
+        assertTrue(algorithm.fullySpecified)
+
+        // TODO: use assumeTrue() when available in kotlin-test
+        if (!Crypto.supportedCurves.contains(algorithm.curve!!)) {
+            println("Curve ${algorithm.curve} not supported on platform")
+            return@runTest
+        }
+
+        val storage = EphemeralStorage()
+        val sa = SoftwareSecureArea.create(storage)
+
+        sa.createKey("testKey", CreateKeySettings(algorithm, ByteString()))
+        val message = "Hello World".encodeToByteArray()
+
+        // First check that coseSign1Sign() puts the EcCurve.defaultSigningAlgorithm in
+        // the protected headed as COSE_LABEL_ALG
+        val coseSignNoExplicitHeaderSet = Cose.coseSign1Sign(
+            signingKey = AsymmetricKey.anonymous(
+                secureArea = sa,
+                alias = "testKey"
+            ),
+            message = message,
+            includeMessageInPayload = true,
+            protectedHeaders = mapOf(),
+            unprotectedHeaders = mapOf()
+        )
+        Cose.coseSign1Check(
+            sa.getKeyInfo("testKey").publicKey,
+            null,
+            coseSignNoExplicitHeaderSet,
+            algorithm
+        )
+        assertEquals(
+            algorithm.coseAlgorithmIdentifier,
+            coseSignNoExplicitHeaderSet.protectedHeaders[Cose.COSE_LABEL_ALG.toCoseLabel]!!.asNumber.toInt()
+        )
+
+        // Second, check we can override it if we e.g. want the fully-specified algorithm there
+        val protectedHeaders = mapOf<CoseLabel, DataItem>(
+            Cose.COSE_LABEL_ALG.toCoseLabel to algorithm.coseAlgorithmIdentifier!!.toDataItem()
+        )
+        val coseSignExplicitHeaderSet = Cose.coseSign1Sign(
+            signingKey = AsymmetricKey.anonymous(sa, "testKey"),
+            message = message,
+            includeMessageInPayload = true,
+            protectedHeaders = protectedHeaders,
+            unprotectedHeaders = mapOf(),
+        )
+        Cose.coseSign1Check(
+            sa.getKeyInfo("testKey").publicKey,
+            null,
+            coseSignExplicitHeaderSet,
+            algorithm
+        )
+        assertEquals(
+            algorithm.coseAlgorithmIdentifier!!,
+            coseSignExplicitHeaderSet.protectedHeaders[Cose.COSE_LABEL_ALG.toCoseLabel]!!.asNumber.toInt()
+        )
+    }
+
+    @Test fun coseSign1_SigningKey_ESP256() = coseSign1_SigningKey_helper(Algorithm.ESP256)
+    @Test fun coseSign1_SigningKey_ESP384() = coseSign1_SigningKey_helper(Algorithm.ESP384)
+    @Test fun coseSign1_SigningKey_ESP521() = coseSign1_SigningKey_helper(Algorithm.ESP512)
+    @Test fun coseSign1_SigningKey_ESB256() = coseSign1_SigningKey_helper(Algorithm.ESB256)
+    @Test fun coseSign1_SigningKey_ESB320() = coseSign1_SigningKey_helper(Algorithm.ESB320)
+    @Test fun coseSign1_SigningKey_ESB384() = coseSign1_SigningKey_helper(Algorithm.ESB384)
+    @Test fun coseSign1_SigningKey_ESB512() = coseSign1_SigningKey_helper(Algorithm.ESB512)
+    @Test fun coseSign1_SigningKey_ED25519() = coseSign1_SigningKey_helper(Algorithm.ED25519)
+    @Test fun coseSign1_SigningKey_ED448() = coseSign1_SigningKey_helper(Algorithm.ED448)
+
     @Test
-    fun coseSign1X5Chain() {
+    fun coseSign1X5Chain() = runTest {
         // This is a test vector from ISO/IEC 18013-5:2021 Annex D.5.2 Issuer data authentication
         val issuerAuth =
             "8443a10126a118215901f3308201ef30820195a00302010202143c4416eed784f3b413e48" +

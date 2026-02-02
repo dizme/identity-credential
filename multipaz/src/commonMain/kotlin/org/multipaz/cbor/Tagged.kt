@@ -1,6 +1,7 @@
 package org.multipaz.cbor
 
 import kotlinx.io.bytestring.ByteStringBuilder
+import org.multipaz.cose.Cose
 
 /**
  * Tag (major type 6).
@@ -80,6 +81,41 @@ class Tagged(val tagNumber: Long, val taggedItem: DataItem) : DataItem(MajorType
          * the byte string is to leave out any leading zeroes.
          */
         const val NEGATIVE_BIGNUM = 3L
+
+        /**
+         * Holds COSE signed message with one signer.
+         *
+         * Defined in https://www.rfc-editor.org/rfc/rfc9052.html#name-signing-with-one-signer
+         *
+         * Use [Cose.coseSign1Sign] and [org.multipaz.cose.CoseSign1.fromDataItem] to generate and
+         * parse the content in this [Tagged].
+         */
+        const val COSE_SIGN1 = 18L
+
+        /**
+         * Encoding hint for base64url.
+         *
+         * Tag number 21 suggests conversion to base64url encoding (Section 5 of RFC4648) where
+         * padding is not used (see Section 3.2 of RFC4648); that is, all trailing equals
+         * signs ("=") are removed from the encoded string.
+         */
+        const val ENCODING_HINT_BASE64URL = 21L
+
+        /**
+         * Encoding hint for base64 with padding.
+         *
+         * Tag number 22 suggests conversion to classical base64 encoding (Section 4 of RFC4648)
+         * with padding as defined in RFC 4648.
+         */
+        const val ENCODING_HINT_BASE64_WITH_PADDING = 22L
+
+        /**
+         * Encoding hint for hex encoding.
+         *
+         * Tag number 23 suggests conversion to base16 (hex) encoding with uppercase
+         * alphabetics (see Section 8 of [RFC4648]).
+         */
+        const val ENCODING_HINT_HEX = 23L
 
         /**
          * Encoded CBOR data item.

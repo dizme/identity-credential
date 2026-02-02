@@ -4,6 +4,7 @@ import android.content.Context
 import android.nfc.NfcAdapter
 import android.nfc.Tag
 import android.nfc.tech.IsoDep
+import android.os.Bundle
 import android.os.VibrationEffect
 import android.os.Vibrator
 import androidx.compose.runtime.Composable
@@ -20,10 +21,9 @@ import org.multipaz.nfc.NfcIsoTag
 import org.multipaz.nfc.NfcIsoTagAndroid
 import org.multipaz.nfc.NfcTagLostException
 import org.multipaz.nfc.NfcTagReaderModalBottomSheet
-import org.multipaz.prompt.NfcDialogParameters
 import org.multipaz.prompt.PromptDismissedException
 import org.multipaz.prompt.ScanNfcTagDialogIcon
-import org.multipaz.prompt.SinglePromptModel
+import org.multipaz.prompt.PromptDialogModel
 import org.multipaz.util.Logger
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
@@ -34,19 +34,23 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.suspendCancellableCoroutine
 import org.multipaz.compose.R
+import org.multipaz.prompt.ScanNfcPromptDialogModel
+import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.resumeWithException
 import kotlin.time.Duration.Companion.seconds
 
-const val TAG = "ScanNfcTagPromptDialog"
+private const val TAG = "ScanNfcTagPromptDialog"
 
 /**
  * Displays NFC prompt dialog in Composable UI environment and runs NFC interactions.
  */
 @Composable
-internal fun ScanNfcTagPromptDialog(model: SinglePromptModel<NfcDialogParameters<Any>, Any?>) {
-    val dialogState = model.dialogState.collectAsState(SinglePromptModel.NoDialogState())
+internal fun ScanNfcTagPromptDialog(
+    model: PromptDialogModel<ScanNfcPromptDialogModel.NfcDialogParameters<Any>, Any?>
+) {
+    val dialogState = model.dialogState.collectAsState(PromptDialogModel.NoDialogState())
     when (val dialogStateValue = dialogState.value) {
-        is SinglePromptModel.NoDialogState -> if (!dialogStateValue.initial) {
+        is PromptDialogModel.NoDialogState -> if (!dialogStateValue.initial) {
             val activity = LocalContext.current.getActivity() as FragmentActivity
             LaunchedEffect(dialogStateValue) {
                 val adapter = NfcAdapter.getDefaultAdapter(activity)
@@ -58,13 +62,13 @@ internal fun ScanNfcTagPromptDialog(model: SinglePromptModel<NfcDialogParameters
                 }
             }
         }
-        is SinglePromptModel.DialogShownState -> ScanNfcTagPromptDialogShown(dialogStateValue)
+        is PromptDialogModel.DialogShownState -> ScanNfcTagPromptDialogShown(dialogStateValue)
     }
 }
 
 @Composable
 private fun ScanNfcTagPromptDialogShown(
-    dialogStateValue: SinglePromptModel.DialogShownState<NfcDialogParameters<Any>, Any?>
+    dialogStateValue: PromptDialogModel.DialogShownState<ScanNfcPromptDialogModel.NfcDialogParameters<Any>, Any?>
 ) {
     val coroutineScope = rememberCoroutineScope()
     val icon = remember { MutableStateFlow(ScanNfcTagDialogIcon.READY_TO_SCAN) }
@@ -75,16 +79,18 @@ private fun ScanNfcTagPromptDialogShown(
         ScanNfcTagDialogIcon.ERROR -> R.drawable.nfc_tag_reader_icon_error
     }
     val messageText = message.collectAsState().value
-    NfcTagReaderModalBottomSheet(
-        dialogMessage = messageText,
-        dialogIconPainter = painterResource(iconId),
-        onDismissed = {
-            coroutineScope.launch {
-                // This will dismiss the dialog and cancel LaunchedEffect below.
-                dialogStateValue.resultChannel.close(PromptDismissedException())
+    if (messageText != null) {
+        NfcTagReaderModalBottomSheet(
+            dialogMessage = messageText,
+            dialogIconPainter = painterResource(iconId),
+            onDismissed = {
+                coroutineScope.launch {
+                    // This will dismiss the dialog and cancel LaunchedEffect below.
+                    dialogStateValue.resultChannel.close(PromptDismissedException())
+                }
             }
-        }
-    )
+        )
+    }
     val activity = LocalContext.current.getActivity() as FragmentActivity
     LaunchedEffect(dialogStateValue) {
         Logger.i(TAG, "NFC: NFC dialog is shown")
@@ -100,14 +106,20 @@ private fun ScanNfcTagPromptDialogShown(
                     initialMessage = dialogStateValue.parameters.initialMessage,
                     tagInteractionFunc = dialogStateValue.parameters.interactionFunction,
                     dialogMessage = message,
-                    continuation = continuation
+                    continuation = continuation,
+                    context = dialogStateValue.parameters.context
                 )
+                val extras = dialogStateValue.parameters.options.pollingFrameData?.let {
+                    val extras = Bundle()
+                    extras.putByteArray("android.nfc.extra.READER_TECH_A_POLLING_LOOP_ANNOTATION", it.toByteArray())
+                    extras
+                }
                 adapter.enableReaderMode(
                     activity,
                     nfcCallback,
                     NfcAdapter.FLAG_READER_NFC_A + NfcAdapter.FLAG_READER_NFC_B
                             + NfcAdapter.FLAG_READER_SKIP_NDEF_CHECK + NfcAdapter.FLAG_READER_NO_PLATFORM_SOUNDS,
-                    null
+                    extras
                 )
             }
             dialogStateValue.resultChannel.send(result)
@@ -147,13 +159,11 @@ private fun vibrateSuccess(context: Context) {
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class NfcReaderCallback<T>(
-    val initialMessage: String,
-    val tagInteractionFunc: suspend (
-        tag: NfcIsoTag,
-        updateMessage: (message: String) -> Unit
-    ) -> T?,
-    val dialogMessage: MutableStateFlow<String>,
-    val continuation: CancellableContinuation<T>
+    val initialMessage: String?,
+    val tagInteractionFunc: suspend (tag: NfcIsoTag) -> T?,
+    val dialogMessage: MutableStateFlow<String?>,
+    val continuation: CancellableContinuation<T>,
+    val context: CoroutineContext
 ) : NfcAdapter.ReaderCallback {
     override fun onTagDiscovered(tag: Tag?) {
         if (tag == null) {
@@ -170,11 +180,17 @@ class NfcReaderCallback<T>(
                     // to return until we're done interrogating the tag.
                     val ret = runBlocking {
                         Logger.i(TAG, "maxTransceiveLength: ${isoDep.maxTransceiveLength}")
-                        val isoTag = NfcIsoTagAndroid(isoDep, coroutineContext)
-                        tagInteractionFunc(isoTag) { message ->
-                            Logger.i(TAG, "NFC dialog message: $message")
-                            dialogMessage.value = message
-                        }
+                        val isoTag = NfcIsoTagAndroid(
+                            tag = isoDep,
+                            context = context,
+                            updateMessage = { message ->
+                                Logger.i(TAG, "NFC dialog message: $message")
+                                if (initialMessage != null) {
+                                    dialogMessage.value = message
+                                }
+                            }
+                        )
+                        tagInteractionFunc(isoTag)
                     }
                     Logger.i(TAG, "Tag processed")
                     if (ret == null) {
@@ -184,9 +200,11 @@ class NfcReaderCallback<T>(
                         continuation.resume(ret, null)
                     }
                 } catch (e: NfcTagLostException) {
-                    // This is to to properly handle emulated tags - such as on Android - which may be showing
+                    // This is to properly handle emulated tags - such as on Android - which may be showing
                     // disambiguation UI if multiple applications have registered for the same AID.
-                    dialogMessage.value = initialMessage
+                    if (initialMessage != null) {
+                        dialogMessage.value = initialMessage
+                    }
                     Logger.w(TAG, "Tag lost", e)
                 } catch (e: Throwable) {
                     Logger.e(TAG, "Error in interaction func", e)

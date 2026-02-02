@@ -1,6 +1,6 @@
 package org.multipaz.compose.certificateviewer
 
-import kotlinx.datetime.Instant
+import kotlin.time.Instant
 import org.multipaz.asn1.ASN1
 import org.multipaz.asn1.ASN1Boolean
 import org.multipaz.asn1.ASN1Integer
@@ -9,10 +9,11 @@ import org.multipaz.asn1.OID
 import org.multipaz.cbor.Cbor
 import org.multipaz.cbor.DiagnosticOption
 import org.multipaz.crypto.X509Cert
-import org.multipaz.securearea.cloud.CloudAttestationExtension
+import org.multipaz.certext.MultipazExtension
 import org.multipaz.util.AndroidAttestationExtensionParser
 import org.multipaz.util.toHex
 import org.multipaz.util.unsignedBigIntToString
+import org.multipaz.certext.fromCbor
 
 /**
  * View Model immutable data.
@@ -102,12 +103,16 @@ internal data class CertificateViewData(
                             cert.keyUsage.joinToString(", ") { it.description }
 
                         OID.X509_EXTENSION_BASIC_CONSTRAINTS.oid -> {
-                            val seq = ASN1.decode(ext.data.toByteArray()) as ASN1Sequence
-                            val sb = StringBuilder("CA: ${(seq.elements[0] as ASN1Boolean).value}\n")
-                            if (seq.elements.size > 1) {
-                                sb.append("pathLenConstraint: ${(seq.elements[1] as ASN1Integer).toLong()}\n")
+                            try {
+                                val seq = ASN1.decode(ext.data.toByteArray()) as ASN1Sequence
+                                val sb = StringBuilder("CA: ${(seq.elements[0] as ASN1Boolean).value}\n")
+                                if (seq.elements.size > 1) {
+                                    sb.append("pathLenConstraint: ${(seq.elements[1] as ASN1Integer).toLong()}\n")
+                                }
+                                sb.toString()
+                            } catch (e: Throwable) {
+                                "Error decoding: $e"
                             }
-                            sb.toString()
                         }
 
                         OID.X509_EXTENSION_AUTHORITY_KEY_IDENTIFIER.oid ->
@@ -122,8 +127,8 @@ internal data class CertificateViewData(
                                 setOf(DiagnosticOption.PRETTY_PRINT),
                             )
 
-                        OID.X509_EXTENSION_MULTIPAZ_KEY_ATTESTATION.oid ->
-                            CloudAttestationExtension.Companion.decode(ext.data).prettyPrint()
+                        OID.X509_EXTENSION_MULTIPAZ_EXTENSION.oid ->
+                            MultipazExtension.fromCbor(ext.data.toByteArray()).prettyPrint()
 
                         else -> {
                             try {

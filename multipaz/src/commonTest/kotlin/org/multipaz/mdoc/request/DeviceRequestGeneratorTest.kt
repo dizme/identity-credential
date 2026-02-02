@@ -15,6 +15,7 @@
  */
 package org.multipaz.mdoc.request
 
+import kotlinx.coroutines.test.runTest
 import org.multipaz.asn1.ASN1Integer
 import org.multipaz.cbor.Bstr
 import org.multipaz.cbor.Cbor
@@ -26,8 +27,18 @@ import org.multipaz.crypto.Crypto
 import org.multipaz.crypto.EcCurve
 import org.multipaz.crypto.X500Name
 import org.multipaz.crypto.X509Cert
-import kotlinx.datetime.Clock
-import kotlinx.datetime.Instant
+import kotlin.time.Clock
+import kotlin.time.Instant
+import kotlinx.datetime.LocalDateTime
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.toInstant
+import org.multipaz.cose.Cose
+import org.multipaz.cose.toCoseLabel
+import org.multipaz.crypto.AsymmetricKey
+import org.multipaz.mdoc.util.MdocUtil
+import org.multipaz.securearea.software.SoftwareCreateKeySettings
+import org.multipaz.securearea.software.SoftwareSecureArea
+import org.multipaz.storage.ephemeral.EphemeralStorage
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
@@ -41,7 +52,7 @@ import kotlin.test.assertTrue
 
 class DeviceRequestGeneratorTest {
     @Test
-    fun testDeviceRequestBuilder() {
+    fun testDeviceRequestBuilder() = runTest {
         val encodedSessionTranscript = Cbor.encode(Bstr(byteArrayOf(0x01, 0x02)))
         val mdlItemsToRequest =  mutableMapOf<String, Map<String, Boolean>>()
         val mdlNsItems = mutableMapOf<String, Boolean>()
@@ -62,8 +73,7 @@ class DeviceRequestGeneratorTest {
         )
         val readerCert = X509Cert.Builder(
             publicKey = readerKey.publicKey,
-            signingKey = readerKey,
-            signatureAlgorithm = Algorithm.ES256,
+            signingKey = AsymmetricKey.anonymous(readerKey, Algorithm.ES256),
             serialNumber = ASN1Integer(1),
             subject = X500Name.fromName("CN=Test Key"),
             issuer = X500Name.fromName("CN=Test Key"),
@@ -135,12 +145,88 @@ class DeviceRequestGeneratorTest {
         assertEquals(1, docRequest.readerCertificateChain!!.certificates.size.toLong())
         assertEquals(readerCertChain, docRequest.readerCertificateChain)
         assertEquals(0, docRequest.requestInfo.size.toLong())
+
+        // Check that we use the right COSE algorithm identifier...
+        val newDeviceRequest = DeviceRequest.fromDataItem(Cbor.decode(encodedDeviceRequest))
+        newDeviceRequest.verifyReaderAuthentication(Cbor.decode(encodedSessionTranscript))
+        assertEquals(
+            Algorithm.ES256.coseAlgorithmIdentifier!!,
+            newDeviceRequest.docRequests[0].readerAuth!!.protectedHeaders[Cose.COSE_LABEL_ALG.toCoseLabel]!!.asNumber.toInt()
+        )
+    }
+
+    @Test
+    fun testDeviceRequestBuilderSecureArea() = runTest {
+        val encodedSessionTranscript = Cbor.encode(Bstr(byteArrayOf(0x01, 0x02)))
+        val mdlItemsToRequest =  mutableMapOf<String, Map<String, Boolean>>()
+        val mdlNsItems = mutableMapOf<String, Boolean>()
+        mdlNsItems["family_name"] = true
+        mdlNsItems["portrait"] = false
+        mdlItemsToRequest[MDL_NAMESPACE] = mdlNsItems
+        val aamvaNsItems = mutableMapOf<String, Boolean>()
+        aamvaNsItems["real_id"] = false
+        mdlItemsToRequest[AAMVA_NAMESPACE] = aamvaNsItems
+
+        val secureArea = SoftwareSecureArea.create(EphemeralStorage())
+        val testKeyInfo = secureArea.createKey(
+            alias = "testKey",
+            createKeySettings = SoftwareCreateKeySettings.Builder().build()
+        )
+
+        val readerRootKey = Crypto.createEcPrivateKey(EcCurve.P384)
+        val readerRootCert = MdocUtil.generateReaderRootCertificate(
+            readerRootKey = AsymmetricKey.anonymous(readerRootKey),
+            subject = X500Name.fromName("CN=TEST Reader Root,C=XG-US,ST=MA"),
+            serial = ASN1Integer(1),
+            validFrom = LocalDateTime(2024, 1, 1, 0, 0, 0, 0).toInstant(TimeZone.UTC),
+            validUntil = LocalDateTime(2029, 1, 1, 0, 0, 0, 0).toInstant(TimeZone.UTC),
+            crlUrl = "http://www.example.com/issuer/crl"
+        )
+        val readerCert = MdocUtil.generateReaderCertificate(
+            readerRootKey = AsymmetricKey.X509CertifiedExplicit(
+                privateKey = readerRootKey,
+                certChain = X509CertChain(listOf(readerRootCert)),
+            ),
+            readerKey = testKeyInfo.publicKey,
+            subject = X500Name.fromName("CN=TEST Reader Certificate,C=XG-US,ST=MA"),
+            serial = ASN1Integer(1),
+            validFrom = LocalDateTime(2024, 1, 1, 0, 0, 0, 0).toInstant(TimeZone.UTC),
+            validUntil = LocalDateTime(2029, 1, 1, 0, 0, 0, 0).toInstant(TimeZone.UTC),
+        )
+        val readerCertChain = X509CertChain(listOf(readerCert, readerRootCert))
+
+        val encodedDeviceRequest = DeviceRequestGenerator(encodedSessionTranscript)
+            .addDocumentRequest(
+                docType = MDL_DOCTYPE,
+                itemsToRequest = mdlItemsToRequest,
+                requestInfo = null,
+                readerKeySecureArea = secureArea,
+                readerKeyAlias = "testKey",
+                readerKeyCertificateChain = readerCertChain,
+            )
+            .generate()
+        val deviceRequest = DeviceRequestParser(
+            encodedDeviceRequest,
+            encodedSessionTranscript
+        )
+            .parse()
+        val docRequest = deviceRequest.docRequests[0]
+        assertTrue(docRequest.readerAuthenticated)
+        assertEquals(readerCertChain, docRequest.readerCertificateChain)
+
+        // Check that we use the right COSE algorithm identifier...
+        val newDeviceRequest = DeviceRequest.fromDataItem(Cbor.decode(encodedDeviceRequest))
+        newDeviceRequest.verifyReaderAuthentication(Cbor.decode(encodedSessionTranscript))
+        assertEquals(
+            Algorithm.ES256.coseAlgorithmIdentifier!!,
+            newDeviceRequest.docRequests[0].readerAuth!!.protectedHeaders[Cose.COSE_LABEL_ALG.toCoseLabel]!!.asNumber.toInt()
+        )
     }
 
     companion object {
         private const val MDL_DOCTYPE = "org.iso.18013.5.1.mDL"
         private const val MDL_NAMESPACE = "org.iso.18013.5.1"
-        private const val AAMVA_NAMESPACE = "org.aamva.18013.5.1"
+        private const val AAMVA_NAMESPACE = "org.iso.18013.5.1.aamva"
         private const val MVR_DOCTYPE = "org.iso.18013.7.1.mVR"
         private const val MVR_NAMESPACE = "org.iso.18013.7.1"
     }

@@ -1,8 +1,7 @@
 package org.multipaz.rpc.handler
 
-import kotlinx.datetime.Clock
-import kotlinx.datetime.Instant
-import kotlinx.io.bytestring.buildByteString
+import kotlin.time.Instant
+import kotlinx.io.bytestring.ByteString
 import org.multipaz.cbor.Bstr
 import org.multipaz.cbor.DataItem
 import org.multipaz.device.AssertionRpcAuth
@@ -12,7 +11,6 @@ import org.multipaz.device.DeviceAttestation
 import org.multipaz.device.fromCbor
 import org.multipaz.device.fromDataItem
 import org.multipaz.rpc.backend.BackendEnvironment
-import org.multipaz.storage.KeyExistsStorageException
 import org.multipaz.storage.Storage
 import org.multipaz.storage.StorageTableSpec
 import kotlin.time.Duration
@@ -27,10 +25,13 @@ import kotlin.time.Duration.Companion.minutes
  */
 class RpcAuthInspectorAssertion(
     val timeout: Duration = 10.minutes,
-    val nonceChecker: suspend (clientId: String, nonce: String, expiration: Instant) -> Unit
-            = ::checkNonceForReplay,
+    val nonceChecker: suspend (
+            clientId: String,
+            nonce: ByteString,
+            expiration: Instant
+        ) -> RpcNonceAndSession = RpcNonceAndSession::checkNonce,
     val clientLookup: suspend (clientId: String) -> DeviceAttestation?
-            = ::getClientDeviceAttestation
+            = Companion::getClientDeviceAttestation
 ): RpcAuthInspector {
     override suspend fun authCheck(
         target: String,
@@ -45,19 +46,6 @@ class RpcAuthInspectorAssertion(
                 message = "Client '${assertion.clientId}' is unknown",
                 rpcAuthError = RpcAuthError.UNKNOWN_CLIENT_ID
             )
-        if (assertion.target != target || assertion.method != method) {
-            throw RpcAuthException(
-                message = "RPC message is directed to a wrong target or method",
-                rpcAuthError = RpcAuthError.REQUEST_URL_MISMATCH
-            )
-        }
-        val expiration = assertion.timestamp + timeout
-        if (expiration <= Clock.System.now()) {
-            throw RpcAuthException(
-                message = "Message is expired",
-                rpcAuthError = RpcAuthError.STALE
-            )
-        }
         try {
             attestation.validateAssertion(deviceAssertion)
         } catch (err: DeviceAssertionException) {
@@ -66,49 +54,32 @@ class RpcAuthInspectorAssertion(
                 rpcAuthError = RpcAuthError.FAILED
             )
         }
-        nonceChecker(assertion.clientId, assertion.nonce, expiration)
-        return RpcAuthContext(assertion.clientId)
+        val nonceAndSession = RpcNonceAndSession.validateAndExtractNonceAndSession(
+            assertion = assertion,
+            target = target,
+            method = method,
+            payload = payload,
+            timeout = timeout,
+            nonceChecker = nonceChecker
+        )
+        return RpcAuthContext(
+            assertion.clientId,
+            nonceAndSession.sessionId,
+            nonceAndSession.nextNonce
+        )
     }
 
     companion object {
-        val rpcClientTableSpec = StorageTableSpec(
-            name = "RpcClientAttestations",
-            supportPartitions = false,
-            supportExpiration = false
-        )
-
-        val rpcNonceTableSpec = StorageTableSpec(
-            name = "RpcClientNonce",
-            supportPartitions = true,
-            supportExpiration = true
-        )
-
         /**
          * [RpcAuthIssuerAssertion] instance that uses defaults for all its parameters.
          */
         val Default = RpcAuthInspectorAssertion()
 
-        private suspend fun checkNonceForReplay(
-            clientId: String,
-            nonce: String,
-            expiration: Instant
-        ) {
-            val storage = BackendEnvironment.getInterface(Storage::class)!!
-            val table = storage.getTable(rpcNonceTableSpec)
-            try {
-                table.insert(
-                    key = nonce,
-                    partitionId = clientId,
-                    expiration = expiration,
-                    data = buildByteString { }
-                )
-            } catch (err: KeyExistsStorageException) {
-                throw RpcAuthException(
-                    message = "Nonce reuse detected: ${err.message}",
-                    rpcAuthError = RpcAuthError.REPLAY
-                )
-            }
-        }
+        val rpcClientTableSpec = StorageTableSpec(
+            name = "RpcClientAttestations",
+            supportPartitions = false,
+            supportExpiration = false
+        )
 
         suspend fun getClientDeviceAttestation(
             clientId: String

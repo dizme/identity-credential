@@ -1,100 +1,21 @@
 package org.multipaz.crypto
 
-import org.multipaz.util.UUID
-import org.multipaz.util.fromJavaUuid
-import org.multipaz.util.toBase64Url
-import com.google.crypto.tink.HybridDecrypt
-import com.google.crypto.tink.HybridEncrypt
-import com.google.crypto.tink.InsecureSecretKeyAccess
-import com.google.crypto.tink.KeysetHandle
-import com.google.crypto.tink.TinkProtoKeysetFormat
-import com.google.crypto.tink.config.TinkConfig
-import com.google.crypto.tink.hybrid.HybridConfig
-import com.google.crypto.tink.proto.HpkeAead
-import com.google.crypto.tink.proto.HpkeKdf
-import com.google.crypto.tink.proto.HpkeKem
-import com.google.crypto.tink.proto.HpkeParams
-import com.google.crypto.tink.proto.HpkePrivateKey
-import com.google.crypto.tink.proto.HpkePublicKey
-import com.google.crypto.tink.proto.KeyData
-import com.google.crypto.tink.proto.KeyStatusType
-import com.google.crypto.tink.proto.Keyset
-import com.google.crypto.tink.proto.OutputPrefixType
-import com.google.crypto.tink.shaded.protobuf.ByteString as TinkByteString
-import com.google.crypto.tink.subtle.EllipticCurves
-import com.nimbusds.jose.EncryptionMethod
-import com.nimbusds.jose.JOSEObjectType
-import com.nimbusds.jose.JWEAlgorithm
-import com.nimbusds.jose.JWEHeader
-import com.nimbusds.jose.JWSAlgorithm
-import com.nimbusds.jose.JWSHeader
-import com.nimbusds.jose.JWSSigner
-import com.nimbusds.jose.crypto.ECDHDecrypter
-import com.nimbusds.jose.crypto.ECDHEncrypter
-import com.nimbusds.jose.crypto.ECDSASigner
-import com.nimbusds.jose.jwk.Curve
-import com.nimbusds.jose.jwk.ECKey
-import com.nimbusds.jose.jwk.JWK
-import com.nimbusds.jose.jwk.JWKSet
-import com.nimbusds.jose.proc.DefaultJOSEObjectTypeVerifier
-import com.nimbusds.jose.proc.JWSKeySelector
-import com.nimbusds.jose.proc.SecurityContext
-import com.nimbusds.jose.util.Base64URL
-import com.nimbusds.jwt.EncryptedJWT
-import com.nimbusds.jwt.JWTClaimsSet
-import com.nimbusds.jwt.SignedJWT
-import com.nimbusds.jwt.proc.DefaultJWTProcessor
-import kotlinx.io.bytestring.ByteStringBuilder
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
-import org.bouncycastle.crypto.agreement.X25519Agreement
-import org.bouncycastle.crypto.agreement.X448Agreement
-import org.bouncycastle.crypto.generators.Ed25519KeyPairGenerator
-import org.bouncycastle.crypto.generators.Ed448KeyPairGenerator
-import org.bouncycastle.crypto.generators.X25519KeyPairGenerator
-import org.bouncycastle.crypto.generators.X448KeyPairGenerator
-import org.bouncycastle.crypto.params.Ed25519KeyGenerationParameters
-import org.bouncycastle.crypto.params.Ed25519PrivateKeyParameters
-import org.bouncycastle.crypto.params.Ed25519PublicKeyParameters
-import org.bouncycastle.crypto.params.Ed448KeyGenerationParameters
-import org.bouncycastle.crypto.params.Ed448PrivateKeyParameters
-import org.bouncycastle.crypto.params.Ed448PublicKeyParameters
-import org.bouncycastle.crypto.params.X25519KeyGenerationParameters
-import org.bouncycastle.crypto.params.X25519PrivateKeyParameters
-import org.bouncycastle.crypto.params.X25519PublicKeyParameters
-import org.bouncycastle.crypto.params.X448KeyGenerationParameters
-import org.bouncycastle.crypto.params.X448PrivateKeyParameters
-import org.bouncycastle.crypto.params.X448PublicKeyParameters
-import org.bouncycastle.crypto.signers.Ed25519Signer
-import org.bouncycastle.crypto.signers.Ed448Signer
-import org.bouncycastle.jcajce.provider.asymmetric.ec.BCECPrivateKey
-import org.bouncycastle.jce.ECNamedCurveTable
-import org.bouncycastle.jce.provider.BouncyCastleProvider
-import org.bouncycastle.jce.spec.ECPrivateKeySpec
-import org.bouncycastle.util.BigIntegers
-import java.security.KeyFactory
+import org.multipaz.asn1.ASN1
+import org.multipaz.asn1.ASN1Integer
+import org.multipaz.asn1.ASN1ObjectIdentifier
+import org.multipaz.asn1.ASN1OctetString
+import org.multipaz.asn1.ASN1Sequence
 import java.security.KeyPairGenerator
 import java.security.MessageDigest
-import java.security.SecureRandom
 import java.security.Security
 import java.security.Signature
 import java.security.interfaces.ECPrivateKey
-import java.security.interfaces.ECPublicKey
 import java.security.spec.ECGenParameterSpec
-import java.security.spec.PKCS8EncodedKeySpec
-import java.security.spec.X509EncodedKeySpec
 import javax.crypto.Cipher
 import javax.crypto.KeyAgreement
 import javax.crypto.Mac
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
-import kotlin.io.encoding.Base64
-import kotlin.io.encoding.ExperimentalEncodingApi
-
 
 /**
  * Cryptographic support routines.
@@ -105,26 +26,54 @@ import kotlin.io.encoding.ExperimentalEncodingApi
 @Suppress("EXPECT_ACTUAL_CLASSIFIERS_ARE_IN_BETA_WARNING")
 actual object Crypto {
 
-    /**
-     * BouncyCastle supports all the curves defined in [EcCurve].
-     */
-    actual val supportedCurves: Set<EcCurve> = setOf(
-        EcCurve.P256,
-        EcCurve.P384,
-        EcCurve.P521,
-        EcCurve.BRAINPOOLP256R1,
-        EcCurve.BRAINPOOLP320R1,
-        EcCurve.BRAINPOOLP384R1,
-        EcCurve.BRAINPOOLP512R1,
-        EcCurve.ED25519,
-        EcCurve.X25519,
-        EcCurve.ED448,
-        EcCurve.X448,
-    )
+    actual val supportedCurves: Set<EcCurve>
+        get() {
+            // TODO: we could probably come up with a better heuristic for which curves are supported
+            //   but this works fine for now.
+            val jcaProviders = Security.getProviders()
+            return if (jcaProviders.size > 1 && jcaProviders.first().name == "BC") {
+                setOf(
+                    EcCurve.P256,
+                    EcCurve.P384,
+                    EcCurve.P521,
+                    EcCurve.BRAINPOOLP256R1,
+                    EcCurve.BRAINPOOLP320R1,
+                    EcCurve.BRAINPOOLP384R1,
+                    EcCurve.BRAINPOOLP512R1,
+                    EcCurve.ED25519,
+                    EcCurve.X25519,
+                    EcCurve.ED448,
+                    EcCurve.X448,
+                )
+            } else {
+                setOf(
+                    EcCurve.P256,
+                    EcCurve.P384,
+                    EcCurve.P521,
+                    EcCurve.ED25519,
+                    EcCurve.X25519,
+                    EcCurve.ED448,
+                    EcCurve.X448,
+                )
+            }
+        }
+
+    actual val supportedEncryptionAlgorithms = setOf(Algorithm.A128GCM, Algorithm.A192GCM, Algorithm.A256GCM)
+
+    actual val provider: String
+        get() {
+            val sb = StringBuilder("JCA: ")
+            val providers = Security.getProviders()
+            for (n in providers.indices) {
+                if (n > 0) {
+                    sb.append("; ")
+                }
+                sb.append(providers[n].name)
+            }
+            return sb.toString()
+        }
 
     init {
-        Security.removeProvider(BouncyCastleProvider.PROVIDER_NAME)
-        Security.insertProviderAt(BouncyCastleProvider(), 1)
     }
 
     /**
@@ -135,7 +84,7 @@ actual object Crypto {
      * @return the digest.
      * @throws IllegalArgumentException if the given algorithm is not supported.
      */
-    actual fun digest(
+    actual suspend fun digest(
         algorithm: Algorithm,
         message: ByteArray
     ): ByteArray {
@@ -154,19 +103,20 @@ actual object Crypto {
     /**
      * Message authentication code function.
      *
-     * @param algorithm must be one of [Algorithm.HMAC_SHA256], [Algorithm.HMAC_SHA384],
-     * [Algorithm.HMAC_SHA512].
+     * @param algorithm must be one of [Algorithm.HMAC_INSECURE_SHA1], [Algorithm.HMAC_SHA256],
+     *   [Algorithm.HMAC_SHA384], [Algorithm.HMAC_SHA512].
      * @param key the secret key.
      * @param message the message to authenticate.
      * @return the message authentication code.
      * @throws IllegalArgumentException if the given algorithm is not supported.
      */
-    actual fun mac(
+    actual suspend fun mac(
         algorithm: Algorithm,
         key: ByteArray,
         message: ByteArray
     ): ByteArray {
         val algName = when (algorithm) {
+            Algorithm.HMAC_INSECURE_SHA1 -> "HmacSha1"
             Algorithm.HMAC_SHA256 -> "HmacSha256"
             Algorithm.HMAC_SHA384 -> "HmacSha384"
             Algorithm.HMAC_SHA512 -> "HmacSha512"
@@ -192,11 +142,12 @@ actual object Crypto {
      * @return the cipher text with the tag appended to it.
      * @throws IllegalArgumentException if the given algorithm is not supported.
      */
-    actual fun encrypt(
+    actual suspend fun encrypt(
         algorithm: Algorithm,
         key: ByteArray,
         nonce: ByteArray,
         messagePlaintext: ByteArray,
+        aad: ByteArray?
     ): ByteArray {
         when (algorithm) {
             Algorithm.A128GCM -> {}
@@ -208,6 +159,7 @@ actual object Crypto {
         }
         return Cipher.getInstance("AES/GCM/NoPadding").run {
             init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(128, nonce))
+            aad?.let { updateAAD(it) }
             doFinal(messagePlaintext)
         }
     }
@@ -223,11 +175,12 @@ actual object Crypto {
      * @throws IllegalArgumentException if the given algorithm is not supported.
      * @throws IllegalStateException if decryption fails
      */
-    actual fun decrypt(
+    actual suspend fun decrypt(
         algorithm: Algorithm,
         key: ByteArray,
         nonce: ByteArray,
         messageCiphertext: ByteArray,
+        aad: ByteArray?
     ): ByteArray {
         when (algorithm) {
             Algorithm.A128GCM -> {}
@@ -244,76 +197,12 @@ actual object Crypto {
                     SecretKeySpec(key, "AES"),
                     GCMParameterSpec(128, nonce)
                 )
+                aad?.let { updateAAD(it) }
                 doFinal(messageCiphertext)
             }
         } catch (e: Exception) {
             throw IllegalStateException("Error decrypting", e)
         }
-    }
-
-    /**
-     * Computes an HKDF.
-     *
-     * @param algorithm must be one of [Algorithm.HMAC_SHA256], [Algorithm.HMAC_SHA384], [Algorithm.HMAC_SHA512].
-     * @param ikm the input keying material.
-     * @param salt optional salt. A possibly non-secret random value. If no salt is provided (ie. if
-     * salt has length 0) then an array of 0s of the same size as the hash digest is used as salt.
-     * @param info optional context and application specific information.
-     * @param size the length of the generated pseudorandom string in bytes. The maximal
-     * size is DigestSize, where DigestSize is the size of the underlying HMAC.
-     * @return size pseudorandom bytes.
-     */
-    actual fun hkdf(
-        algorithm: Algorithm,
-        ikm: ByteArray,
-        salt: ByteArray?,
-        info: ByteArray?,
-        size: Int
-    ): ByteArray {
-        // This function is based on
-        //
-        //  https://github.com/google/tink/blob/master/java/src/main/java/com/google/crypto/tink/subtle/Hkdf.java
-        //
-        val macLength =
-            when (algorithm) {
-                Algorithm.HMAC_SHA256 -> 32
-                Algorithm.HMAC_SHA384 -> 48
-                Algorithm.HMAC_SHA512 -> 64
-                else -> throw IllegalArgumentException("Unsupported algorithm $algorithm")
-            }
-        require(size <= 255 * macLength) { "size too large" }
-        val key =
-            if (salt == null || salt.size == 0) {
-                // According to RFC 5869, Section 2.2 the salt is optional. If no salt is provided
-                // then HKDF uses a salt that is an array of zeros of the same length as the hash
-                // digest.
-                ByteArray(macLength)
-            } else {
-                salt
-            }
-        val prk = mac(algorithm, key, ikm)
-        val result = ByteArray(size)
-        var ctr = 1
-        var pos = 0
-        var digest = ByteArray(0)
-        while (true) {
-            val bsb = ByteStringBuilder()
-            bsb.append(digest, 0, digest.size)
-            if (info != null) {
-                bsb.append(info, 0, info.size)
-            }
-            bsb.append(ctr.toByte())
-            digest = mac(algorithm, prk, bsb.toByteString().toByteArray())
-            if (pos + digest.size < size) {
-                System.arraycopy(digest, 0, result, pos, digest.size)
-                pos += digest.size
-                ctr++
-            } else {
-                System.arraycopy(digest, 0, result, pos, size - pos)
-                break
-            }
-        }
-        return result
     }
 
     /**
@@ -324,7 +213,7 @@ actual object Crypto {
      * @param algorithm the signature algorithm to use.
      * @param signature the signature.
      */
-    actual fun checkSignature(
+    actual suspend fun checkSignature(
         publicKey: EcPublicKey,
         message: ByteArray,
         algorithm: Algorithm,
@@ -359,12 +248,7 @@ actual object Crypto {
                     signature.toDerEncoded()
                 }
             }
-            val signatureImpl = if (publicKey.curve.requireBouncyCastle) {
-                Signature.getInstance(signatureAlgorithm, BouncyCastleProvider.PROVIDER_NAME)
-            } else {
-                Signature.getInstance(signatureAlgorithm)
-            }
-            signatureImpl.run {
+            Signature.getInstance(signatureAlgorithm).run {
                 initVerify(publicKey.javaPublicKey)
                 update(message)
                 verify(rawSignature)
@@ -377,12 +261,36 @@ actual object Crypto {
         }
     }
 
+    internal fun fixupEcDsaPrivateKeyMaterial(curve: EcCurve, d: ByteArray): ByteArray {
+        // Looks like the generated key material isn't always the right number of bytes
+        // which causes problems for unit tests encoding the private key material. Adjust
+        // this.
+        val expectedLength = (curve.bitSize + 7)/8
+        return if (d.size == expectedLength) {
+            // The expected number
+            d
+        } else if (d.size < expectedLength) {
+            // Not enough octets, pad with zero bytes
+            val numMissing = expectedLength - d.size
+            ByteArray(numMissing) + d
+        } else {
+            // Too many octets, remove leading NUL bytes
+            val tooMany = d.size - expectedLength
+            for (n in 0..<tooMany) {
+                require(d[n] == 0.toByte() ) {
+                    "Expected NUL byte at position $n"
+                }
+            }
+            d.copyOfRange(d.size - expectedLength, d.size)
+        }
+    }
+
     /**
      * Creates an EC private key.
      *
      * @param curve the curve to use.
      */
-    actual fun createEcPrivateKey(curve: EcCurve): EcPrivateKey =
+    actual suspend fun createEcPrivateKey(curve: EcCurve): EcPrivateKey =
         when (curve) {
             EcCurve.P256,
             EcCurve.P384,
@@ -391,72 +299,62 @@ actual object Crypto {
             EcCurve.BRAINPOOLP320R1,
             EcCurve.BRAINPOOLP384R1,
             EcCurve.BRAINPOOLP512R1 -> {
-                val kpg = KeyPairGenerator.getInstance("EC", BouncyCastleProvider.PROVIDER_NAME)
+                val kpg = KeyPairGenerator.getInstance("EC")
                 kpg.initialize(ECGenParameterSpec(curve.SECGName))
                 val keyPair = kpg.generateKeyPair()
                 val publicKey = keyPair.public.toEcPublicKey(curve)
                 check(publicKey is EcPublicKeyDoubleCoordinate)
-                val d = (keyPair.private as BCECPrivateKey).d.toByteArray()
-                EcPrivateKeyDoubleCoordinate(curve, d, publicKey.x, publicKey.y)
+                val d = (keyPair.private as ECPrivateKey).s.toByteArray()
+                val fixedUpD = fixupEcDsaPrivateKeyMaterial(curve, d)
+                EcPrivateKeyDoubleCoordinate(curve, fixedUpD, publicKey.x, publicKey.y)
             }
 
             EcCurve.ED25519 -> {
-                Ed25519KeyPairGenerator().run {
-                    init(Ed25519KeyGenerationParameters(SecureRandom()))
-                    generateKeyPair().run {
-                        val privateKey = this.private as Ed25519PrivateKeyParameters
-                        val publicKey = this.public as Ed25519PublicKeyParameters
-                        EcPrivateKeyOkp(curve, privateKey.encoded, publicKey.encoded)
-                    }
-                }
+                val kpg = KeyPairGenerator.getInstance("Ed25519")
+                val keyPair = kpg.generateKeyPair()
+                val publicKey = keyPair.public.toEcPublicKey(curve)
+                check(publicKey is EcPublicKeyOkp)
+                val d = getDerEncodedPrivateKeyFromPrivateKeyInfo(keyPair.private.encoded)
+                EcPrivateKeyOkp(curve, d, publicKey.x)
             }
 
             EcCurve.X25519 -> {
-                X25519KeyPairGenerator().run {
-                    init(X25519KeyGenerationParameters(SecureRandom()))
-                    generateKeyPair().run {
-                        val privateKey = this.private as X25519PrivateKeyParameters
-                        val publicKey = this.public as X25519PublicKeyParameters
-                        EcPrivateKeyOkp(curve, privateKey.encoded, publicKey.encoded)
-                    }
-                }
+                val kpg = KeyPairGenerator.getInstance("X25519")
+                val keyPair = kpg.generateKeyPair()
+                val publicKey = keyPair.public.toEcPublicKey(curve)
+                check(publicKey is EcPublicKeyOkp)
+                val d = getDerEncodedPrivateKeyFromPrivateKeyInfo(keyPair.private.encoded)
+                EcPrivateKeyOkp(curve, d, publicKey.x)
             }
 
             EcCurve.ED448 -> {
-                Ed448KeyPairGenerator().run {
-                    init(Ed448KeyGenerationParameters(SecureRandom()))
-                    generateKeyPair().run {
-                        val privateKey = this.private as Ed448PrivateKeyParameters
-                        val publicKey = this.public as Ed448PublicKeyParameters
-                        EcPrivateKeyOkp(curve, privateKey.encoded, publicKey.encoded)
-                    }
-                }
+                val kpg = KeyPairGenerator.getInstance("Ed448")
+                val keyPair = kpg.generateKeyPair()
+                val publicKey = keyPair.public.toEcPublicKey(curve)
+                check(publicKey is EcPublicKeyOkp)
+                val d = getDerEncodedPrivateKeyFromPrivateKeyInfo(keyPair.private.encoded)
+                EcPrivateKeyOkp(curve, d, publicKey.x)
             }
 
             EcCurve.X448 -> {
-                X448KeyPairGenerator().run {
-                    init(X448KeyGenerationParameters(SecureRandom()))
-                    generateKeyPair().run {
-                        val privateKey = this.private as X448PrivateKeyParameters
-                        val publicKey = this.public as X448PublicKeyParameters
-                        EcPrivateKeyOkp(curve, privateKey.encoded, publicKey.encoded)
-                    }
-                }
+                val kpg = KeyPairGenerator.getInstance("X448")
+                val keyPair = kpg.generateKeyPair()
+                val publicKey = keyPair.public.toEcPublicKey(curve)
+                check(publicKey is EcPublicKeyOkp)
+                val d = getDerEncodedPrivateKeyFromPrivateKeyInfo(keyPair.private.encoded)
+                EcPrivateKeyOkp(curve, d, publicKey.x)
             }
         }
 
     /**
      * Signs data with a key.
      *
-     * The signature is DER encoded except for curve Ed25519 and Ed448 where it's just
-     * the raw R and S values.
-     *
      * @param key the key to sign with.
      * @param signatureAlgorithm the signature algorithm to use.
      * @param message the data to sign.
      * @return the signature.
      */
-    actual fun sign(
+    actual suspend fun sign(
         key: EcPrivateKey,
         signatureAlgorithm: Algorithm,
         message: ByteArray
@@ -476,53 +374,50 @@ actual object Crypto {
                     "Unsupported signing algorithm $signatureAlgorithm for curve ${key.curve}"
                 )
             }
-            val spec = ECPrivateKeySpec(
-                BigIntegers.fromUnsignedByteArray(key.d),
-                ECNamedCurveTable.getParameterSpec(key.curve.SECGName)
-            )
-            val kf = KeyFactory.getInstance("EC")
-            val privateKey = kf.generatePrivate(spec)
             try {
-                val derEncodedSignature = Signature.getInstance(
-                    signatureAlgorithmName,
-                    BouncyCastleProvider.PROVIDER_NAME
-                ).run {
-                        initSign(privateKey)
-                        update(message)
-                        sign()
-                    }
+                val derEncodedSignature = Signature.getInstance(signatureAlgorithmName).run {
+                    initSign(key.javaPrivateKey)
+                    update(message)
+                    sign()
+                }
                 EcSignature.fromDerEncoded(key.curve.bitSize, derEncodedSignature)
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 throw IllegalStateException("Unexpected Exception", e)
             }
         }
 
         EcCurve.ED25519 -> {
             require(signatureAlgorithm in setOf(Algorithm.EDDSA, Algorithm.ED25519))
-            val privateKey = Ed25519PrivateKeyParameters(key.d, 0)
-            val rawSignature = Ed25519Signer().run {
-                init(true, privateKey)
-                update(message, 0, message.size)
-                generateSignature()
+            try {
+                val rawSignature = Signature.getInstance("Ed25519").run {
+                    initSign(key.javaPrivateKey)
+                    update(message)
+                    sign()
+                }
+                EcSignature(
+                    rawSignature.sliceArray(IntRange(0, rawSignature.size/2 - 1)),
+                    rawSignature.sliceArray(IntRange(rawSignature.size/2, rawSignature.size - 1))
+                )
+            } catch (e: Throwable) {
+                throw IllegalStateException("Unexpected Exception", e)
             }
-            EcSignature(
-                rawSignature.sliceArray(IntRange(0, rawSignature.size/2 - 1)),
-                rawSignature.sliceArray(IntRange(rawSignature.size/2, rawSignature.size - 1))
-            )
         }
 
         EcCurve.ED448 -> {
             require(signatureAlgorithm in setOf(Algorithm.EDDSA, Algorithm.ED448))
-            val privateKey = Ed448PrivateKeyParameters(key.d, 0)
-            val rawSignature = Ed448Signer(byteArrayOf()).run {
-                init(true, privateKey)
-                update(message, 0, message.size)
-                generateSignature()
+            try {
+                val rawSignature = Signature.getInstance("Ed448").run {
+                    initSign(key.javaPrivateKey)
+                    update(message)
+                    sign()
+                }
+                EcSignature(
+                    rawSignature.sliceArray(IntRange(0, rawSignature.size/2 - 1)),
+                    rawSignature.sliceArray(IntRange(rawSignature.size/2, rawSignature.size - 1))
+                )
+            } catch (e: Throwable) {
+                throw IllegalStateException("Unexpected Exception", e)
             }
-            EcSignature(
-                rawSignature.sliceArray(IntRange(0, rawSignature.size/2 - 1)),
-                rawSignature.sliceArray(IntRange(rawSignature.size/2, rawSignature.size - 1))
-            )
         }
 
         EcCurve.X25519,
@@ -537,7 +432,7 @@ actual object Crypto {
      * @param key the key to use for key agreement.
      * @param otherKey the key from the other party.
      */
-    actual fun keyAgreement(
+    actual suspend fun keyAgreement(
         key: EcPrivateKey,
         otherKey: EcPublicKey
     ): ByteArray =
@@ -550,20 +445,13 @@ actual object Crypto {
             EcCurve.BRAINPOOLP384R1,
             EcCurve.BRAINPOOLP512R1 -> {
                 require(otherKey.curve == key.curve) { "Other key for ECDH is not ${key.curve.name}" }
-                ECPrivateKeySpec(
-                    BigIntegers.fromUnsignedByteArray(key.d),
-                    ECNamedCurveTable.getParameterSpec(key.curve.SECGName)
-                ).run {
-                    val kf = KeyFactory.getInstance("EC")
-                    val privateKey = kf.generatePrivate(this)
-                    try {
-                        val ka = KeyAgreement.getInstance("ECDH")
-                        ka.init(privateKey)
-                        ka.doPhase(otherKey.javaPublicKey, true)
-                        ka.generateSecret()
-                    } catch (e: Throwable) {
-                        throw IllegalStateException("Unexpected Exception", e)
-                    }
+                try {
+                    val ka = KeyAgreement.getInstance("ECDH")
+                    ka.init(key.javaPrivateKey)
+                    ka.doPhase(otherKey.javaPublicKey, true)
+                    ka.generateSecret()
+                } catch (e: Throwable) {
+                    throw IllegalStateException("Unexpected Exception", e)
                 }
             }
 
@@ -573,254 +461,31 @@ actual object Crypto {
             }
 
             EcCurve.X25519 -> {
-                require(otherKey.curve == EcCurve.X25519) { "Other key for ECDH is not Curve X448" }
-                otherKey as EcPublicKeyOkp
-                val otherKeyX = X25519PublicKeyParameters(otherKey.x, 0)
-                val privateKey = X25519PrivateKeyParameters(key.d, 0)
-                val ka = X25519Agreement()
-                ka.init(privateKey)
-                val buf = ByteArray(ka.agreementSize)
-                ka.calculateAgreement(otherKeyX, buf, 0)
-                buf
+                require(otherKey.curve == EcCurve.X25519) { "Other key for ECDH is not Curve X25519" }
+                try {
+                    val ka = KeyAgreement.getInstance("X25519")
+                    ka.init(key.javaPrivateKey)
+                    ka.doPhase(otherKey.javaPublicKey, true)
+                    ka.generateSecret()
+                } catch (e: Throwable) {
+                    throw IllegalStateException("Unexpected Exception", e)
+                }
             }
 
             EcCurve.X448 -> {
                 require(otherKey.curve == EcCurve.X448) { "Other key for ECDH is not Curve X448" }
-                otherKey as EcPublicKeyOkp
-                val otherKeyX = X448PublicKeyParameters(otherKey.x, 0)
-                val privateKey = X448PrivateKeyParameters(key.d, 0)
-                val ka = X448Agreement()
-                ka.init(privateKey)
-                val buf = ByteArray(ka.agreementSize)
-                ka.calculateAgreement(otherKeyX, buf, 0)
-                buf
+                try {
+                    val ka = KeyAgreement.getInstance("X448")
+                    ka.init(key.javaPrivateKey)
+                    ka.doPhase(otherKey.javaPublicKey, true)
+                    ka.generateSecret()
+                } catch (e: Throwable) {
+                    throw IllegalStateException("Unexpected Exception", e)
+                }
             }
         }
 
-    init {
-        TinkConfig.register()
-        HybridConfig.register()
-    }
-
-    private fun hpkeGetKeysetHandles(
-        publicKey: EcPublicKey,
-        privateKey: EcPrivateKey?
-    ): Pair<KeysetHandle, KeysetHandle?> {
-        val primaryKeyId = 1
-
-        val params = HpkeParams.newBuilder()
-            .setAead(HpkeAead.AES_128_GCM)
-            .setKdf(HpkeKdf.HKDF_SHA256)
-            .setKem(HpkeKem.DHKEM_P256_HKDF_SHA256)
-            .build()
-
-        val javaPublicKey = publicKey.javaPublicKey as ECPublicKey
-        val encodedKey = EllipticCurves.pointEncode(
-            EllipticCurves.CurveType.NIST_P256,
-            EllipticCurves.PointFormatType.UNCOMPRESSED,
-            javaPublicKey.w
-        )
-
-        val hpkePublicKey = HpkePublicKey.newBuilder()
-            .setVersion(0)
-            .setPublicKey(TinkByteString.copyFrom(encodedKey))
-            .setParams(params)
-            .build()
-
-        val publicKeyData = KeyData.newBuilder()
-            .setKeyMaterialType(KeyData.KeyMaterialType.ASYMMETRIC_PUBLIC)
-            .setTypeUrl("type.googleapis.com/google.crypto.tink.HpkePublicKey")
-            .setValue(hpkePublicKey.toByteString())
-            .build()
-
-        val publicKeysetKey = Keyset.Key.newBuilder()
-            .setKeyId(primaryKeyId)
-            .setKeyData(publicKeyData)
-            .setOutputPrefixType(OutputPrefixType.RAW)
-            .setStatus(KeyStatusType.ENABLED)
-            .build()
-
-        val publicKeyset = Keyset.newBuilder()
-            .setPrimaryKeyId(primaryKeyId)
-            .addKey(publicKeysetKey)
-            .build()
-
-        val publicKeysetHandle = TinkProtoKeysetFormat.parseKeyset(
-            publicKeyset.toByteArray(),
-            InsecureSecretKeyAccess.get()
-        )
-        var privateKeysetHandle: KeysetHandle? = null
-
-        if (privateKey != null) {
-            val javaPrivateKey = privateKey.javaPrivateKey as ECPrivateKey
-            val hpkePrivateKey = HpkePrivateKey.newBuilder()
-                .setPublicKey(hpkePublicKey)
-                .setPrivateKey(TinkByteString.copyFrom(javaPrivateKey.s.toByteArray()))
-                .build()
-
-            val privateKeyData = KeyData.newBuilder()
-                .setKeyMaterialType(KeyData.KeyMaterialType.ASYMMETRIC_PRIVATE)
-                .setTypeUrl("type.googleapis.com/google.crypto.tink.HpkePrivateKey")
-                .setValue(hpkePrivateKey.toByteString())
-                .build()
-
-            val privateKeysetKey = Keyset.Key.newBuilder()
-                .setKeyId(primaryKeyId)
-                .setKeyData(privateKeyData)
-                .setOutputPrefixType(OutputPrefixType.RAW)
-                .setStatus(KeyStatusType.ENABLED)
-                .build()
-            val privateKeyset = Keyset.newBuilder()
-                .setPrimaryKeyId(primaryKeyId)
-                .addKey(privateKeysetKey)
-                .build()
-            privateKeysetHandle = TinkProtoKeysetFormat.parseKeyset(
-                privateKeyset.toByteArray(),
-                InsecureSecretKeyAccess.get()
-            )
-        }
-
-        return Pair(publicKeysetHandle, privateKeysetHandle)
-    }
-
-    /**
-     * Encrypts data using HPKE according to [RFC 9180](https://datatracker.ietf.org/doc/rfc9180/).
-     *
-     * The resulting ciphertext and encapsulated key should be sent to the receiver and both
-     * parties must also agree on the AAD used.
-     *
-     * @param cipherSuite the cipher suite for selecting the KEM, KDF, and encryption algorithm.
-     *   Presently only [Algorithm.HPKE_BASE_P256_SHA256_AES128GCM] is supported.
-     * @param receiverPublicKey the public key of the receiver, curve must match the cipher suite.
-     * @param plainText the data to encrypt.
-     * @param aad additional authenticated data.
-     * @return the ciphertext and the encapsulated key.
-     */
-    actual fun hpkeEncrypt(
-        cipherSuite: Algorithm,
-        receiverPublicKey: EcPublicKey,
-        plainText: ByteArray,
-        aad: ByteArray
-    ): Pair<ByteArray, EcPublicKey> {
-        require(cipherSuite == Algorithm.HPKE_BASE_P256_SHA256_AES128GCM) {
-            "Only HPKE_BASE_P256_SHA256_AES128GCM is supported right now"
-        }
-        require(receiverPublicKey.curve == EcCurve.P256)
-
-        val (publicKeysetHandle, _) = hpkeGetKeysetHandles(receiverPublicKey, null)
-
-        val encryptor = publicKeysetHandle.getPrimitive(HybridEncrypt::class.java)
-        val output = encryptor.encrypt(plainText, aad)
-
-        // Output from Tink is (serialized encapsulated key || ciphertext) so we need to break it
-        // up ourselves
-
-        receiverPublicKey as EcPublicKeyDoubleCoordinate
-        val coordinateSize = (receiverPublicKey.curve.bitSize + 7)/8
-        val encapsulatedPublicKeySize = 1 + 2*coordinateSize
-
-        val encapsulatedKey = EcPublicKeyDoubleCoordinate.fromUncompressedPointEncoding(
-            EcCurve.P256,
-            output.sliceArray(IntRange(0, encapsulatedPublicKeySize - 1))
-        )
-        val encryptedData = output.sliceArray(IntRange(encapsulatedPublicKeySize, output.size - 1))
-
-        return Pair(encryptedData, encapsulatedKey)
-    }
-
-    /**
-     * Decrypts data using HPKE according to [RFC 9180](https://datatracker.ietf.org/doc/rfc9180/).
-     *
-     * The ciphertext and encapsulated key should be received from the sender and both parties
-     * must also agree on the AAD to use.
-     *
-     * @param cipherSuite the cipher suite for selecting the KEM, KDF, and encryption algorithm.
-     *   Presently only [Algorithm.HPKE_BASE_P256_SHA256_AES128GCM] is supported.
-     * @param receiverPrivateKey the private key of the receiver, curve must match the cipher suite.
-     * @param cipherText the data to decrypt.
-     * @param aad additional authenticated data.
-     * @param encapsulatedPublicKey the encapsulated key.
-     * @return the plaintext.
-     */
-    actual fun hpkeDecrypt(
-        cipherSuite: Algorithm,
-        receiverPrivateKey: EcPrivateKey,
-        cipherText: ByteArray,
-        aad: ByteArray,
-        encapsulatedPublicKey: EcPublicKey,
-    ): ByteArray {
-        require(cipherSuite == Algorithm.HPKE_BASE_P256_SHA256_AES128GCM) {
-            "Only HPKE_BASE_P256_SHA256_AES128GCM is supported right now"
-        }
-        require(receiverPrivateKey.curve == EcCurve.P256)
-        encapsulatedPublicKey as EcPublicKeyDoubleCoordinate
-
-        val (_, privateKeysetHandle) =
-            hpkeGetKeysetHandles(receiverPrivateKey.publicKey, receiverPrivateKey)
-
-        val decryptor = privateKeysetHandle!!.getPrimitive(HybridDecrypt::class.java)
-
-        // Tink expects the input to be (serialized encapsulated key || ciphertext)
-        return decryptor.decrypt(encapsulatedPublicKey.asUncompressedPointEncoding + cipherText, aad)
-    }
-
-    @OptIn(ExperimentalEncodingApi::class)
-    internal actual fun ecPublicKeyToPem(publicKey: EcPublicKey): String {
-        val sb = StringBuilder()
-        sb.append("-----BEGIN PUBLIC KEY-----\n")
-        sb.append(Base64.Mime.encode(publicKey.javaPublicKey.encoded))
-        sb.append("\n-----END PUBLIC KEY-----\n")
-        return sb.toString()
-    }
-
-    @OptIn(ExperimentalEncodingApi::class)
-    internal actual fun ecPublicKeyFromPem(
-        pemEncoding: String,
-        curve: EcCurve
-    ): EcPublicKey {
-        val encoded = Base64.Mime.decode(pemEncoding
-            .replace("-----BEGIN PUBLIC KEY-----", "")
-            .replace("-----END PUBLIC KEY-----", "")
-            .trim())
-        // Always use BouncyCastle, publicKeyJava.toEcPublicKey below would choke on anything else.
-        val kf = KeyFactory.getInstance(curve.javaKeyAlgorithm, BouncyCastleProvider.PROVIDER_NAME)
-        val spec = X509EncodedKeySpec(encoded)
-        val publicKeyJava = kf.generatePublic(spec)
-        return publicKeyJava.toEcPublicKey(curve)
-    }
-
-    @OptIn(ExperimentalEncodingApi::class)
-    internal actual fun ecPrivateKeyToPem(privateKey: EcPrivateKey): String  {
-        val sb = StringBuilder()
-        sb.append("-----BEGIN PRIVATE KEY-----\n")
-        sb.append(Base64.Mime.encode(privateKey.javaPrivateKey.encoded))
-        sb.append("\n-----END PRIVATE KEY-----\n")
-        return sb.toString()
-    }
-
-    @OptIn(ExperimentalEncodingApi::class)
-    internal actual fun ecPrivateKeyFromPem(
-        pemEncoding: String,
-        publicKey: EcPublicKey
-    ): EcPrivateKey {
-        val encoded = Base64.Mime.decode(pemEncoding
-            .replace("-----BEGIN PRIVATE KEY-----", "")
-            .replace("-----END PRIVATE KEY-----", "")
-            .trim())
-        // Always use BouncyCastle, privateKeyJava.toEcPrivateKey below would
-        // choke on anything else.
-        val kf = KeyFactory.getInstance(
-            publicKey.curve.javaKeyAlgorithm, BouncyCastleProvider.PROVIDER_NAME)
-        val spec = PKCS8EncodedKeySpec(encoded)
-        val privateKeyJava = kf.generatePrivate(spec)
-        return privateKeyJava.toEcPrivateKey(publicKey.javaPublicKey, publicKey.curve)
-    }
-
-    internal actual fun uuidGetRandom(): UUID {
-        return UUID.fromJavaUuid(java.util.UUID.randomUUID())
-    }
-
-    internal actual fun validateCertChain(certChain: X509CertChain): Boolean {
+    internal actual suspend fun validateCertChain(certChain: X509CertChain): Boolean {
         val javaCerts = certChain.javaX509Certificates
         for (n in javaCerts.indices) {
             if (n < javaCerts.size - 1) {
@@ -835,105 +500,50 @@ actual object Crypto {
         }
         return true
     }
+}
 
-    internal actual fun encryptJwtEcdhEs(
-        key: EcPublicKey,
-        encAlgorithm: Algorithm,
-        claims: JsonObject,
-        apu: String,
-        apv: String
-    ): JsonElement {
-        val responseEncryptionAlg = JWEAlgorithm.parse("ECDH-ES")
-        val responseEncryptionMethod = EncryptionMethod.parse(encAlgorithm.joseAlgorithmIdentifier!!)
-        val jweHeader = JWEHeader.Builder(responseEncryptionAlg, responseEncryptionMethod)
-            .agreementPartyUInfo(Base64URL(apu))
-            .agreementPartyVInfo(Base64URL(apv))
-            .build()
-        val keySet = JWKSet(JWK.parseFromPEMEncodedObjects(key.toPem()))
-        val claimSet = JWTClaimsSet.parse(claims.toString())
-        val eJwt = EncryptedJWT(jweHeader, claimSet)
-        eJwt.encrypt(ECDHEncrypter(keySet.keys[0] as ECKey))
-        return JsonPrimitive(eJwt.serialize())
-    }
+/**
+ * Gets the private key in a PrivateKeyInfo where its OCTET STRING representation
+ * contains a DER encoded key.
+ */
+internal fun getDerEncodedPrivateKeyFromPrivateKeyInfo(privateKeyInfo: ByteArray): ByteArray {
+    // PrivateKeyInfo is defined in https://datatracker.ietf.org/doc/html/rfc5208 but
+    // also see https://datatracker.ietf.org/doc/html/rfc5958 which extends this.
+    //
+    //   PrivateKeyInfo ::= SEQUENCE {
+    //        version                   Version,
+    //        privateKeyAlgorithm       PrivateKeyAlgorithmIdentifier,
+    //        privateKey                PrivateKey,
+    //        attributes           [0]  IMPLICIT Attributes OPTIONAL
+    //   }
+    //
+    //   Version ::= INTEGER
+    //
+    //   PrivateKeyAlgorithmIdentifier ::= AlgorithmIdentifier
+    //
+    //   PrivateKey ::= OCTET STRING
+    //
+    //   Attributes ::= SET OF Attribute
+    //
+    val seq = ASN1.decode(privateKeyInfo) as ASN1Sequence
+    val derEncodedPrivateKeyOctetString = seq.elements[2] as ASN1OctetString
+    val derEncodedPrivateKey = derEncodedPrivateKeyOctetString.value
+    return (ASN1.decode(derEncodedPrivateKey) as ASN1OctetString).value
+}
 
-    internal actual fun decryptJwtEcdhEs(
-        encryptedJwt: JsonElement,
-        recipientKey: EcPrivateKey
-    ): JsonObject {
-        val encryptedJWT = EncryptedJWT.parse(encryptedJwt.jsonPrimitive.content)
-        @Suppress("DEPRECATION") // ECKey is deprecated
-        val encKey = ECKey(
-            Curve.P_256,
-            recipientKey.publicKey.javaPublicKey as ECPublicKey,
-            recipientKey.javaPrivateKey as ECPrivateKey,
-            null, null, null, null, null, null, null, null, null
-        )
-        val decrypter = ECDHDecrypter(encKey)
-        encryptedJWT.decrypt(decrypter)
-        return Json.decodeFromString<JsonObject>(encryptedJWT.jwtClaimsSet.toString())
-    }
-
-    internal actual fun jwsSign(
-        key: EcPrivateKey,
-        signatureAlgorithm: Algorithm,
-        claimsSet: JsonObject,
-        type: String?,
-        x5c: X509CertChain?
-    ): JsonElement {
-        @Suppress("DEPRECATION") // ECKey is deprecated
-        val ecKey = ECKey(
-            Curve.P_256,
-            key.publicKey.javaPublicKey as ECPublicKey,
-            key.javaPrivateKey as ECPrivateKey,
-            null, null, null, null, null, null, null, null, null
-        )
-        check(signatureAlgorithm == Algorithm.ES256)
-        val builder = JWSHeader.Builder(JWSAlgorithm.ES256)
-        if (x5c != null) {
-            builder.x509CertChain(x5c.certificates.map { cert ->
-                com.nimbusds.jose.util.Base64.from(cert.encodedCertificate.toBase64Url())
-            })
-        }
-        if (type != null) {
-            builder.type(JOSEObjectType(type))
-        }
-        builder.keyID(ecKey.getKeyID())
-        val signedJWT = SignedJWT(
-            builder.build(),
-            JWTClaimsSet.parse(claimsSet.toString())
-        )
-        val signer: JWSSigner = ECDSASigner(ecKey)
-        signedJWT.sign(signer)
-        return Json.parseToJsonElement(signedJWT.serialize())
-    }
-
-    internal actual fun jwsVerify(
-        signedJwt: JsonElement,
-        publicKey: EcPublicKey
-    ) {
-        val sjwt = SignedJWT.parse(signedJwt.jsonPrimitive.content)
-        val jwtProcessor = DefaultJWTProcessor<SecurityContext>()
-        jwtProcessor.jwsTypeVerifier = DefaultJOSEObjectTypeVerifier(
-            sjwt.header.type,
-            JOSEObjectType.JWT,
-            JOSEObjectType(""),
-            null,
-        )
-        jwtProcessor.jwsKeySelector = JWSKeySelector { _, _ ->
-            listOf(publicKey.javaPublicKey)
-        }
-        jwtProcessor.process(sjwt, null)
-    }
-
-    internal actual fun jwsGetInfo(
-        signedJwt: JsonElement
-    ): JwsInfo {
-        val sjwt = SignedJWT.parse(signedJwt.jsonPrimitive.content)
-        val x5c = sjwt.header?.x509CertChain?.mapNotNull { runCatching { X509Cert(it.decode()) }.getOrNull() }
-        return JwsInfo(
-            claimsSet = Json.parseToJsonElement(sjwt.jwtClaimsSet.toString()).jsonObject,
-            type = sjwt.header.type?.toString(),
-            x5c = x5c?.let { X509CertChain(it) }
-        )
-    }
+internal fun generatePrivateKeyInfo(
+    algorithmOid: String,
+    privateKey: ByteArray
+): ByteArray {
+    // Generates this according to https://datatracker.ietf.org/doc/html/rfc5208
+    //
+    val derEncodedPrivateKey = ASN1.encode(ASN1OctetString(privateKey))
+    val seq = ASN1Sequence(listOf(
+        ASN1Integer(0),
+        ASN1Sequence(listOf(
+            ASN1ObjectIdentifier(algorithmOid)
+        )),
+        ASN1OctetString(derEncodedPrivateKey)
+    ))
+    return ASN1.encode(seq)
 }

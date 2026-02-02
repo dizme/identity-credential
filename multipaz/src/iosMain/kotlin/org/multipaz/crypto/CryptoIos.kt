@@ -9,8 +9,7 @@ import org.multipaz.util.UUID
 import org.multipaz.util.toByteArray
 import org.multipaz.util.toNSData
 import kotlinx.cinterop.ExperimentalForeignApi
-import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonObject
+import kotlinx.io.bytestring.toNSData
 import platform.Foundation.NSData
 import platform.Foundation.NSUUID
 
@@ -28,7 +27,11 @@ actual object Crypto {
         EcCurve.P521,
     )
 
-    actual fun digest(
+    actual val supportedEncryptionAlgorithms = setOf(Algorithm.A128GCM, Algorithm.A192GCM, Algorithm.A256GCM)
+
+    actual val provider: String = "CryptoKit"
+
+    actual suspend fun digest(
         algorithm: Algorithm,
         message: ByteArray
     ): ByteArray {
@@ -41,12 +44,13 @@ actual object Crypto {
         }
     }
 
-    actual fun mac(
+    actual suspend fun mac(
         algorithm: Algorithm,
         key: ByteArray,
         message: ByteArray
     ): ByteArray {
         return when (algorithm) {
+            Algorithm.HMAC_INSECURE_SHA1 -> SwiftBridge.hmacSha1(key.toNSData(), message.toNSData()).toByteArray()
             Algorithm.HMAC_SHA256 -> SwiftBridge.hmacSha256(key.toNSData(), message.toNSData()).toByteArray()
             Algorithm.HMAC_SHA384 -> SwiftBridge.hmacSha384(key.toNSData(), message.toNSData()).toByteArray()
             Algorithm.HMAC_SHA512 -> SwiftBridge.hmacSha512(key.toNSData(), message.toNSData()).toByteArray()
@@ -54,55 +58,41 @@ actual object Crypto {
         }
     }
 
-    actual fun encrypt(
+    actual suspend fun encrypt(
         algorithm: Algorithm,
         key: ByteArray,
         nonce: ByteArray,
-        messagePlaintext: ByteArray
+        messagePlaintext: ByteArray,
+        aad: ByteArray?
     ): ByteArray {
         return SwiftBridge.aesGcmEncrypt(
             key.toNSData(),
             messagePlaintext.toNSData(),
-            nonce.toNSData()
+            nonce.toNSData(),
+            aad?.toNSData()
         ).toByteArray()
     }
 
-    actual fun decrypt(
+    actual suspend fun decrypt(
         algorithm: Algorithm,
         key: ByteArray,
         nonce: ByteArray,
-        messageCiphertext: ByteArray
+        messageCiphertext: ByteArray,
+        aad: ByteArray?
     ): ByteArray {
+        val ctLen = messageCiphertext.size
+        val ct = messageCiphertext.sliceArray(IntRange(0, ctLen - 16 - 1))
+        val tag = messageCiphertext.sliceArray(IntRange(ctLen - 16, ctLen - 1))
         return SwiftBridge.aesGcmDecrypt(
             key.toNSData(),
-            messageCiphertext.toNSData(),
-            nonce.toNSData()
+            ct.toNSData(),
+            tag.toNSData(),
+            nonce.toNSData(),
+            aad?.toNSData()
         )?.toByteArray() ?: throw IllegalStateException("Decryption failed")
     }
 
-    actual fun hkdf(
-        algorithm: Algorithm,
-        ikm: ByteArray,
-        salt: ByteArray?,
-        info: ByteArray?,
-        size: Int
-    ): ByteArray {
-        val hashLen = when (algorithm) {
-            Algorithm.HMAC_SHA256 -> 32
-            Algorithm.HMAC_SHA384 -> 48
-            Algorithm.HMAC_SHA512 -> 64
-            else -> throw IllegalArgumentException("Unsupported algorithm $algorithm")
-        }
-        return SwiftBridge.hkdf(
-            hashLen.toLong(),
-            ikm.toNSData(),
-            (if (salt != null && salt.size > 0) salt else ByteArray(hashLen)).toNSData(),
-            info!!.toNSData(),
-            size.toLong()
-        )?.toByteArray() ?: throw IllegalStateException("HKDF not available")
-    }
-
-    actual fun checkSignature(
+    actual suspend fun checkSignature(
         publicKey: EcPublicKey,
         message: ByteArray,
         algorithm: Algorithm,
@@ -122,7 +112,7 @@ actual object Crypto {
         }
     }
 
-    actual fun createEcPrivateKey(curve: EcCurve): EcPrivateKey {
+    actual suspend fun createEcPrivateKey(curve: EcCurve): EcPrivateKey {
         val ret = SwiftBridge.createEcPrivateKey(curve.coseCurveIdentifier.toLong())
         if (ret.isEmpty()) {
             throw UnsupportedOperationException("Curve is not supported")
@@ -134,7 +124,7 @@ actual object Crypto {
         return EcPrivateKeyDoubleCoordinate(curve, privKeyBytes, x, y)
     }
 
-    actual fun sign(
+    actual suspend fun sign(
         key: EcPrivateKey,
         signatureAlgorithm: Algorithm,
         message: ByteArray
@@ -150,7 +140,7 @@ actual object Crypto {
         return EcSignature(r, s)
     }
 
-    actual fun keyAgreement(
+    actual suspend fun keyAgreement(
         key: EcPrivateKey,
         otherKey: EcPublicKey
     ): ByteArray {
@@ -164,111 +154,6 @@ actual object Crypto {
             key.d.toNSData(),
             otherKeyRaw.toNSData()
         )?.toByteArray() ?: throw UnsupportedOperationException("Curve is not supported")
-    }
-
-    actual fun hpkeEncrypt(
-        cipherSuite: Algorithm,
-        receiverPublicKey: EcPublicKey,
-        plainText: ByteArray,
-        aad: ByteArray
-    ): Pair<ByteArray, EcPublicKey> {
-        require(cipherSuite == Algorithm.HPKE_BASE_P256_SHA256_AES128GCM)
-        val receiverPublicKeyRaw = when (receiverPublicKey) {
-            is EcPublicKeyDoubleCoordinate -> receiverPublicKey.x + receiverPublicKey.y
-            is EcPublicKeyOkp -> receiverPublicKey.x
-        }
-        val ret = SwiftBridge.hpkeEncrypt(
-            receiverPublicKeyRaw.toNSData(),
-            plainText.toNSData(),
-            aad.toNSData()
-        )
-        if (ret.isEmpty()) {
-            throw IllegalStateException("HPKE not supported on this iOS version")
-        }
-        val encapsulatedPublicKeyRaw = (ret[0] as NSData).toByteArray()
-        val encapsulatedPublicKey = EcPublicKeyDoubleCoordinate.fromUncompressedPointEncoding(
-            EcCurve.P256,
-            encapsulatedPublicKeyRaw
-        )
-        val cipherText = (ret[1] as NSData).toByteArray()
-        return Pair(cipherText, encapsulatedPublicKey)
-    }
-
-    actual fun hpkeDecrypt(
-        cipherSuite: Algorithm,
-        receiverPrivateKey: EcPrivateKey,
-        cipherText: ByteArray,
-        aad: ByteArray,
-        encapsulatedPublicKey: EcPublicKey
-    ): ByteArray {
-        require(cipherSuite == Algorithm.HPKE_BASE_P256_SHA256_AES128GCM)
-        val receiverPrivateKeyRaw = receiverPrivateKey.d
-        val ret = SwiftBridge.hpkeDecrypt(
-            receiverPrivateKeyRaw.toNSData(),
-            cipherText.toNSData(),
-            aad.toNSData(),
-            (encapsulatedPublicKey as EcPublicKeyDoubleCoordinate).asUncompressedPointEncoding.toNSData()
-        )
-        if (ret == null) {
-            throw IllegalStateException("HPKE not supported on this iOS version")
-        }
-        return ret.toByteArray()
-    }
-
-    internal actual fun ecPublicKeyToPem(publicKey: EcPublicKey): String {
-        val raw = when (publicKey) {
-            is EcPublicKeyDoubleCoordinate -> publicKey.x + publicKey.y
-            is EcPublicKeyOkp -> publicKey.x
-        }
-        val pemEncoding = SwiftBridge.ecPublicKeyToPem(
-            publicKey.curve.coseCurveIdentifier.toLong(),
-            raw.toNSData()
-        ) ?: throw IllegalStateException("Not available")
-        if (pemEncoding == "") {
-            throw UnsupportedOperationException("Curve is not supported")
-        }
-        return pemEncoding
-    }
-
-    internal actual fun ecPublicKeyFromPem(
-        pemEncoding: String,
-        curve: EcCurve
-    ): EcPublicKey {
-        val rawEncoding = SwiftBridge.ecPublicKeyFromPem(
-            curve.coseCurveIdentifier.toLong(),
-            pemEncoding
-        )?.toByteArray() ?: throw IllegalStateException("Not available")
-        val x = rawEncoding.sliceArray(IntRange(0, rawEncoding.size/2 - 1))
-        val y = rawEncoding.sliceArray(IntRange(rawEncoding.size/2, rawEncoding.size - 1))
-        return EcPublicKeyDoubleCoordinate(curve, x, y)
-    }
-
-    internal actual fun ecPrivateKeyToPem(privateKey: EcPrivateKey): String {
-        val pemEncoding = SwiftBridge.ecPrivateKeyToPem(
-            privateKey.curve.coseCurveIdentifier.toLong(),
-            privateKey.d.toNSData()
-        ) ?: throw IllegalStateException("Not available")
-        if (pemEncoding == "") {
-            throw UnsupportedOperationException("Curve is not supported")
-        }
-        return pemEncoding
-    }
-
-    internal actual fun ecPrivateKeyFromPem(
-        pemEncoding: String,
-        publicKey: EcPublicKey
-    ): EcPrivateKey {
-        val rawEncoding = SwiftBridge.ecPrivateKeyFromPem(
-            publicKey.curve.coseCurveIdentifier.toLong(),
-            pemEncoding
-        )?.toByteArray() ?: throw IllegalStateException("Not available")
-        publicKey as EcPublicKeyDoubleCoordinate
-        return EcPrivateKeyDoubleCoordinate(publicKey.curve, rawEncoding, publicKey.x, publicKey.y)
-    }
-
-    internal actual fun uuidGetRandom(): UUID {
-        val uuid = NSUUID()
-        return UUID.fromString(uuid.UUIDString())
     }
 
     internal fun secureEnclaveCreateEcPrivateKey(
@@ -322,12 +207,12 @@ actual object Crypto {
         )?.toByteArray() ?: throw KeyLockedException("Unable to unlock key")
     }
 
-    internal actual fun validateCertChain(certChain: X509CertChain): Boolean {
+    internal actual suspend fun validateCertChain(certChain: X509CertChain): Boolean {
         val certificates = certChain.certificates
         for (i in 1..certificates.lastIndex) {
             val toVerify = certificates[i - 1]
             val err = SwiftBridge.verifySignature(
-                certificates[i].encodedCertificate.toNSData(),
+                certificates[i].encoded.toNSData(),
                 toVerify.tbsCertificate.toNSData(),
                 toVerify.signatureAlgorithmOid,
                 toVerify.signature.toNSData()
@@ -337,45 +222,5 @@ actual object Crypto {
             }
         }
         return true
-    }
-
-    internal actual fun encryptJwtEcdhEs(
-        key: EcPublicKey,
-        encAlgorithm: Algorithm,
-        claims: JsonObject,
-        apu: String,
-        apv: String
-    ): JsonElement {
-        throw NotImplementedError("This is not yet implemented")
-    }
-
-    internal actual fun decryptJwtEcdhEs(
-        encryptedJwt: JsonElement,
-        recipientKey: EcPrivateKey
-    ): JsonObject {
-        throw NotImplementedError("This is not yet implemented")
-    }
-
-    internal actual fun jwsSign(
-        key: EcPrivateKey,
-        signatureAlgorithm: Algorithm,
-        claimsSet: JsonObject,
-        type: String?,
-        x5c: X509CertChain?
-    ): JsonElement {
-        throw NotImplementedError("This is not yet implemented")
-    }
-
-    internal actual fun jwsVerify(
-        signedJwt: JsonElement,
-        publicKey: EcPublicKey
-    ) {
-        throw NotImplementedError("This is not yet implemented")
-    }
-
-    internal actual fun jwsGetInfo(
-        signedJwt: JsonElement
-    ): JwsInfo {
-        throw NotImplementedError("This is not yet implemented")
     }
 }

@@ -9,6 +9,9 @@ val projectVersionName: String by rootProject.extra
 
 kotlin {
     jvmToolchain(17)
+    compilerOptions {
+        optIn.add("kotlin.time.ExperimentalTime")
+    }
 }
 
 android {
@@ -37,12 +40,15 @@ android {
             withSourcesJar()
         }
     }
+
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
 }
 
 dependencies {
     implementation(project(":multipaz"))
     implementation(libs.androidx.biometrics)
-    implementation(libs.bouncy.castle.bcprov)
     implementation(libs.bouncy.castle.bcpkix)
     implementation(libs.volley)
     implementation(libs.kotlinx.datetime)
@@ -50,6 +56,7 @@ dependencies {
     implementation(libs.kotlinx.io.bytestring)
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.cbor)
+    implementation(libs.errorprone.annotations)
 
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.test.junit)
@@ -83,4 +90,8 @@ publishing {
             }
         }
     }
+}
+
+subprojects {
+	apply(plugin = "org.jetbrains.dokka")
 }

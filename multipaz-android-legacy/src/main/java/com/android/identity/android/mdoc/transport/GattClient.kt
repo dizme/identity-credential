@@ -24,8 +24,8 @@ import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothProfile
 import android.content.Context
 import android.os.Build
+import com.android.identity.android.legacy.Hkdf
 import org.multipaz.crypto.Algorithm
-import org.multipaz.crypto.Crypto
 import org.multipaz.util.Logger
 import org.multipaz.util.toHex
 import java.io.ByteArrayOutputStream
@@ -72,8 +72,8 @@ internal class GattClient(
         if (encodedEDeviceKeyBytes != null) {
             val ikm: ByteArray = encodedEDeviceKeyBytes
             val info = "BLEIdent".toByteArray()
-            val salt = byteArrayOf()
-            identValue = Crypto.hkdf(Algorithm.HMAC_SHA256, ikm, salt, info, 16)
+            val salt = null
+            identValue = Hkdf.deriveKey(Algorithm.HMAC_SHA256, ikm, salt, info, 16)
         }
         try {
             gatt = device.connectGatt(context, false, this, BluetoothDevice.TRANSPORT_LE)
@@ -264,8 +264,9 @@ internal class GattClient(
             // TODO: Don't even request IDENT since it cannot work w/ reverse engagement (there's
             //   no way the mdoc reader knows EDeviceKeyBytes at this point) and it's also optional.
             if (!Arrays.equals(identValue, this.identValue)) {
-                Logger.w(TAG, "Received ident '${identValue.toHex()}' does not match " +
-                            "expected ident '${this.identValue!!.toHex()}'")
+                reportError(Error("Received ident '${identValue.toHex()}' does not match " +
+                        "expected ident '${this.identValue!!.toHex()}'"));
+                return;
             }
             afterIdentObtained(gatt)
         } else if (characteristic.uuid == characteristicL2CAPUuid) {
@@ -484,8 +485,8 @@ internal class GattClient(
             try {
                 gatt!!.disconnect()
                 gatt!!.close()
-            } catch (e: SecurityException) {
-                Logger.e(TAG, "Caught SecurityException while shutting down", e)
+            } catch (e: Throwable) {
+                Logger.e(TAG, "Caught Exception while shutting down", e)
             }
             gatt = null
             return

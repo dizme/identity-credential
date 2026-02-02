@@ -27,6 +27,11 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.io.bytestring.ByteString
+import org.multipaz.credential.Credential
+import org.multipaz.credential.CredentialLoaderBuilder
+import org.multipaz.provisioning.Provisioning
+import kotlin.time.Clock
+import kotlin.time.Instant
 
 /**
  * Class for storing real-world identity documents.
@@ -48,21 +53,19 @@ import kotlinx.io.bytestring.ByteString
  * For more details about documents stored in a [DocumentStore] see the
  * [Document] class.
  *
+ * Use [buildDocumentStore] or [DocumentStore.Builder] to create a [DocumentStore] instance.
+ *
  * @property storage the [Storage] to use for storing/retrieving documents.
- * @property secureAreaRepository the repository of configured [SecureArea] that can
- * be used.
- * @property credentialLoader the [CredentialLoader] to use for retrieving serialized credentials
- * associated with documents.
- * @property documentMetadataFactory function that creates [DocumentMetadata] instances
- * for documents in this [DocumentStore]
- * @property documentTableSpec [StorageTableSpec] that defines the table for [DocumentMetadata]
- * persistent storage, it must not have expiration or partitions enabled.
+ * @property secureAreaRepository the repository of configured [SecureArea] that can be used.
  */
-class DocumentStore(
+class DocumentStore private constructor(
     val storage: Storage,
-    internal val secureAreaRepository: SecureAreaRepository,
+    val secureAreaRepository: SecureAreaRepository,
     internal val credentialLoader: CredentialLoader,
-    internal val documentMetadataFactory: DocumentMetadataFactory,
+    internal val documentMetadataFactory: (suspend (
+        documentId: String,
+        data: ByteString,
+    ) -> AbstractDocumentMetadata)?,
     private val documentTableSpec: StorageTableSpec = Document.defaultTableSpec
 ) {
     // Use a cache so the same instance is returned by multiple lookupDocument() calls.
@@ -78,27 +81,48 @@ class DocumentStore(
     /**
      * Creates a new document.
      *
-     * If a document with the given identifier already exists, it will be deleted prior to
-     * creating the document.
-     *
+     * @param displayName User-facing name of this specific [Document] instance, e.g.
+     *  "John's Passport", or `null`.
+     * @param typeDisplayName User-facing name of this document type, e.g. "Utopia Passport",
+     *  or `null`.
+     * @param cardArt An image that represents this document to the user in the UI. Generally,
+     *  the aspect ratio of 1.586 is expected (based on ID-1 from the ISO/IEC 7810). PNG format
+     *  is expected and transparency is supported.
+     * @param issuerLogo An image that represents the issuer of the document in the UI,
+     *  e.g. passport office logo. PNG format is expected, transparency is supported and square
+     *  aspect ratio is preferred.
+     * @param metadata initial value for [Document.metadata]
      * @return A newly created document.
      */
     suspend fun createDocument(
-        metadataInitializer: suspend (metadata: DocumentMetadata) -> Unit = {}
+        displayName: String? = null,
+        typeDisplayName: String? = null,
+        cardArt: ByteString? = null,
+        issuerLogo: ByteString? = null,
+        authorizationData: ByteString? = null,
+        created: Instant = Clock.System.now(),
+        metadata: AbstractDocumentMetadata? = null
     ): Document {
         val table = storage.getTable(documentTableSpec)
-        val documentIdentifier = table.insert(key = null, ByteString())
-        val document = Document(this, documentIdentifier)
-        document.metadata = documentMetadataFactory(
-            document.identifier,
-            null,
-            document::saveMetadata
+        val data = DocumentData(
+            provisioned = false,
+            created = created,
+            displayName = displayName,
+            typeDisplayName = typeDisplayName,
+            cardArt = cardArt,
+            issuerLogo = issuerLogo,
+            authorizationData = authorizationData,
+            metadata = metadata?.serialize()
         )
-        metadataInitializer(document.metadata)
-        lock.withLock {
-            documentCache[document.identifier] = document
+        // NB: insertion in the storage is when the document is actually added, it may be
+        // inserted in the cache before we manage to call lock.withLock below
+        val documentIdentifier = table.insert(key = null, ByteString(data.toCbor()))
+        emitOnDocumentAdded(documentIdentifier)
+        val document = lock.withLock {
+            documentCache.getOrPut(documentIdentifier) {
+                Document(this, documentIdentifier, data, metadata)
+            }
         }
-        emitOnDocumentAdded(document.identifier)
         return document
     }
 
@@ -113,21 +137,44 @@ class DocumentStore(
             documentCache.getOrPut(identifier) {
                 val table = getDocumentTable()
                 val blob = table.get(identifier) ?: return@withLock null
-                val document = Document(this, identifier)
-                document.metadata = documentMetadataFactory(identifier, blob, document::saveMetadata)
+                val data = DocumentData.fromCbor(blob.toByteArray())
+                val metadata = data.metadata?.let {
+                    documentMetadataFactory!!(identifier, it)
+                }
+                val document = Document(this, identifier, data, metadata)
                 document
             }
         }
     }
 
     /**
-     * Lists all documents in the store.
+     * Lists all document ids in the store.
+     *
+     * Ids are returned sorted *as strings*, not in the document sorting order.
      *
      * @return list of all the document identifiers in the store.
      */
-    suspend fun listDocuments(): List<String> {
+    suspend fun listDocumentIds(): List<String> {
         // right now lock is not required
         return storage.getTable(documentTableSpec).enumerate()
+    }
+
+    /**
+     * Lists all documents in the store.
+     *
+     * @param sort if true, the returned list is sorted using [Document.Comparator]
+     * @return list of all the documents in the store.
+     */
+    suspend fun listDocuments(sort: Boolean = true): List<Document> {
+        // right now lock is not required
+        val list = storage.getTable(documentTableSpec).enumerate().mapNotNull {
+            lookupDocument(it)
+        }
+        return if (sort) {
+            list.sortedWith(Document.Comparator)
+        } else {
+            list
+        }
     }
 
     /**
@@ -143,6 +190,14 @@ class DocumentStore(
                 document.deleteDocument()
                 documentCache.remove(identifier)
             }
+            document.authorizationData?.let {
+                Provisioning.cleanupAuthorizationData(
+                    authorizationData = it,
+                    secureAreaRepository = secureAreaRepository,
+                    storage = storage
+                )
+            }
+            document.metadata?.cleanup(secureAreaRepository, storage)
         }
     }
 
@@ -172,7 +227,116 @@ class DocumentStore(
         return storage.getTable(documentTableSpec)
     }
 
-    companion object {
-        const val TAG = "DocumentStore"
+    /**
+     * A builder for DocumentStore.
+     *
+     * @param storage the [Storage] to use for storing/retrieving documents.
+     * @param secureAreaRepository the repository of configured [SecureArea] that can be used.
+     */
+    class Builder(
+        private val storage: Storage,
+        private val secureAreaRepository: SecureAreaRepository,
+    ) {
+        private val credentialLoaderBuilder = CredentialLoaderBuilder().apply {
+            addMdocCredential()
+            addKeylessSdJwtVcCredential()
+            addKeyBoundSdJwtVcCredential()
+        }
+
+        private var documentMetadataFactory: (suspend (
+            documentId: String,
+            data: ByteString
+        ) -> AbstractDocumentMetadata)? = null
+
+        private var documentTableSpec: StorageTableSpec = Document.defaultTableSpec
+
+        /**
+         * Sets the factory function for creating [AbstractDocumentMetadata] instances.
+         *
+         * This should only be called if the applications wants to use [AbstractDocumentMetadata].
+         * By default there is no factory and [Document.metadata] field is null.
+         *
+         * @param factory the factory to use.
+         * @return the builder.
+         */
+        fun setDocumentMetadataFactory(
+            factory: suspend (
+                documentId: String,
+                data: ByteString
+            ) -> AbstractDocumentMetadata
+        ): Builder {
+            this.documentMetadataFactory = factory
+            return this
+        }
+
+        /**
+         * Add a new [Credential] implementation to document store.
+         *
+         * @param credentialType the credential type
+         * @param createCredentialFunction a function to create a [Credential] of the given type.
+         * @return the builder.
+         */
+        fun addCredentialImplementation(
+            credentialType: String,
+            createCredentialFunction: suspend (Document) -> Credential
+        ): Builder {
+            credentialLoaderBuilder.addCredentialImplementation(
+                credentialType = credentialType,
+                createCredentialFunction = createCredentialFunction
+            )
+            return this
+        }
+
+        /**
+         * Sets the [StorageTableSpec] to use for the storage of the documents
+         *
+         * By default [Document.defaultTableSpec] is used.
+         *
+         * @param documentTableSpec the [StorageTableSpec] to use.
+         * @return the builder
+         */
+        fun setTableSpec(
+            documentTableSpec: StorageTableSpec
+        ): Builder {
+            this.documentTableSpec = documentTableSpec
+            return this
+        }
+
+        /**
+         * Builds the [DocumentStore].
+         *
+         * @return a [DocumentStore].
+         */
+        fun build(): DocumentStore {
+            return DocumentStore(
+                storage = storage,
+                secureAreaRepository = secureAreaRepository,
+                credentialLoader = credentialLoaderBuilder.build(),
+                documentMetadataFactory = documentMetadataFactory,
+                documentTableSpec = documentTableSpec
+            )
+        }
     }
+
+    companion object {
+        private const val TAG = "DocumentStore"
+    }
+}
+
+/**
+ * Builds a [DocumentStore]
+ *
+ * @param storage the [Storage] to use for storing/retrieving documents.
+ * @param secureAreaRepository the repository of configured [SecureArea] that can be used.
+ * @param builderAction the builder action.
+ * @return a [DocumentStore].
+ */
+inline fun buildDocumentStore(
+    storage: Storage,
+    secureAreaRepository: SecureAreaRepository,
+    builderAction: DocumentStore.Builder.() -> Unit
+): DocumentStore {
+    val builder = DocumentStore.Builder(storage, secureAreaRepository)
+    builder.builderAction()
+    return builder.build()
 }

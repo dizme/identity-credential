@@ -1,5 +1,6 @@
 package org.multipaz.mdoc.vical
 
+import kotlinx.coroutines.test.runTest
 import org.multipaz.asn1.ASN1Integer
 import org.multipaz.crypto.Crypto
 import org.multipaz.crypto.EcCurve
@@ -7,7 +8,8 @@ import org.multipaz.crypto.EcPrivateKey
 import org.multipaz.crypto.X500Name
 import org.multipaz.crypto.X509Cert
 import org.multipaz.crypto.X509CertChain
-import kotlinx.datetime.Clock
+import kotlin.time.Clock
+import org.multipaz.crypto.AsymmetricKey
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
@@ -16,7 +18,7 @@ import kotlin.time.Duration.Companion.minutes
 
 class VicalGeneratorTest {
 
-    private fun createSelfsignedCert(
+    private suspend fun createSelfsignedCert(
         key: EcPrivateKey,
         subjectAndIssuer: X500Name
     ): X509Cert {
@@ -26,8 +28,7 @@ class VicalGeneratorTest {
 
         return X509Cert.Builder(
             publicKey = key.publicKey,
-            signingKey = key,
-            signatureAlgorithm = key.curve.defaultSigningAlgorithm,
+            signingKey = AsymmetricKey.anonymous(key, key.curve.defaultSigningAlgorithm),
             serialNumber = ASN1Integer(1),
             subject = subjectAndIssuer,
             issuer = subjectAndIssuer,
@@ -37,7 +38,7 @@ class VicalGeneratorTest {
     }
 
     @Test
-    fun testVicalGenerator() {
+    fun testVicalGenerator() = runTest {
         val vicalKey = Crypto.createEcPrivateKey(EcCurve.P256)
         val vicalCert = createSelfsignedCert(vicalKey, X500Name.fromName("CN=Test VICAL"))
 
@@ -62,26 +63,22 @@ class VicalGeneratorTest {
                 listOf(
                     VicalCertificateInfo(
                         certificate = issuer1Cert,
-                        docType = listOf("org.iso.18013.5.1.mDL"),
-                        certificateProfiles = listOf("")
+                        docTypes = listOf("org.iso.18013.5.1.mDL"),
                     ),
                     VicalCertificateInfo(
                         certificate = issuer2Cert,
-                        docType = listOf("org.iso.18013.5.1.mDL"),
-                        certificateProfiles = null
+                        docTypes = listOf("org.iso.18013.5.1.mDL"),
                     ),
                     VicalCertificateInfo(
                         certificate = issuer3Cert,
-                        docType = listOf("org.iso.18013.5.1.mDL", "eu.europa.ec.eudi.pid.1"),
-                        certificateProfiles = null
+                        docTypes = listOf("org.iso.18013.5.1.mDL", "eu.europa.ec.eudi.pid.1"),
                     ),
                 )
             ),
             vicalProviderCertificateChain = X509CertChain(listOf(vicalCert))
         )
         val encodedSignedVical = signedVical.generate(
-            signingKey = vicalKey,
-            signingAlgorithm = vicalKey.curve.defaultSigningAlgorithm
+            signingKey = AsymmetricKey.anonymous(vicalKey, vicalKey.curve.defaultSigningAlgorithm)
         )
 
         val decodedSignedVical = SignedVical.parse(
@@ -102,7 +99,7 @@ class VicalGeneratorTest {
         )
         assertContentEquals(
             listOf("org.iso.18013.5.1.mDL"),
-            decodedSignedVical.vical.certificateInfos[0].docType
+            decodedSignedVical.vical.certificateInfos[0].docTypes
         )
         assertEquals(null, decodedSignedVical.vical.certificateInfos[0].certificateProfiles)
 
@@ -112,7 +109,7 @@ class VicalGeneratorTest {
         )
         assertContentEquals(
             listOf("org.iso.18013.5.1.mDL"),
-            decodedSignedVical.vical.certificateInfos[1].docType
+            decodedSignedVical.vical.certificateInfos[1].docTypes
         )
         assertEquals(null, decodedSignedVical.vical.certificateInfos[1].certificateProfiles)
 
@@ -122,7 +119,7 @@ class VicalGeneratorTest {
         )
         assertContentEquals(
             listOf("org.iso.18013.5.1.mDL", "eu.europa.ec.eudi.pid.1"),
-            decodedSignedVical.vical.certificateInfos[2].docType
+            decodedSignedVical.vical.certificateInfos[2].docTypes
         )
         assertEquals(null, decodedSignedVical.vical.certificateInfos[2].certificateProfiles)
     }

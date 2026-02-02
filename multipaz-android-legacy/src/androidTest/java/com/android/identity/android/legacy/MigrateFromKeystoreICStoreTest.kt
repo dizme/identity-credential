@@ -18,6 +18,7 @@ package com.android.identity.android.legacy
 import androidx.test.platform.app.InstrumentationRegistry
 import co.nstant.`in`.cbor.CborBuilder
 import co.nstant.`in`.cbor.model.UnicodeString
+import com.android.identity.android.legacy.Crypto.checkSignature
 import com.android.identity.android.legacy.Util.cborEncode
 import com.android.identity.android.legacy.Util.cborEncodeBytestring
 import com.android.identity.android.legacy.Util.cborEncodeNumber
@@ -27,7 +28,6 @@ import org.multipaz.cbor.Cbor.toDiagnostics
 import org.multipaz.cbor.DiagnosticOption
 import org.multipaz.context.initializeApplication
 import org.multipaz.crypto.Algorithm
-import org.multipaz.crypto.Crypto.checkSignature
 import org.multipaz.crypto.EcCurve
 import org.multipaz.crypto.toEcPublicKey
 import org.multipaz.storage.android.AndroidStorage
@@ -35,6 +35,7 @@ import kotlinx.coroutines.runBlocking
 import org.junit.Assert
 import org.junit.Test
 import java.nio.charset.StandardCharsets
+import kotlin.time.Duration.Companion.seconds
 
 @Suppress("deprecation")
 class MigrateFromKeystoreICStoreTest {
@@ -149,7 +150,7 @@ class MigrateFromKeystoreICStoreTest {
         Assert.assertEquals(EcCurve.P256, keyInfo.publicKey.curve)
         Assert.assertFalse(keyInfo.isStrongBoxBacked)
         Assert.assertFalse(keyInfo.isUserAuthenticationRequired)
-        Assert.assertEquals(0, keyInfo.userAuthenticationTimeoutMillis)
+        Assert.assertEquals(0.seconds, keyInfo.userAuthenticationTimeout)
         Assert.assertEquals(setOf<Any>(), keyInfo.userAuthenticationTypes)
         Assert.assertNull(keyInfo.attestKeyAlias)
         Assert.assertNull(keyInfo.validFrom)
@@ -159,8 +160,7 @@ class MigrateFromKeystoreICStoreTest {
         val dataToSign = byteArrayOf(1, 2, 3)
         val ecSignature = aksSecureArea.sign(
             credentialKeyAlias,
-            dataToSign,
-            null
+            dataToSign
         )
         val ecCredentialKeyPublic = credentialKeyPublic.toEcPublicKey(EcCurve.P256)
         checkSignature(

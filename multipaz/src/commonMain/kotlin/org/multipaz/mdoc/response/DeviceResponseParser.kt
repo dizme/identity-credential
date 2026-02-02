@@ -33,9 +33,12 @@ import org.multipaz.mdoc.mso.MobileSecurityObjectParser
 import org.multipaz.util.Constants
 import org.multipaz.util.Logger
 import org.multipaz.util.toHex
-import kotlinx.datetime.Instant
+import kotlin.time.Instant
 import org.multipaz.cbor.buildCborArray
+import org.multipaz.crypto.AsymmetricKey
+import org.multipaz.crypto.Hkdf
 import org.multipaz.crypto.SignatureVerificationException
+import org.multipaz.mdoc.zkp.ZkDocument
 
 /**
  * Helper class for parsing the bytes of `DeviceResponse`
@@ -45,11 +48,12 @@ import org.multipaz.crypto.SignatureVerificationException
  * @param encodedDeviceResponse the bytes of the DeviceResponse CBOR.
  * @param encodedSessionTranscript the bytes of the SessionTrancript CBOR.
  */
+@Deprecated(message = "Deprecated, use DeviceResponse instead")
 class DeviceResponseParser(
     val encodedDeviceResponse: ByteArray,
     val encodedSessionTranscript: ByteArray
 ) {
-    private var eReaderKey: EcPrivateKey? = null
+    private var eReaderKey: AsymmetricKey? = null
 
     /**
      * Sets the private part of the ephemeral key used in the session where the
@@ -58,10 +62,10 @@ class DeviceResponseParser(
      * This is only required if the `DeviceResponse` is using the MAC method for device
      * authentication.
      *
-     * @param eReaderKey the private part of the reader ephemeral key.
+     * @param eReaderKey the reader ephemeral key.
      * @return the `DeviceResponseParser`.
      */
-    fun setEphemeralReaderKey(eReaderKey: EcPrivateKey) = apply {
+    fun setEphemeralReaderKey(eReaderKey: AsymmetricKey) = apply {
         this.eReaderKey = eReaderKey
     }
 
@@ -85,7 +89,7 @@ class DeviceResponseParser(
      * @exception IllegalStateException if required data hasn't been set using the setter
      * methods on this class.
      */
-    fun parse(): DeviceResponse =
+    suspend fun parse(): DeviceResponse =
     // mEReaderKey may be omitted if the response is using ECDSA instead of MAC
         // for device authentication.
         DeviceResponse().apply {
@@ -100,8 +104,9 @@ class DeviceResponseParser(
      */
     class DeviceResponse {
 
-        // backing field
+        // backing fields
         private val _documents = mutableListOf<Document>()
+        private val _zkDocuments = mutableListOf<ZkDocument>()
 
         /**
          * The documents in the device response.
@@ -110,13 +115,19 @@ class DeviceResponseParser(
             get() = _documents
 
         /**
+         * The ZK documents in the device response.
+         */
+        val zkDocuments: List<ZkDocument>
+            get() = _zkDocuments
+
+        /**
          * The version string set in the `DeviceResponse` CBOR.
          */
         lateinit var version: String
 
         // Returns the DeviceKey from the MSO
         //
-        private fun parseIssuerSigned(
+        suspend private fun parseIssuerSigned(
             expectedDocType: String,
             issuerSigned: DataItem,
             builder: Document.Builder
@@ -135,16 +146,20 @@ class DeviceResponseParser(
                     CoseNumberLabel(Cose.COSE_LABEL_ALG)
                 ]!!.asNumber.toInt()
             )
-            val documentSigningKey = issuerAuthorityCertChain.certificates[0].ecPublicKey
-            val issuerSignedAuthenticated = try {
-                Cose.coseSign1Check(
-                    documentSigningKey,
-                    null,
-                    issuerAuth,
-                    signatureAlgorithm
-                )
-                true
-            } catch (_: Throwable) {
+            val issuerSignedAuthenticated = if (issuerAuthorityCertChain.certificates.size > 0) {
+                val documentSigningKey = issuerAuthorityCertChain.certificates[0].ecPublicKey
+                 try {
+                    Cose.coseSign1Check(
+                        documentSigningKey,
+                        null,
+                        issuerAuth,
+                        signatureAlgorithm
+                    )
+                    true
+                } catch (_: Throwable) {
+                    false
+                }
+            } else {
                 false
             }
             val encodedMobileSecurityObject = Cbor.decode(issuerAuth.payload!!).asTagged.asBstr
@@ -220,12 +235,12 @@ class DeviceResponseParser(
             return deviceKey
         }
 
-        private fun parseDeviceSigned(
+        private suspend fun parseDeviceSigned(
             deviceSigned: DataItem,
             docType: String,
             encodedSessionTranscript: ByteArray,
             deviceKey: EcPublicKey,
-            eReaderKey: EcPrivateKey?,
+            eReaderKey: AsymmetricKey?,
             builder: Document.Builder
         ) {
             val nameSpacesBytes = deviceSigned["nameSpaces"]
@@ -271,11 +286,11 @@ class DeviceResponseParser(
                         "Neither deviceSignature nor deviceMac in deviceAuth"
                     )
                 val tagInResponse = deviceMacDataItem.asCoseMac0.tag
-                val sharedSecret = Crypto.keyAgreement(eReaderKey!!, deviceKey)
+                val sharedSecret = eReaderKey!!.keyAgreement(deviceKey)
                 val sessionTranscriptBytes = Cbor.encode(Tagged(24, Bstr(encodedSessionTranscript)))
                 val salt = Crypto.digest(Algorithm.SHA256, sessionTranscriptBytes)
                 val info = "EMacKey".encodeToByteArray()
-                val eMacKey = Crypto.hkdf(Algorithm.HMAC_SHA256, sharedSecret, salt, info, 32)
+                val eMacKey = Hkdf.deriveKey(Algorithm.HMAC_SHA256, sharedSecret, salt, info, 32)
                 val expectedTag = Cose.coseMac0(
                     Algorithm.HMAC_SHA256,
                     eMacKey,
@@ -311,14 +326,16 @@ class DeviceResponseParser(
             }
         }
 
-        internal fun parse(
+        internal suspend fun parse(
             encodedDeviceResponse: ByteArray?,
             encodedSessionTranscript: ByteArray,
-            eReaderKey: EcPrivateKey?
+            eReaderKey: AsymmetricKey?
         ) {
             val deviceResponse = Cbor.decode(encodedDeviceResponse!!)
             version = deviceResponse["version"].asTstr
             require(version.compareTo("1.0") >= 0) { "Given version '$version' not >= '1.0'" }
+
+            // Try to get documents, either documents or zkDocuments can be populated, not both.
             val documentsDataItem = deviceResponse.getOrNull("documents")
             if (documentsDataItem != null) {
                 for (documentItem in documentsDataItem.asArray) {
@@ -337,6 +354,16 @@ class DeviceResponseParser(
                         builder
                     )
                     _documents.add(builder.build())
+                }
+            }
+
+            val zkDocumentDataItem = deviceResponse.getOrNull("zkDocuments")
+            if (zkDocumentDataItem != null) {
+                val zkDocumentsArray = zkDocumentDataItem.asArray
+
+                for (zkDocumentDataItem in zkDocumentsArray) {
+                    val zkDocument = ZkDocument.fromDataItem(zkDocumentDataItem)
+                    _zkDocuments.add(zkDocument)
                 }
             }
             status = deviceResponse["status"].asNumber
@@ -361,7 +388,7 @@ class DeviceResponseParser(
             private set
 
         companion object {
-            const val TAG = "DeviceResponse"
+            private const val TAG = "DeviceResponse"
         }
     }
 
@@ -766,7 +793,7 @@ class DeviceResponseParser(
         }
 
         companion object {
-            const val TAG = "Document"
+            private const val TAG = "Document"
         }
     }
 }

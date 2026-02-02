@@ -24,7 +24,7 @@ import kotlin.enums.enumEntries
  *   [Fully-Specified Algorithms for JOSE and COSE draft](https://datatracker.ietf.org/doc/draft-ietf-jose-fully-specified-algorithms/)
  *   for more information on what constitutes a fully specified algorithm.
  * @param curve the [EcCurve] used in the algorithm or `null` if not applicable or not a fully specified algorithm.
- * @param hashAlgorithm the hash algorithm in the the algorithm or `null` if not applicable or not a fully specified algorithm.
+ * @param hashAlgorithm the hash algorithm in the algorithm or `null` if not applicable or not a fully specified algorithm.
  * @param isSigning `true` if the algorithm is for signing, `false` if not applicable or not a fully specified algorithm.
  * @param isKeyAgreement `true` if the algorithm is for key agreement, `false` if not applicable or not a fully specified algorithm.
  * @param description A human readable description of the algorithm.
@@ -75,6 +75,10 @@ enum class Algorithm(
     SHA512(coseAlgorithmIdentifier = -44, hashAlgorithmName = "sha-512",
         description = "SHA-2 (512 bit)"),
 
+    /** HMAC w/ SHA-1 (insecure, shouldn't be used) */
+    HMAC_INSECURE_SHA1(joseAlgorithmIdentifier = "HS1",  // Note: doesn't exist in COSE registry
+        description = "HMAC with SHA-1"),
+
     /** HMAC w/ SHA-256 */
     HMAC_SHA256(coseAlgorithmIdentifier = 5, joseAlgorithmIdentifier = "HS256",
         description = "HMAC with SHA-256"),
@@ -98,18 +102,6 @@ enum class Algorithm(
     /** AES-GCM mode w/ 256-bit key, 128-bit tag */
     A256GCM(coseAlgorithmIdentifier = 3, joseAlgorithmIdentifier = "A256GCM",
         description = "AES-GCM mode w/ 256-bit key, 128-bit tag"),
-
-    /**
-     * Cipher suite for COSE-HPKE in Base Mode that uses the DHKEM(P-256, HKDF-SHA256) KEM,
-     * the HKDF-SHA256 KDF and the AES-128-GCM AEAD.
-     *
-     * Note that this value is still TBD and the proposed value is from
-     * [Use of Hybrid Public-Key Encryption (HPKE) with CBOR Object Signing and Encryption (COSE)](https://www.ietf.org/archive/id/draft-ietf-cose-hpke-07.html#IANA)
-     *
-     */
-    HPKE_BASE_P256_SHA256_AES128GCM(coseAlgorithmIdentifier = 35,
-        description = "Cipher suite for COSE-HPKE in Base Mode that uses the DHKEM(P-256, HKDF-SHA256) KEM, " +
-                "the HKDF-SHA256 KDF and the AES-128-GCM AEAD"),
 
     /** RSASSA-PKCS1-v1_5 using SHA-256 */
     RS256(coseAlgorithmIdentifier = -257, joseAlgorithmIdentifier = "RS256",
@@ -216,6 +208,11 @@ enum class Algorithm(
     ECDH_X448(fullySpecified = true,
         description = "ECDH using X448 curve without KDF", curve = EcCurve.X448,
         isKeyAgreement = true),
+
+    ANDROID_KEYSTORE_ATTEST_KEY(
+        description = "Android Keystore Attest Key",
+        fullySpecified = true
+    )
 
     ;
 

@@ -16,7 +16,6 @@
 
 package org.multipaz.documenttype.knowntypes
 
-import org.multipaz.cbor.CborArray
 import org.multipaz.cbor.Tagged
 import org.multipaz.cbor.Tstr
 import org.multipaz.cbor.toDataItem
@@ -27,10 +26,12 @@ import org.multipaz.documenttype.Icon
 import org.multipaz.documenttype.IntegerOption
 import org.multipaz.documenttype.StringOption
 import org.multipaz.util.fromBase64Url
-import org.multipaz.util.fromHex
 import kotlinx.datetime.LocalDate
+import org.multipaz.cbor.Simple
 import org.multipaz.cbor.addCborMap
 import org.multipaz.cbor.buildCborArray
+import org.multipaz.cbor.buildCborMap
+import org.multipaz.cbor.putCborMap
 
 /**
  * Object containing the metadata of the Driving License
@@ -151,13 +152,13 @@ object DrivingLicense {
                 buildCborArray {
                     addCborMap {
                         put("vehicle_category_code", "A")
-                        put("issue_date", Tagged(1004, Tstr("2018-08-09")))
-                        put("expiry_date", Tagged(1004, Tstr("2028-09-01")))
+                        put("issue_date", Tagged(Tagged.FULL_DATE_STRING, Tstr("2018-08-09")))
+                        put("expiry_date", Tagged(Tagged.FULL_DATE_STRING, Tstr("2028-09-01")))
                     }
                     addCborMap {
                         put("vehicle_category_code", "B")
-                        put("issue_date", Tagged(1004, Tstr("2017-02-23")))
-                        put("expiry_date", Tagged(1004, Tstr("2028-09-01")))
+                        put("issue_date", Tagged(Tagged.FULL_DATE_STRING, Tstr("2017-02-23")))
+                        put("expiry_date", Tagged(Tagged.FULL_DATE_STRING, Tstr("2028-09-01")))
                     }
                 }
             )
@@ -189,7 +190,7 @@ object DrivingLicense {
                 false,
                 MDL_NAMESPACE,
                 Icon.EMERGENCY,
-                SampleData.SEX_ISO218.toDataItem()
+                SampleData.SEX_ISO_5218.toDataItem()
             )
             .addMdocAttribute(
                 DocumentAttributeType.Number,
@@ -494,10 +495,10 @@ object DrivingLicense {
                 "domestic_driving_privileges",
                 "Domestic Driving Privileges",
                 "Vehicle types the license holder is authorized to operate",
-                false,
+                true,
                 AAMVA_NAMESPACE,
                 Icon.DIRECTIONS_CAR,
-                null
+                buildCborArray {}
             )
             .addMdocAttribute(
                 DocumentAttributeType.StringOptions(Options.AAMVA_NAME_SUFFIX),
@@ -507,7 +508,7 @@ object DrivingLicense {
                 false,
                 AAMVA_NAMESPACE,
                 Icon.PERSON,
-                null
+                "Jr III".toDataItem()
             )
             .addMdocAttribute(
                 DocumentAttributeType.IntegerOptions(
@@ -537,7 +538,7 @@ object DrivingLicense {
                 false,
                 AAMVA_NAMESPACE,
                 Icon.MILITARY_TECH,
-                null
+                1.toDataItem()
             )
             .addMdocAttribute(
                 DocumentAttributeType.StringOptions(
@@ -554,7 +555,7 @@ object DrivingLicense {
                 true,
                 AAMVA_NAMESPACE,
                 Icon.PERSON,
-                null
+                "N".toDataItem()
             )
             .addMdocAttribute(
                 DocumentAttributeType.StringOptions(
@@ -571,7 +572,7 @@ object DrivingLicense {
                 true,
                 AAMVA_NAMESPACE,
                 Icon.PERSON,
-                null
+                "N".toDataItem()
             )
             .addMdocAttribute(
                 DocumentAttributeType.String,
@@ -581,7 +582,7 @@ object DrivingLicense {
                 false,
                 AAMVA_NAMESPACE,
                 Icon.PERSON,
-                null
+                "Musstermensch".toDataItem()
             )
             .addMdocAttribute(
                 DocumentAttributeType.String,
@@ -591,7 +592,7 @@ object DrivingLicense {
                 false,
                 AAMVA_NAMESPACE,
                 Icon.PERSON,
-                null
+                "Erica".toDataItem()
             )
             .addMdocAttribute(
                 DocumentAttributeType.StringOptions(Options.AAMVA_NAME_SUFFIX),
@@ -601,7 +602,7 @@ object DrivingLicense {
                 false,
                 AAMVA_NAMESPACE,
                 Icon.PERSON,
-                null
+                "Ica".toDataItem()
             )
             .addMdocAttribute(
                 DocumentAttributeType.IntegerOptions(
@@ -677,7 +678,7 @@ object DrivingLicense {
                 false,
                 AAMVA_NAMESPACE,
                 Icon.STARS,
-                null
+                1.toDataItem()
             )
             .addMdocAttribute(
                 DocumentAttributeType.IntegerOptions(
@@ -703,7 +704,7 @@ object DrivingLicense {
                 false,
                 AAMVA_NAMESPACE,
                 Icon.PLACE,
-                null
+                "037".toDataItem()
             )
             .addMdocAttribute(
                 DocumentAttributeType.Date,
@@ -713,7 +714,7 @@ object DrivingLicense {
                 true,
                 AAMVA_NAMESPACE,
                 Icon.CALENDAR_CLOCK,
-                null
+                LocalDate.parse(SampleData.EXPIRY_DATE).toDataItemFullDate()
             )
             .addMdocAttribute(
                 DocumentAttributeType.IntegerOptions(Options.SEX_ISO_IEC_5218),
@@ -723,7 +724,7 @@ object DrivingLicense {
                 true,
                 AAMVA_NAMESPACE,
                 Icon.EMERGENCY,
-                SampleData.SEX_ISO218.toDataItem()
+                SampleData.SEX_ISO_5218.toDataItem()
             )
             /*
              * Then the attributes that exist only in the mDL Credential Type and not in the VC Credential Type
@@ -736,7 +737,7 @@ object DrivingLicense {
                 false,
                 MDL_NAMESPACE,
                 Icon.FACE,
-                null
+                Simple.NULL
             )
             .addMdocAttribute(
                 DocumentAttributeType.Picture,
@@ -746,7 +747,7 @@ object DrivingLicense {
                 false,
                 MDL_NAMESPACE,
                 Icon.FINGERPRINT,
-                null
+                Simple.NULL
             )
             .addMdocAttribute(
                 DocumentAttributeType.Picture,
@@ -756,7 +757,7 @@ object DrivingLicense {
                 false,
                 MDL_NAMESPACE,
                 Icon.SIGNATURE,
-                null
+                Simple.NULL
             )
             .addMdocAttribute(
                 DocumentAttributeType.Picture,
@@ -766,7 +767,7 @@ object DrivingLicense {
                 false,
                 MDL_NAMESPACE,
                 Icon.EYE_TRACKING,
-                null
+                Simple.NULL
             )
             .addMdocAttribute(
                 DocumentAttributeType.String,
@@ -776,7 +777,7 @@ object DrivingLicense {
                 false,
                 AAMVA_NAMESPACE,
                 Icon.STARS,
-                null
+                "".toDataItem()
             )
             .addMdocAttribute(
                 DocumentAttributeType.Number,
@@ -786,7 +787,7 @@ object DrivingLicense {
                 true,
                 AAMVA_NAMESPACE,
                 Icon.NUMBERS,
-                null
+                1.toDataItem()
             )
             .addSampleRequest(
                 id = "us-transportation",
@@ -825,6 +826,26 @@ object DrivingLicense {
                         "age_over_21" to false,
                     )
                 ),
+            )
+            .addSampleRequest(
+                id = "age_over_18_zkp",
+                displayName ="Age Over 18 (ZKP)",
+                mdocDataElements = mapOf(
+                    MDL_NAMESPACE to mapOf(
+                        "age_over_18" to false,
+                    )
+                ),
+                mdocUseZkp = true
+            )
+            .addSampleRequest(
+                id = "age_over_21_zkp",
+                displayName ="Age Over 21 (ZKP)",
+                mdocDataElements = mapOf(
+                    MDL_NAMESPACE to mapOf(
+                        "age_over_21" to false,
+                    )
+                ),
+                mdocUseZkp = true
             )
             .addSampleRequest(
                 id = "age_over_18_and_portrait",

@@ -27,8 +27,8 @@ import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.content.Context
 import android.os.Build
+import com.android.identity.android.legacy.Hkdf
 import org.multipaz.crypto.Algorithm
-import org.multipaz.crypto.Crypto
 import org.multipaz.util.Logger
 import org.multipaz.util.toHex
 import java.io.ByteArrayOutputStream
@@ -74,8 +74,8 @@ internal class GattServer(
     fun setEDeviceKeyBytes(encodedEDeviceKeyBytes: ByteArray) {
         val ikm: ByteArray = encodedEDeviceKeyBytes
         val info = "BLEIdent".toByteArray()
-        val salt = byteArrayOf()
-        identValue = Crypto.hkdf(Algorithm.HMAC_SHA256, ikm, salt, info, 16)
+        val salt = null
+        identValue = Hkdf.deriveKey(Algorithm.HMAC_SHA256, ikm, salt, info, 16)
     }
 
     @SuppressLint("NewApi")
@@ -438,8 +438,8 @@ internal class GattServer(
                     gattServer!!.cancelConnection(currentConnection)
                 }
                 gattServer!!.close()
-            } catch (e: SecurityException) {
-                Logger.e(TAG, "Caught SecurityException while shutting down", e)
+            } catch (e: Throwable) {
+                Logger.e(TAG, "Caught Exception while shutting down", e)
             }
             gattServer = null
             return

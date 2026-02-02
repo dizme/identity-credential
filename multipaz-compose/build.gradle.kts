@@ -1,7 +1,12 @@
+@file:OptIn(ExperimentalWasmDsl::class)
+
+import org.gradle.kotlin.dsl.implementation
 import org.jetbrains.compose.ExperimentalComposeLibrary
 import org.jetbrains.kotlin.gradle.ExperimentalKotlinGradlePluginApi
+import org.jetbrains.kotlin.gradle.ExperimentalWasmDsl
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.plugin.KotlinSourceSetTree
+import org.jetbrains.kotlin.gradle.plugin.mpp.apple.XCFramework
 
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
@@ -17,6 +22,11 @@ val projectVersionName: String by rootProject.extra
 kotlin {
     jvmToolchain(17)
 
+    compilerOptions {
+        optIn.add("kotlin.time.ExperimentalTime")
+        freeCompilerArgs.add("-Xexpect-actual-classes")
+    }
+
     androidTarget {
         @OptIn(ExperimentalKotlinGradlePluginApi::class)
         instrumentedTestVariant.sourceSetTree.set(KotlinSourceSetTree.test)
@@ -27,6 +37,24 @@ kotlin {
         }
 
         publishLibraryVariants("release")
+    }
+
+    js {
+        outputModuleName = "multipaz-compose"
+        browser {
+            // Currently disabled, see https://youtrack.jetbrains.com/issue/CMP-4906
+            testTask { enabled = false }
+        }
+        binaries.executable()
+    }
+
+    wasmJs {
+        outputModuleName = "multipaz-compose"
+        browser {
+            // Currently disabled, see https://youtrack.jetbrains.com/issue/CMP-4906
+            testTask { enabled = false }
+        }
+        binaries.executable()
     }
 
     listOf(
@@ -55,18 +83,27 @@ kotlin {
                 implementation(compose.material3)
                 implementation(compose.ui)
                 implementation(compose.components.resources)
-                implementation(compose.components.uiToolingPreview)
                 implementation(compose.materialIconsExtended)
                 implementation(libs.jetbrains.navigation.compose)
                 implementation(libs.jetbrains.navigation.runtime)
+                api(compose.runtime)
+                api(compose.foundation)
+                api(compose.material3)
+                api(compose.ui)
+                api(compose.components.resources)
+                api(compose.materialIconsExtended)
+                api(libs.jetbrains.navigation.compose)
+                api(libs.jetbrains.navigation.runtime)
 
                 implementation(project(":multipaz"))
-                implementation(project(":multipaz-models"))
+                implementation(project(":multipaz-dcapi"))
                 implementation(libs.kotlinx.datetime)
                 implementation(libs.kotlinx.serialization.json)
-                implementation(libs.qrose)
-                implementation(libs.easyqrscan)
                 implementation(libs.kotlinx.io.core)
+                implementation(libs.coil.core)
+                implementation(libs.coil.compose.core)
+                implementation(libs.coil.ktor3)
+                implementation(libs.compottie)
             }
         }
         val commonTest by getting {
@@ -79,6 +116,7 @@ kotlin {
         }
         val androidMain by getting {
             dependencies {
+                implementation(libs.accompanist.drawablepainter)
                 implementation(libs.accompanist.permissions)
                 implementation(libs.androidx.material)
                 implementation(libs.androidx.biometrics)
@@ -86,6 +124,11 @@ kotlin {
                 implementation(libs.androidx.camera.lifecycle)
                 implementation(libs.androidx.camera.view)
                 implementation(libs.androidx.lifecycle.extensions)
+                implementation(libs.zxing.core)
+                implementation(libs.play.services.identity.credentials)
+                implementation(libs.androidx.credentials)
+                implementation(libs.androidx.credentials.registry.provider)
+                implementation(libs.ktor.client.android)
             }
         }
     }
@@ -123,6 +166,10 @@ android {
             withSourcesJar()
         }
     }
+
+    lint {
+        baseline = file("lint-baseline.xml")
+    }
 }
 
 group = "org.multipaz"
@@ -147,3 +194,7 @@ publishing {
 }
 
 tasks.named("generateResourceAccessorsForAndroidMain").configure { dependsOn("sourceReleaseJar") }
+
+subprojects {
+	apply(plugin = "org.jetbrains.dokka")
+}

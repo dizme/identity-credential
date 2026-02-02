@@ -25,7 +25,6 @@ import org.multipaz.asn1.ASN1TaggedObject
 import org.multipaz.asn1.OID
 import org.multipaz.cbor.Bstr
 import org.multipaz.cbor.Cbor
-import org.multipaz.cbor.CborMap
 import org.multipaz.cbor.RawCbor
 import org.multipaz.cbor.Simple
 import org.multipaz.cbor.Tagged
@@ -34,7 +33,6 @@ import org.multipaz.document.DocumentRequest.DataElement
 import org.multipaz.document.NameSpacedData
 import org.multipaz.crypto.Algorithm
 import org.multipaz.crypto.Crypto
-import org.multipaz.crypto.EcPrivateKey
 import org.multipaz.crypto.EcPublicKey
 import org.multipaz.crypto.X500Name
 import org.multipaz.crypto.X509Cert
@@ -48,20 +46,14 @@ import org.multipaz.request.MdocRequest
 import org.multipaz.request.MdocRequestedClaim
 import org.multipaz.request.Requester
 import org.multipaz.util.Logger
-import kotlinx.datetime.Instant
+import kotlin.time.Instant
 import org.multipaz.cbor.buildCborMap
+import org.multipaz.crypto.AsymmetricKey
+import org.multipaz.crypto.X509Extension
 import kotlin.random.Random
 
 /**
  * Utilities for working with mdoc data structures.
- *
- * On the issuance-side, [generateIssuerNameSpaces] and [stripIssuerNameSpaces] can be used with
- * [org.multipaz.mdoc.mso.MobileSecurityObjectGenerator] and
- * [calculateDigestsForNameSpace] can be used to prepare PII and multiple static authentication
- * data packages (each including signed MSOs).
- *
- * On the device-side, [mergeIssuerNamesSpaces] can be used to generate the `DeviceResponse` CBOR
- * from the above-mentioned PII and static authentication data packages.
  */
 object MdocUtil {
     private const val TAG = "MdocUtil"
@@ -210,7 +202,7 @@ object MdocUtil {
      * @return a map from digest identifiers to the calculated digest.
      * @throws IllegalArgumentException if the digest algorithm isn't supported.
      */
-    fun calculateDigestsForNameSpace(
+    suspend fun calculateDigestsForNameSpace(
         nameSpaceName: String,
         issuerNameSpaces: Map<String, List<ByteArray>>,
         digestAlgorithm: Algorithm
@@ -377,8 +369,8 @@ object MdocUtil {
     /**
      * Helper function to generate a [DocumentRequest].
      *
-     * @param documentRequest a [org.multipaz.mdoc.request.DeviceRequestParser.DocRequest].
-     * @return a [DocumentRequest] representing for the given [org.multipaz.mdoc.request.DeviceRequestParser.DocRequest].
+     * @param documentRequest a [DeviceRequestParser.DocRequest].
+     * @return a [DocumentRequest] representing for the given [DeviceRequestParser.DocRequest].
      */
     fun generateDocumentRequest(
         documentRequest: DeviceRequestParser.DocRequest
@@ -430,8 +422,8 @@ object MdocUtil {
      * @param crlUrl the URL for revocation (see RFC 5280 section 4.2.1.13).
      * @return a [X509Cert] with all the required extensions.
      */
-    fun generateIacaCertificate(
-        iacaKey: EcPrivateKey,
+    suspend fun generateIacaCertificate(
+        iacaKey: AsymmetricKey,
         subject: X500Name,
         serial: ASN1Integer,
         validFrom: Instant,
@@ -442,7 +434,6 @@ object MdocUtil {
         return X509Cert.Builder(
             publicKey = iacaKey.publicKey,
             signingKey = iacaKey,
-            signatureAlgorithm = iacaKey.curve.defaultSigningAlgorithm,
             serialNumber = serial,
             subject = subject,
             issuer = subject,
@@ -450,6 +441,7 @@ object MdocUtil {
             validUntil = validUntil
         )
             .includeSubjectKeyIdentifier()
+            .includeAuthorityKeyIdentifierAsSubjectKeyIdentifier()
             // From 18013-5 table B.1: critical: Key certificate signature + CRL signature bits set
             .setKeyUsage(setOf(X509KeyUsage.CRL_SIGN, X509KeyUsage.KEY_CERT_SIGN))
             // From 18013-5 table B.1: critical, CA=true, pathLenConstraint=0
@@ -494,8 +486,7 @@ object MdocUtil {
     /**
      * Generates a Document Signing certificate according to ISO/IEC 18013-5:2021 Annex B.1.4.
      *
-     * @param iacaCert the IACA certificate.
-     * @param iacaKey the private key for the IACA certificate.
+     * @param iacaKey IACA certificate and private key.
      * @param dsKey the public part of the DS key.
      * @param subject the value to use for subject, e.g. "CN=Test DS,C=ZZ".
      * @param serial the serial number to use for the certificate.
@@ -503,19 +494,18 @@ object MdocUtil {
      * @param validUntil the point in time the certificate should be valid until.
      * @return a [X509Cert] with all the required extensions.
      */
-    fun generateDsCertificate(
-        iacaCert: X509Cert,
-        iacaKey: EcPrivateKey,
+    suspend fun generateDsCertificate(
+        iacaKey: AsymmetricKey.X509Certified,
         dsKey: EcPublicKey,
         subject: X500Name,
         serial: ASN1Integer,
         validFrom: Instant,
         validUntil: Instant,
     ): X509Cert {
+        val iacaCert = iacaKey.certChain.certificates.first()
         return X509Cert.Builder(
             publicKey = dsKey,
             signingKey = iacaKey,
-            signatureAlgorithm = iacaKey.curve.defaultSigningAlgorithm,
             serialNumber = serial,
             subject = subject,
             issuer = iacaCert.subject,
@@ -553,26 +543,27 @@ object MdocUtil {
     /**
      * Generates a self-signed reader root certificate.
      *
-     * Note that there are no requirements in ISO/IEC 18013-5:2021 for reader certificates.
+     * Note that there are no requirements in ISO/IEC 18013-5:2021 for reader root certificates.
      *
      * @param readerRootKey the private key.
      * @param subject the value to use for subject and issuer, e.g. "CN=Test Reader Root,C=ZZ".
      * @param serial the serial number to use for the certificate.
      * @param validFrom the point in time the certificate should be valid from.
      * @param validUntil the point in time the certificate should be valid until.
+     * @param crlUrl the URL for revocation (see RFC 5280 section 4.2.1.13).
      * @return a [X509Cert].
      */
-    fun generateReaderRootCertificate(
-        readerRootKey: EcPrivateKey,
+    suspend fun generateReaderRootCertificate(
+        readerRootKey: AsymmetricKey,
         subject: X500Name,
         serial: ASN1Integer,
         validFrom: Instant,
         validUntil: Instant,
+        crlUrl: String,
     ): X509Cert {
         return X509Cert.Builder(
             publicKey = readerRootKey.publicKey,
             signingKey = readerRootKey,
-            signatureAlgorithm = readerRootKey.curve.defaultSigningAlgorithm,
             serialNumber = serial,
             subject = subject,
             issuer = subject,
@@ -580,38 +571,56 @@ object MdocUtil {
             validUntil = validUntil
         )
             .includeSubjectKeyIdentifier()
+            .includeAuthorityKeyIdentifierAsSubjectKeyIdentifier()
             .setKeyUsage(setOf(X509KeyUsage.CRL_SIGN, X509KeyUsage.KEY_CERT_SIGN))
             .setBasicConstraints(true, 0)
+            // From 18013-5 table B.1: non-critical, The ‘reasons’ and ‘cRL Issuer’
+            // fields shall not be used.
+            .addExtension(
+                OID.X509_EXTENSION_CRL_DISTRIBUTION_POINTS.oid,
+                false,
+                ASN1.encode(
+                    ASN1Sequence(listOf(
+                        ASN1Sequence(listOf(
+                            ASN1TaggedObject(ASN1TagClass.CONTEXT_SPECIFIC, ASN1Encoding.CONSTRUCTED, 0, ASN1.encode(
+                                ASN1TaggedObject(ASN1TagClass.CONTEXT_SPECIFIC, ASN1Encoding.CONSTRUCTED, 0, ASN1.encode(
+                                    ASN1TaggedObject(ASN1TagClass.CONTEXT_SPECIFIC, ASN1Encoding.PRIMITIVE, 6,
+                                        crlUrl.encodeToByteArray()
+                                    )
+                                ))
+                            ))
+                        ))
+                    ))
+                )
+            )
             .build()
     }
 
     /**
-     * Generates a reader certificate.
+     * Generates a reader auth certificate according to ISO/IEC 18013-5:2021 Annex B.1.7.
      *
-     * Note that there are no requirements in ISO/IEC 18013-5:2021 for reader certificates.
-     *
-     * @param readerRootCert the reader root certificate.
-     * @param readerRootKey the private key for the reader root certificate.
+     * @param readerRootKey the reader root certificate and the corresponding private key.
      * @param readerKey the public part of the reader key.
      * @param subject the value to use for subject, e.g. "CN=Test Reader,C=ZZ".
      * @param serial the serial number to use for the certificate.
      * @param validFrom the point in time the certificate should be valid from.
      * @param validUntil the point in time the certificate should be valid until.
+     * @param extensions additional extensions to include in the reader certificate.
      * @return a [X509Cert] with all the required extensions.
      */
-    fun generateReaderCertificate(
-        readerRootCert: X509Cert,
-        readerRootKey: EcPrivateKey,
+    suspend fun generateReaderCertificate(
+        readerRootKey: AsymmetricKey.X509Certified,
         readerKey: EcPublicKey,
         subject: X500Name,
         serial: ASN1Integer,
         validFrom: Instant,
         validUntil: Instant,
+        extensions: List<X509Extension> = emptyList()
     ): X509Cert {
-        return X509Cert.Builder(
+        val readerRootCert = readerRootKey.certChain.certificates.first()
+        val builder = X509Cert.Builder(
             publicKey = readerKey,
             signingKey = readerRootKey,
-            signatureAlgorithm = readerRootKey.curve.defaultSigningAlgorithm,
             serialNumber = serial,
             subject = subject,
             issuer = readerRootCert.subject,
@@ -621,7 +630,26 @@ object MdocUtil {
             .includeSubjectKeyIdentifier()
             .setAuthorityKeyIdentifierToCertificate(readerRootCert)
             .setKeyUsage(setOf(X509KeyUsage.DIGITAL_SIGNATURE))
-            .build()
+            .addExtension(
+                OID.X509_EXTENSION_EXTENDED_KEY_USAGE.oid,
+                true,
+                ASN1.encode(ASN1Sequence(listOf(
+                    ASN1ObjectIdentifier(OID.ISO_18013_5_MDL_READER_AUTH.oid)
+                )))
+            )
+            .addExtension(
+                OID.X509_EXTENSION_CRL_DISTRIBUTION_POINTS.oid,
+                false,
+                readerRootCert.getExtensionValue(OID.X509_EXTENSION_CRL_DISTRIBUTION_POINTS.oid)!!
+            )
+        for (extension in extensions) {
+            builder.addExtension(
+                oid = extension.oid,
+                critical = extension.isCritical,
+                value = extension.data.toByteArray()
+            )
+        }
+        return builder.build()
     }
 
     /**
@@ -640,20 +668,11 @@ object MdocUtil {
         documentTypeRepository: DocumentTypeRepository,
         mdocCredential: MdocCredential?,
     ): List<MdocRequestedClaim> {
-        val mdocDocumentType = documentTypeRepository.getDocumentTypeForMdoc(docType)?.mdocDocumentType
         val ret = mutableListOf<MdocRequestedClaim>()
         for ((namespaceName, listOfDe) in requestedData) {
             for ((dataElementName, intentToRetain) in listOfDe) {
-                val attribute =
-                    mdocDocumentType?.namespaces
-                        ?.get(namespaceName)
-                        ?.dataElements
-                        ?.get(dataElementName)
-                        ?.attribute
                 ret.add(
                     MdocRequestedClaim(
-                        displayName = attribute?.displayName ?: dataElementName,
-                        attribute = attribute,
                         namespaceName = namespaceName,
                         dataElementName = dataElementName,
                         intentToRetain = intentToRetain,
@@ -666,19 +685,65 @@ object MdocUtil {
 }
 
 /**
+ * Parses a version string used in ISO mdoc data structures into major and minor versions.
+ *
+ * @return the major and minor version
+ * @throws IllegalArgumentException if unable to parse the string.
+ */
+fun String.parseMdocVersion(): Pair<Int, Int> {
+    val splits = this.split(".")
+    require(splits.size == 2) { "Expected version string '$this' to only have two components" }
+    val major = try {
+        splits[0].toInt()
+    } catch (e: NumberFormatException) {
+        throw IllegalArgumentException("Expected first component of '$this' to be an integer", e)
+    }
+    val minor = try {
+        splits[1].toInt()
+    } catch (e: NumberFormatException) {
+        throw IllegalArgumentException("Expected second component of '$this' to be an integer", e)
+    }
+    return Pair(major, minor)
+}
+
+/**
+ * Compares two ISO mdoc versions.
+ *
+ * @param otherVersion the other ISO mdoc version.
+ * @return positive number if greater than [otherVersion], negative number of [otherVersion] is greater, 0 if the
+ *   versions are equal.
+ * @throws IllegalArgumentException if unable to parse the string.
+ */
+fun String.mdocVersionCompareTo(otherVersion: String): Int {
+    val (major, minor) = this.parseMdocVersion()
+    val (otherMajor, otherMinor) = otherVersion.parseMdocVersion()
+    if (major > otherMajor) {
+        return 1
+    } else if (major < otherMajor) {
+        return -1
+    }
+    if (minor > otherMinor) {
+        return 1
+    } else if (minor < otherMinor) {
+        return -1
+    }
+    return 0
+}
+
+/**
  * Convert to a [MdocRequest].
  *
  * @param documentTypeRepository a [DocumentTypeRepository] used to determine the display name for claims.
  * @param mdocCredential if set, the returned list is filtered so it only references data
  *     elements available in the credential.
  * @param requesterAppId the appId if an app is making the request or `null`.
- * @param requesterWebsiteOrigin the website origin if a website is making the request or `null`.
+ * @param requesterOrigin the origin or `null`.
  */
 fun DeviceRequestParser.DocRequest.toMdocRequest(
     documentTypeRepository: DocumentTypeRepository,
     mdocCredential: MdocCredential?,
     requesterAppId: String? = null,
-    requesterWebsiteOrigin: String? = null,
+    requesterOrigin: String? = null,
 ): MdocRequest {
     val requestedData = mutableMapOf<String, MutableList<Pair<String, Boolean>>>()
     for (namespaceName in namespaces) {
@@ -696,7 +761,7 @@ fun DeviceRequestParser.DocRequest.toMdocRequest(
                 null
             },
             appId = requesterAppId,
-            websiteOrigin = requesterWebsiteOrigin
+            origin = requesterOrigin
         ),
         requestedClaims = MdocUtil.generateRequestedClaims(
             docType,
@@ -704,7 +769,8 @@ fun DeviceRequestParser.DocRequest.toMdocRequest(
             documentTypeRepository,
             mdocCredential
         ),
-        docType = docType
+        docType = docType,
+        zkSystemSpecs = this.zkSystemSpecs
     )
 }
 
@@ -731,7 +797,7 @@ private fun filterConsentFields(
     if (credential == null) {
         return list
     }
-    val staticAuthData = StaticAuthDataParser(credential.issuerProvidedData).parse()
+    val staticAuthData = StaticAuthDataParser(credential.issuerProvidedData.toByteArray()).parse()
     val availableDataElements = calcAvailableDataElements(staticAuthData.digestIdMapping)
     return list.filter { mdocConsentField ->
         availableDataElements[mdocConsentField.namespaceName]

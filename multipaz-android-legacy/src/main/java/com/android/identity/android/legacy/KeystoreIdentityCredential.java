@@ -19,7 +19,6 @@ package com.android.identity.android.legacy;
 import android.content.Context;
 import android.icu.util.Calendar;
 import android.security.keystore.KeyProperties;
-import android.util.Log;
 import android.util.Pair;
 
 import androidx.annotation.NonNull;
@@ -28,6 +27,7 @@ import androidx.biometric.BiometricPrompt;
 
 import org.multipaz.document.DocumentStore;
 import org.multipaz.document.NameSpacedData;
+import org.multipaz.util.Logger;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -75,7 +75,7 @@ import co.nstant.in.cbor.model.DataItem;
 import co.nstant.in.cbor.model.Map;
 import co.nstant.in.cbor.model.UnicodeString;
 
-class KeystoreIdentityCredential extends IdentityCredential {
+public class KeystoreIdentityCredential extends IdentityCredential {
 
     private static final String TAG = "KSIdentityCredential"; // limit to <= 23 chars
     private final KeystorePresentationSession mPresentationSession;
@@ -673,7 +673,7 @@ class KeystoreIdentityCredential extends IdentityCredential {
 
         final boolean perPresentationAuthObtained = didUserAuth();
 
-        Log.d(TAG, "checkAccessSingleProfile id " + profile.mAccessControlProfileId.getId()
+        Logger.INSTANCE.d(TAG, "checkAccessSingleProfile id " + profile.mAccessControlProfileId.getId()
             + " user_auth " + profile.isUserAuthenticationRequired()
             + " perPresentationAuthObtained " + perPresentationAuthObtained);
         if (profile.isUserAuthenticationRequired()) {
@@ -735,14 +735,25 @@ class KeystoreIdentityCredential extends IdentityCredential {
 
     @Override
     public @NonNull
+    List<List<X509Certificate>> getAuthKeyChainsNeedingCertification(byte[] challenge) {
+        return mData.getAuthKeyChainsNeedingCertification(challenge);
+    }
+
+    @Override
+    public @NonNull
     Collection<X509Certificate> getAuthKeysNeedingCertification() {
         return mData.getAuthKeysNeedingCertification();
     }
 
-    @SuppressWarnings("deprecation")
     @Override
     public void storeStaticAuthenticationData(@NonNull X509Certificate authenticationKey,
-            @NonNull byte[] staticAuthData) throws UnknownAuthenticationKeyException {
+        @NonNull byte[] staticAuthData) throws UnknownAuthenticationKeyException {
+        mData.storeStaticAuthenticationData(authenticationKey, null, staticAuthData);
+    }
+
+    @Override
+    public void storeStaticAuthenticationData(@NonNull PublicKey authenticationKey,
+        @NonNull byte[] staticAuthData) throws UnknownAuthenticationKeyException {
         mData.storeStaticAuthenticationData(authenticationKey, null, staticAuthData);
     }
 
@@ -755,6 +766,14 @@ class KeystoreIdentityCredential extends IdentityCredential {
         mData.storeStaticAuthenticationData(authenticationKey, expirationDate, staticAuthData);
     }
 
+    @Override
+    public void storeStaticAuthenticationData(
+        @NonNull PublicKey authenticationKey,
+        @NonNull Calendar expirationDate,
+        @NonNull byte[] staticAuthData)
+        throws UnknownAuthenticationKeyException {
+        mData.storeStaticAuthenticationData(authenticationKey, expirationDate, staticAuthData);
+    }
 
     @Override
     public @NonNull
@@ -851,5 +870,31 @@ class KeystoreIdentityCredential extends IdentityCredential {
             throw new IllegalStateException("Error loading data");
         }
         return mData.getCredentialKeyAlias();
+    }
+
+    /**
+     * Gets a list of certified authentication keys.
+     *
+     * @return the certified authentication keys aliases and associated issuer-provided data.
+     */
+    public @NonNull List<kotlin.Pair<String, byte[]>> getAuthenticationKeys() {
+        if (!loadData()) {
+            throw new IllegalStateException("Error loading data");
+        }
+        return mData.getAuthenticationKeys();
+    }
+
+    @Override
+    @Nullable
+    public byte[] peekNextAuthenticationKey() {
+        Pair<PrivateKey, byte[]> authKeyPair =
+            mData.selectAuthenticationKey(
+                /* allowUsingExhaustedKeys= */ false,
+                /* allowUsingExpiredKeys= */ false,
+                /* incrementKeyUsageCount= */ false);
+        if (authKeyPair != null) {
+          return authKeyPair.second;
+        }
+        return null;
     }
 }

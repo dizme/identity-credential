@@ -10,7 +10,7 @@ import org.multipaz.storage.base.BaseStorageTable
 import org.multipaz.storage.StorageTableSpec
 import org.multipaz.storage.base.SqlStatementMaker
 import org.multipaz.util.toBase64Url
-import kotlinx.datetime.Instant
+import kotlin.time.Instant
 import kotlinx.io.bytestring.ByteString
 import kotlin.random.Random
 
@@ -198,6 +198,36 @@ internal class AndroidStorageTable(
             val list = mutableListOf<String>()
             while (cursor.moveToNext()) {
                 list.add(cursor.getString(0))
+            }
+            cursor.close()
+            list
+        }
+    }
+
+    override suspend fun enumerateWithData(
+        partitionId: String?,
+        afterKey: String?,
+        limit: Int
+    ): List<Pair<String, ByteString>> {
+        checkPartition(partitionId)
+        checkLimit(limit)
+        if (limit == 0) {
+            return listOf()
+        }
+        return storage.withDatabase { database ->
+            val cursor = database.query(
+                sql.tableName,
+                arrayOf("id", "data"),
+                sql.enumerateConditionWithExpiration(storage.clock.now().epochSeconds),
+                whereArgs(afterKey ?: "", partitionId),
+                null,
+                null,
+                "id",
+                if (limit < Int.MAX_VALUE) "0, $limit" else null
+            )
+            val list = mutableListOf<Pair<String, ByteString>>()
+            while (cursor.moveToNext()) {
+                list.add(Pair(cursor.getString(0), ByteString(cursor.getBlob(1))))
             }
             cursor.close()
             list

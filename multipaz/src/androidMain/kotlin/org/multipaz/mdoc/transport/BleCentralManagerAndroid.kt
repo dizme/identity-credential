@@ -22,7 +22,6 @@ import org.multipaz.cbor.Cbor
 import org.multipaz.cbor.Tagged
 import org.multipaz.context.applicationContext
 import org.multipaz.crypto.Algorithm
-import org.multipaz.crypto.Crypto
 import org.multipaz.crypto.EcPublicKey
 import org.multipaz.util.Logger
 import org.multipaz.util.UUID
@@ -31,6 +30,7 @@ import org.multipaz.util.toJavaUuid
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -40,6 +40,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.io.bytestring.ByteStringBuilder
 import kotlinx.io.bytestring.buildByteString
+import org.multipaz.crypto.Hkdf
 import org.multipaz.util.appendByteArray
 import org.multipaz.util.appendUInt32
 import org.multipaz.util.getUInt32
@@ -53,6 +54,10 @@ import kotlin.time.Duration.Companion.seconds
 internal class BleCentralManagerAndroid : BleCentralManager {
     companion object {
         private const val TAG = "BleCentralManagerAndroid"
+
+        @Volatile
+        private var deferredCloseJob: Job? = null
+        private var deferredCloseSocket: BluetoothSocket? = null
     }
 
     private lateinit var stateCharacteristicUuid: UUID
@@ -144,6 +149,21 @@ internal class BleCentralManagerAndroid : BleCentralManager {
     init {
         if (bluetoothManager.adapter == null) {
             throw IllegalStateException("Bluetooth is not available on this device")
+        }
+        if (deferredCloseJob != null) {
+            Logger.i(TAG, "Closing deferred L2CAP socket (via init)")
+            try {
+                deferredCloseSocket?.close()
+            } catch (e: Throwable) {
+                Logger.e(TAG, "Error closing L2CAP socket (via init)", e)
+            }
+            deferredCloseSocket = null
+            try {
+                deferredCloseJob?.cancel()
+            } catch (e: Throwable) {
+                Logger.e(TAG, "Error canceling deferred closing job (via init)", e)
+            }
+            deferredCloseJob = null
         }
     }
 
@@ -312,6 +332,17 @@ internal class BleCentralManagerAndroid : BleCentralManager {
             }
         }
 
+        @Suppress("DEPRECATION")
+        @Deprecated(
+            "Used natively in Android 12 and lower",
+            ReplaceWith("onCharacteristicRead(gatt, characteristic, characteristic.value, status)")
+        )
+        override fun onCharacteristicRead(
+            gatt: BluetoothGatt?,
+            characteristic: BluetoothGattCharacteristic?,
+            status: Int
+        ) = onCharacteristicRead(gatt!!, characteristic!!, characteristic.value, status)
+
         override fun onCharacteristicWrite(
             gatt: BluetoothGatt?,
             characteristic: BluetoothGattCharacteristic?,
@@ -370,6 +401,16 @@ internal class BleCentralManagerAndroid : BleCentralManager {
                 onError(Error("onCharacteristicChanged failed", error))
             }
         }
+
+        @Suppress("DEPRECATION")
+        @Deprecated(
+            "Used natively in Android 12 and lower",
+            ReplaceWith("onCharacteristicChanged(gatt, characteristic, characteristic.value)")
+        )
+        override fun onCharacteristicChanged(
+            gatt: BluetoothGatt?,
+            characteristic: BluetoothGattCharacteristic?
+        ) = onCharacteristicChanged(gatt!!, characteristic!!, characteristic.value)
     }
 
     var incomingMessage = ByteStringBuilder()
@@ -548,8 +589,8 @@ internal class BleCentralManagerAndroid : BleCentralManager {
 
         val ikm = Cbor.encode(Tagged(24, Bstr(Cbor.encode(eSenderKey.toCoseKey().toDataItem()))))
         val info = "BLEIdent".encodeToByteArray()
-        val salt = byteArrayOf()
-        expectedIdentValue = Crypto.hkdf(Algorithm.HMAC_SHA256, ikm, salt, info, 16)
+        val salt = null
+        expectedIdentValue = Hkdf.deriveKey(Algorithm.HMAC_SHA256, ikm, salt, info, 16)
 
         suspendCancellableCoroutine<Boolean> { continuation ->
             setWaitCondition(WaitState.GET_READER_IDENT, continuation)
@@ -600,25 +641,26 @@ internal class BleCentralManagerAndroid : BleCentralManager {
         characteristic: BluetoothGattCharacteristic,
         value: ByteArray,
     ) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            val rc = gatt!!.writeCharacteristic(
-                characteristic,
-                value,
-                BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
-            )
-            if (rc != BluetoothStatusCodes.SUCCESS) {
-                throw Error("Error writing to characteristic ${characteristic.uuid}, rc=$rc")
-            }
-        } else {
-            @Suppress("DEPRECATION")
-            characteristic.setValue(value)
-            @Suppress("DEPRECATION")
-            if (!gatt!!.writeCharacteristic(characteristic)) {
-                throw Error("Error writing to characteristic ${characteristic.uuid}")
-            }
-        }
-        suspendCancellableCoroutine<Boolean> { continuation ->
+        suspendCancellableCoroutine { continuation ->
             setWaitCondition(WaitState.CHARACTERISTIC_WRITE_COMPLETED, continuation)
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                val rc = gatt!!.writeCharacteristic(
+                    characteristic,
+                    value,
+                    BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                )
+                if (rc != BluetoothStatusCodes.SUCCESS) {
+                    throw Error("Error writing to characteristic ${characteristic.uuid}, rc=$rc")
+                }
+            } else {
+                @Suppress("DEPRECATION")
+                characteristic.setValue(value)
+                @Suppress("DEPRECATION")
+                if (!gatt!!.writeCharacteristic(characteristic)) {
+                    throw Error("Error writing to characteristic ${characteristic.uuid}")
+                }
+            }
         }
     }
 
@@ -655,11 +697,19 @@ internal class BleCentralManagerAndroid : BleCentralManager {
         gatt?.close()
         gatt = null
         device = null
-        // Needed since l2capSocket.outputStream.flush() isn't working
+        // Need to wait a short while since close() discards data in-flight.
         l2capSocket?.let {
-            CoroutineScope(Dispatchers.IO).launch() {
-                delay(5000)
-                it.close()
+            deferredCloseSocket = it
+            deferredCloseJob = CoroutineScope(Dispatchers.IO).launch() {
+                delay(2.seconds)
+                Logger.i(TAG, "Closing deferred L2CAP socket (via delay)")
+                try {
+                    deferredCloseSocket?.close()
+                } catch (e: Throwable) {
+                    Logger.e(TAG, "Error closing L2CAP socket (via delay)", e)
+                }
+                deferredCloseSocket = null
+                deferredCloseJob = null
             }
         }
         l2capSocket = null

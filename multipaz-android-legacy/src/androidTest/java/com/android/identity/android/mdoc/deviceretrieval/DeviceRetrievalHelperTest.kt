@@ -17,7 +17,9 @@ package com.android.identity.android.mdoc.deviceretrieval
 
 import android.os.ConditionVariable
 import androidx.test.platform.app.InstrumentationRegistry
+import com.android.identity.android.legacy.Crypto.createEcPrivateKey
 import com.android.identity.android.mdoc.engagement.QrEngagementHelper
+import com.android.identity.android.mdoc.sessionencryption.SessionEncryption
 import com.android.identity.android.mdoc.transport.DataTransport
 import com.android.identity.android.mdoc.transport.DataTransportOptions
 import com.android.identity.android.mdoc.transport.DataTransportTcp
@@ -35,12 +37,10 @@ import org.multipaz.cose.Cose
 import org.multipaz.cose.Cose.coseSign1Sign
 import org.multipaz.cose.CoseLabel
 import org.multipaz.cose.CoseNumberLabel
-import org.multipaz.credential.CredentialLoader
 import org.multipaz.document.Document
 import org.multipaz.document.DocumentStore
 import org.multipaz.document.NameSpacedData
 import org.multipaz.crypto.Algorithm
-import org.multipaz.crypto.Crypto.createEcPrivateKey
 import org.multipaz.crypto.EcCurve
 import org.multipaz.crypto.EcPrivateKey
 import org.multipaz.crypto.EcPublicKey
@@ -48,7 +48,6 @@ import org.multipaz.crypto.X500Name
 import org.multipaz.crypto.X509Cert
 import org.multipaz.crypto.X509CertChain
 import org.multipaz.crypto.X509KeyUsage
-import org.multipaz.document.SimpleDocumentMetadata
 import org.multipaz.mdoc.credential.MdocCredential
 import org.multipaz.mdoc.mso.MobileSecurityObjectGenerator
 import org.multipaz.mdoc.mso.StaticAuthDataGenerator
@@ -59,7 +58,6 @@ import org.multipaz.mdoc.request.DeviceRequestParser.DocRequest
 import org.multipaz.mdoc.response.DeviceResponseGenerator
 import org.multipaz.mdoc.response.DeviceResponseParser
 import org.multipaz.mdoc.response.DocumentGenerator
-import org.multipaz.mdoc.sessionencryption.SessionEncryption
 import org.multipaz.mdoc.util.MdocUtil.calculateDigestsForNameSpace
 import org.multipaz.mdoc.util.MdocUtil.generateDocumentRequest
 import org.multipaz.mdoc.util.MdocUtil.generateIssuerNameSpaces
@@ -72,15 +70,16 @@ import org.multipaz.storage.Storage
 import org.multipaz.storage.android.AndroidStorage
 import org.multipaz.util.Constants
 import kotlinx.coroutines.runBlocking
-import kotlinx.datetime.Clock.System.now
-import kotlinx.datetime.Instant
-import kotlinx.datetime.Instant.Companion.fromEpochMilliseconds
-import org.bouncycastle.jce.provider.BouncyCastleProvider
+import kotlin.time.Clock.System.now
+import kotlin.time.Instant
+import kotlin.time.Instant.Companion.fromEpochMilliseconds
 import org.junit.Assert
 import org.junit.Before
 import org.junit.Test
+import org.multipaz.crypto.AsymmetricKey
+import org.multipaz.document.buildDocumentStore
 import org.multipaz.mdoc.role.MdocRole
-import java.security.Security
+import org.multipaz.prompt.Reason
 import java.util.Calendar
 import java.util.concurrent.Executor
 import java.util.concurrent.Executors
@@ -109,28 +108,19 @@ class DeviceRetrievalHelperTest {
     private lateinit var documentStore: DocumentStore
 
     @Before
-    fun setUp() {
-        // This is needed to prefer BouncyCastle bundled with the app instead of the Conscrypt
-        // based implementation included in Android.
-        Security.removeProvider(BouncyCastleProvider.PROVIDER_NAME)
-        Security.addProvider(BouncyCastleProvider())
+    fun setUp() = runBlocking {
+        // Do NOT add BouncyCastle at setup time - we want to run tests against the normal AndroidOpenSSL JCA provider
 
         initializeApplication(InstrumentationRegistry.getInstrumentation().targetContext)
 
         storage = AndroidStorage(":memory:")
-        secureAreaRepository = SecureAreaRepository.build {
-            add(AndroidKeystoreSecureArea.create(storage))
-        }
-        val credentialLoader = CredentialLoader()
-        credentialLoader.addCredentialImplementation(MdocCredential::class) { document ->
-            MdocCredential(document)
-        }
-        documentStore = DocumentStore(
+        secureAreaRepository = SecureAreaRepository.Builder()
+            .add(AndroidKeystoreSecureArea.create(storage))
+            .build()
+        documentStore = buildDocumentStore(
             storage = storage,
-            secureAreaRepository = secureAreaRepository,
-            credentialLoader = credentialLoader,
-            documentMetadataFactory = SimpleDocumentMetadata::create
-        )
+            secureAreaRepository = secureAreaRepository
+        ) {}
     }
 
     private suspend fun asyncSetup() {
@@ -186,8 +176,7 @@ class DeviceRetrievalHelperTest {
         documentSignerKey = createEcPrivateKey(EcCurve.P256)
         documentSignerCert = X509Cert.Builder(
             publicKey = documentSignerKey.publicKey,
-            signingKey = documentSignerKey,
-            signatureAlgorithm = documentSignerKey.curve.defaultSigningAlgorithm,
+            signingKey = AsymmetricKey.anonymous(documentSignerKey, documentSignerKey.curve.defaultSigningAlgorithm),
             serialNumber = ASN1Integer(1L),
             subject = X500Name.fromName("CN=State of Utopia"),
             issuer = X500Name.fromName("CN=State of Utopia"),
@@ -330,12 +319,17 @@ class DeviceRetrievalHelperTest {
                     data!!
                 )
                 Assert.assertNull(second)
-                val dr = DeviceResponseParser(
-                    first!!,
-                    encodedSessionTranscript
-                )
-                    .setEphemeralReaderKey(eReaderKey)
+                val dr = runBlocking {
+                    DeviceResponseParser(
+                        first!!,
+                        encodedSessionTranscript
+                    )
+                    .setEphemeralReaderKey(AsymmetricKey.anonymous(
+                        privateKey = eReaderKey,
+                        algorithm = eReaderKey.curve.defaultKeyAgreementAlgorithm
+                    ))
                     .parse()
+                }
                 Assert.assertEquals(Constants.DEVICE_RESPONSE_STATUS_OK, dr.status)
                 Assert.assertEquals("1.0", dr.version)
                 val documents: Collection<DeviceResponseParser.Document> = dr.documents
@@ -411,9 +405,9 @@ class DeviceRetrievalHelperTest {
                             .setIssuerNamespaces(mergedIssuerNamespaces)
                             .setDeviceNamespacesSignature(
                                 deviceSignedData,
-                                mdocCredential.secureArea,
-                                mdocCredential.alias,
-                                null
+                                secureArea = mdocCredential.secureArea,
+                                keyAlias = mdocCredential.alias,
+                                unlockReason = Reason.Unspecified
                             )
                             .generate()
                     )

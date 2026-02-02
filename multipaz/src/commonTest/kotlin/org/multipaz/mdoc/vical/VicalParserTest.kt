@@ -1,5 +1,6 @@
 package org.multipaz.mdoc.vical
 
+import kotlinx.coroutines.test.runTest
 import org.multipaz.crypto.X509Cert
 import org.multipaz.util.fromBase64Url
 import kotlin.collections.joinToString
@@ -933,7 +934,7 @@ yPxFAiAaQMxnrcRJopU6SRrNTq1x29UlFJdaE7XHvdXu1sXnDA==
     }
 
     @Test
-    fun testAustroadsVical() {
+    fun testAustroadsVical() = runTest {
         val signedVical = SignedVical.parse(AUSTROADS_VICAL_20240919_BASE64.fromBase64Url())
 
         // Check the VICAL contains a single certificate...
@@ -991,22 +992,22 @@ Mbff+DlHy77+wXISb35NiZ8FdVHgC2ut4fDQTRN4
         )
         assertEquals(
             "org.iso.18013.5.1.mDL, org.iso.23220.photoid.1, org.micov.1, org.iso.7367.1.mVRC",
-            ci.docType.joinToString()
+            ci.docTypes.joinToString()
         )
         assertNull(ci.certificateProfiles)
     }
 
     @Test
-    fun testAamvaVical() {
+    fun testAamvaVical() = runTest {
         val signedVical = SignedVical.parse(AAMVA_VICAL_20240925_BASE64.fromBase64Url())
 
         // Check the VICAL contains three certificates.
         assertEquals(3, signedVical.vicalProviderCertificateChain.certificates.size)
 
         // Check the root certificate is the AAMVA root
-        assertContentEquals(
-            X509Cert.fromPem(AAMVA_DTS_ROOT_PEM).encodedCertificate,
-            signedVical.vicalProviderCertificateChain.certificates[2].encodedCertificate
+        assertEquals(
+            X509Cert.fromPem(AAMVA_DTS_ROOT_PEM),
+            signedVical.vicalProviderCertificateChain.certificates[2]
         )
 
         // Check VICAL data
@@ -1055,7 +1056,7 @@ A01EUDAKBggqhkjOPQQDAgNIADBFAiEAnX3+E4E5dQ+5G1rmStJTW79ZAiDTabyL
         )
         assertEquals(
             "org.iso.18013.5.1.mDL",
-            ci.docType.joinToString()
+            ci.docTypes.joinToString()
         )
         assertNull(ci.certificateProfiles)
     }
