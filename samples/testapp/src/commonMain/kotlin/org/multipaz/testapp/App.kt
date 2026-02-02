@@ -87,9 +87,11 @@ import org.multipaz.documenttype.knowntypes.AgeVerification
 import org.multipaz.documenttype.knowntypes.DrivingLicense
 import org.multipaz.documenttype.knowntypes.EUPersonalID
 import org.multipaz.documenttype.knowntypes.IDPass
+import org.multipaz.documenttype.knowntypes.ItalianDrivingLicense
 import org.multipaz.documenttype.knowntypes.Loyalty
 import org.multipaz.documenttype.knowntypes.PhotoID
 import org.multipaz.documenttype.knowntypes.UtopiaMovieTicket
+import org.multipaz.documenttype.knowntypes.WalletAttestation
 import org.multipaz.mdoc.rical.SignedRical
 import org.multipaz.mdoc.util.MdocUtil
 import org.multipaz.mdoc.vical.SignedVical
@@ -330,13 +332,8 @@ class App private constructor (val promptModel: PromptModel) {
 
     private suspend fun documentTypeRepositoryInit() {
         documentTypeRepository = DocumentTypeRepository()
-        documentTypeRepository.addDocumentType(DrivingLicense.getDocumentType())
-        documentTypeRepository.addDocumentType(PhotoID.getDocumentType())
-        documentTypeRepository.addDocumentType(EUPersonalID.getDocumentType())
-        documentTypeRepository.addDocumentType(UtopiaMovieTicket.getDocumentType())
-        documentTypeRepository.addDocumentType(IDPass.getDocumentType())
-        documentTypeRepository.addDocumentType(AgeVerification.getDocumentType())
-        documentTypeRepository.addDocumentType(Loyalty.getDocumentType())
+        documentTypeRepository.addDocumentType(ItalianDrivingLicense.getDocumentType())
+        documentTypeRepository.addDocumentType(WalletAttestation.getDocumentType())
     }
 
     private suspend fun documentStoreInit() {

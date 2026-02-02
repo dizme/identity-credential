@@ -42,8 +42,10 @@ import org.multipaz.documenttype.knowntypes.AgeVerification
 import org.multipaz.documenttype.knowntypes.Loyalty
 import org.multipaz.documenttype.knowntypes.DrivingLicense
 import org.multipaz.documenttype.knowntypes.EUPersonalID
+import org.multipaz.documenttype.knowntypes.ItalianDrivingLicense
 import org.multipaz.documenttype.knowntypes.PhotoID
 import org.multipaz.documenttype.knowntypes.UtopiaMovieTicket
+import org.multipaz.documenttype.knowntypes.WalletAttestation
 import org.multipaz.mdoc.credential.MdocCredential
 import org.multipaz.mdoc.issuersigned.buildIssuerNamespaces
 import org.multipaz.mdoc.mso.MobileSecurityObject
@@ -146,12 +148,8 @@ object TestAppUtils {
 
 
     val provisionedDocumentTypes = listOf(
-        DrivingLicense.getDocumentType(),
-        PhotoID.getDocumentType(),
-        EUPersonalID.getDocumentType(),
-        UtopiaMovieTicket.getDocumentType(),
-        AgeVerification.getDocumentType(),
-        Loyalty.getDocumentType(),
+        ItalianDrivingLicense.getDocumentType(),
+        WalletAttestation.getDocumentType(),
     )
 
     suspend fun provisionTestDocuments(
@@ -286,6 +284,32 @@ object TestAppUtils {
                 return null
             }
             DocumentCreationMode.NORMAL -> {
+                provisionDocument(
+                    documentStore,
+                    secureArea,
+                    secureAreaCreateKeySettingsFunc,
+                    dsKey,
+                    deviceKeyAlgorithm,
+                    deviceKeyMacAlgorithm,
+                    numCredentialsPerDomain,
+                    ItalianDrivingLicense.getDocumentType(),
+                    "Erika",
+                    "Erika's Italian Driving License",
+                    Res.drawable.driving_license_card_art
+                )
+                provisionDocument(
+                    documentStore,
+                    secureArea,
+                    secureAreaCreateKeySettingsFunc,
+                    dsKey,
+                    deviceKeyAlgorithm,
+                    deviceKeyMacAlgorithm,
+                    numCredentialsPerDomain,
+                    WalletAttestation.getDocumentType(),
+                    "Erika",
+                    "Erika's Wallet Attestation",
+                    Res.drawable.driving_license_card_art
+                )
                 provisionDocument(
                     documentStore,
                     secureArea,

@@ -19,7 +19,7 @@
 	</array>
 	<key>com.apple.security.application-groups</key>
 	<array>
-		<string>group.org.multipaz.testapp.sharedgroup</string>
+		<string>group.it.etuitus.org.multipaz.testapp.sharedgroup</string>
 	</array>
 </dict>
 </plist>
