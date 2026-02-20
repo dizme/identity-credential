@@ -62,6 +62,7 @@ kotlin {
             export(project(":multipaz"))
             export(project(":multipaz-doctypes"))
             export(project(":multipaz-longfellow"))
+            export(project(":multipaz-dcapi"))
             export(libs.ktor.client.darwin)
             export(libs.kotlinx.io.bytestring)
             export(libs.kotlinx.datetime)
@@ -83,6 +84,7 @@ kotlin {
                 api(project(":multipaz"))
                 api(project(":multipaz-doctypes"))
                 api(project(":multipaz-longfellow"))
+                api(project(":multipaz-dcapi"))
                 api(libs.ktor.client.darwin)
                 api(libs.kotlinx.io.bytestring)
                 api(libs.kotlinx.datetime)
@@ -230,6 +232,3 @@ tasks["compileKotlinIosArm64"].dependsOn("kspCommonMainKotlinMetadata")
 tasks["compileKotlinIosSimulatorArm64"].dependsOn("kspCommonMainKotlinMetadata")
 tasks["compileKotlinWasmJs"].dependsOn("kspCommonMainKotlinMetadata")
 
-subprojects {
-	apply(plugin = "org.jetbrains.dokka")
-}

@@ -19,8 +19,8 @@ let package = Package(
             ]
         ),
         .binaryTarget(
-             name: "Multipaz",
-             path: "xcframework/build/XCFrameworks/release/Multipaz.xcframework"
+            name: "Multipaz",
+            path: "xcframework/build/XCFrameworks/release/Multipaz.xcframework"
          )
    ]
 )

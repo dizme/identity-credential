@@ -48,6 +48,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.launchIn
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -78,8 +81,8 @@ import org.multipaz.crypto.EcPublicKey
 import org.multipaz.crypto.X500Name
 import org.multipaz.crypto.X509Cert
 import org.multipaz.crypto.X509CertChain
-import org.multipaz.digitalcredentials.Default
 import org.multipaz.digitalcredentials.DigitalCredentials
+import org.multipaz.digitalcredentials.getDefault
 import org.multipaz.document.DocumentStore
 import org.multipaz.document.buildDocumentStore
 import org.multipaz.documenttype.DocumentTypeRepository
@@ -98,9 +101,9 @@ import org.multipaz.mdoc.vical.SignedVical
 import org.multipaz.mdoc.zkp.ZkSystemRepository
 import org.multipaz.mdoc.zkp.longfellow.LongfellowZkSystem
 import org.multipaz.nfc.NfcTagReader
-import org.multipaz.presentment.model.PresentmentSource
-import org.multipaz.presentment.model.SimplePresentmentSource
-import org.multipaz.presentment.model.uriSchemePresentment
+import org.multipaz.presentment.PresentmentSource
+import org.multipaz.presentment.SimplePresentmentSource
+import org.multipaz.presentment.uriSchemePresentment
 import org.multipaz.prompt.PromptModel
 import org.multipaz.prompt.promptModelRequestConsent
 import org.multipaz.prompt.promptModelSilentConsent
@@ -123,7 +126,6 @@ import org.multipaz.testapp.ui.ConsentPromptScreen
 import org.multipaz.testapp.ui.CredentialClaimsViewerScreen
 import org.multipaz.testapp.ui.CredentialViewerScreen
 import org.multipaz.testapp.ui.DcRequestScreen
-import org.multipaz.testapp.ui.DocumentCarouselScreen
 import org.multipaz.testapp.ui.DocumentStoreScreen
 import org.multipaz.testapp.ui.DocumentViewerScreen
 import org.multipaz.testapp.ui.IsoMdocMultiDeviceTestingScreen
@@ -363,7 +365,7 @@ class App private constructor (val promptModel: PromptModel) {
         secureAreaRepository = secureAreaRepositoryBuilder.build()
         documentStore = buildDocumentStore(
             storage = TestAppConfiguration.storage,
-            secureAreaRepository = secureAreaRepository
+            secureAreaRepository = secureAreaRepository,
         ) {
             //setTableSpec(testDocumentTableSpec)
         }
@@ -372,7 +374,7 @@ class App private constructor (val promptModel: PromptModel) {
     private suspend fun documentModelInit() {
         documentModel = DocumentModel(
             documentStore = documentStore,
-            documentTypeRepository = documentTypeRepository
+            documentTypeRepository = documentTypeRepository,
         )
     }
 
@@ -700,29 +702,73 @@ class App private constructor (val promptModel: PromptModel) {
         }
     }
 
+    lateinit var digitalCredentials: DigitalCredentials
+
     /**
-     * Starts export documents via the W3C Digital Credentials API on the platform, if available.
+     * Starts exporting documents via the W3C Digital Credentials API on the platform, if available.
      *
      * This should be called when the main wallet application UI is running.
      */
     private suspend fun digitalCredentialsInit() {
-        if (DigitalCredentials.Default.available) {
-            val dc = DigitalCredentials.Default
-            CoroutineScope(Dispatchers.Default).launch {
-                dc.setSelectedProtocols(
-                    settingsModel.dcApiProtocols.value
-                )
-                dc.startExportingCredentials(
+        digitalCredentials = DigitalCredentials.getDefault()
+        if (digitalCredentials.registerAvailable) {
+            try {
+                digitalCredentials.register(
                     documentStore = documentStore,
                     documentTypeRepository = documentTypeRepository,
+                    selectedProtocols = settingsModel.dcApiProtocols.value
                 )
+            } catch (e: Throwable) {
+                Logger.w(TAG, "Error registering with W3C DC API", e)
             }
 
+            // Re-register if document store changes...
             CoroutineScope(Dispatchers.Default).launch {
-                settingsModel.dcApiProtocols.collect {
-                    dc.setSelectedProtocols(it)
-                }
+                documentStore.eventFlow
+                    .onEach { event ->
+                        Logger.i(TAG, "DocumentStore event ${event::class.simpleName} ${event.documentId}")
+                        try {
+                            digitalCredentials.register(
+                                documentStore = documentStore,
+                                documentTypeRepository = documentTypeRepository,
+                                selectedProtocols = settingsModel.dcApiProtocols.value
+                            )
+                        } catch (e: Throwable) {
+                            Logger.w(TAG, "Error registering with W3C DC API", e)
+                        }
+                    }
+                    .launchIn(this)
             }
+
+            // Re-register if selected protocols change...
+            CoroutineScope(Dispatchers.Default).launch {
+                settingsModel.dcApiProtocols
+                    .drop(1) // drop initial value, we just registered above.
+                    .collect {
+                        Logger.i(TAG, "DC protocols changed: $it")
+                        try {
+                            digitalCredentials.register(
+                                documentStore = documentStore,
+                                documentTypeRepository = documentTypeRepository,
+                                selectedProtocols = settingsModel.dcApiProtocols.value
+                            )
+                        } catch (e: Throwable) {
+                            Logger.w(TAG, "Error registering with W3C DC API", e)
+                        }
+                    }
+            }
+        }
+    }
+
+    private suspend fun digitalCredentialsReregister() {
+        try {
+            digitalCredentials.register(
+                documentStore = documentStore,
+                documentTypeRepository = documentTypeRepository,
+                selectedProtocols = settingsModel.dcApiProtocols.value
+            )
+        } catch (e: Throwable) {
+            Logger.w(TAG, "Error registering with W3C DC API", e)
         }
     }
 
@@ -870,6 +916,8 @@ class App private constructor (val promptModel: PromptModel) {
                     WithAppBar(navController) {
                         StartScreen(
                             documentModel = documentModel,
+                            digitalCredentials = digitalCredentials,
+                            onDigitalCredentialsReregister = { digitalCredentialsReregister() },
                             onClickAbout = { navController.navigate(AboutDestination) },
                             onClickDocumentStore = { navController.navigate(DocumentStoreDestination) },
                             onClickTrustedIssuers = { navController.navigate(TrustedIssuersDestination) },
@@ -914,10 +962,7 @@ class App private constructor (val promptModel: PromptModel) {
                             onClickRichText = { navController.navigate(RichTextDestination) },
                             onClickNotifications = { navController.navigate(NotificationsDestination) },
                             onClickScreenLock = { navController.navigate(ScreenLockDestination) },
-                            onClickPickersScreen = { navController.navigate(PickersDestination) },
-                            onClickDocumentCarouselScreen = {
-                                navController.navigate(DocumentCarouselDestination)
-                            }
+                            onClickPickersScreen = { navController.navigate(PickersDestination) }
                         )
                     }
                 }
@@ -954,6 +999,7 @@ class App private constructor (val promptModel: PromptModel) {
                         val destination = backStackEntry.toRoute<DocumentViewerDestination>()
                         DocumentViewerScreen(
                             documentModel = documentModel,
+                            documentStore = documentStore,
                             documentId = destination.documentId,
                             showToast = ::showToast,
                             onViewCredential = { documentId, credentialId ->
@@ -971,6 +1017,9 @@ class App private constructor (val promptModel: PromptModel) {
                                     provisioningSupport.getOpenID4VCIClientPreferences(),
                                     provisioningSupport.getOpenID4VCIBackend()
                                 )
+                            },
+                            onDocumentDeleted = {
+                                navController.navigateUp()
                             }
                         )
                     }
@@ -1301,11 +1350,6 @@ class App private constructor (val promptModel: PromptModel) {
                 composable<PickersDestination> { backStackEntry ->
                     WithAppBar(navController, "Picker use-cases") {
                         PickersScreen()
-                    }
-                }
-                composable<DocumentCarouselDestination> { backStackEntry ->
-                    WithAppBar(navController, "Document Carousel") {
-                        DocumentCarouselScreen(documentModel)
                     }
                 }
             }

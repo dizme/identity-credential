@@ -34,56 +34,132 @@ public struct DocumentInfo: Hashable {
 }
 
 /**
+ * Errors that can be thrown by ``DocumentModel``.
+ */
+public enum DocumentModelError: Error {
+    case noSuchDocument
+    case positionOutOfRange
+}
+
+/**
  * Model that loads documents from a ``DocumentStore`` and keeps them updated.
  *
- * It exposes the documents as ``DocumentInfo`` and listens to live updates from the store.
+ * The model exposes the documents as ``DocumentInfo`` and listens to live updates from the store
+ * and maintains a persistent order which can be changed using ``setDocumentPosition(documentInfo:position:)``.
  *
- * If a ``Document`` has no cardArt the model creates a default stock cardArt.
- *
- * - Parameters:
- *   - documentTypeRepository: a ``DocumentTypeRepository`` with information about document types or nil.
+ * If a ``Document`` has no card art the model creates a default stock card art.
  */
 @MainActor
 @Observable
 public class DocumentModel {
     
     let documentTypeRepository: DocumentTypeRepository?
-    
-    public init(documentTypeRepository: DocumentTypeRepository?) {
+    let documentOrderKey: String
+
+    /**
+     * Initialization for ``DocumentModel``.
+     *
+     * - Parameters:
+     *   - documentStore: the ``DocumentStore`` to use as a source of truth.
+     *   - documentTypeRepository: a ``DocumentTypeRepository`` with information about document types or nil.
+     *   - documentOrderKey: the name of the key to use for storing the document order in the ``Tags`` object associated with  ``documentStore``.
+     */
+    public init(
+        documentStore: DocumentStore,
+        documentTypeRepository: DocumentTypeRepository?,
+        documentOrderKey: String = "org.multipaz.DocumentModel.orderingKey"
+    ) async throws {
         self.documentTypeRepository = documentTypeRepository
-    }
-    
-    public var documentInfos: [DocumentInfo] = []
-
-    private var documentStore: DocumentStore!
-
-    public func setDocumentStore(documentStore: DocumentStore) async {
+        self.documentOrderKey = documentOrderKey
         self.documentStore = documentStore
+        self.storageData = if let encoded = try! await documentStore.getTags().getByteString(key: documentOrderKey) {
+            DocumentModelStorageData.fromDataItem(
+                try! Cbor.shared.decode(encodedCbor: encoded.toByteArray(startIndex: 0, endIndex: encoded.size))
+            )
+        } else {
+            DocumentModelStorageData()
+        }
 
         for document in try! await documentStore.listDocuments(sort: true) {
-            await documentInfos.append(getDocumentInfo(document))
+            await _documentInfos.append(getDocumentInfo(document))
         }
         Task {
             for await event in documentStore.eventFlow {
                 if event is DocumentAdded {
                     let document = try! await documentStore.lookupDocument(identifier: event.documentId)
                     if document != nil {
-                        await self.documentInfos.append(getDocumentInfo(document!))
+                        await self._documentInfos.append(getDocumentInfo(document!))
                     }
                 } else if event is DocumentUpdated {
-                    let index = self.documentInfos.firstIndex { documentInfo in
+                    let index = self._documentInfos.firstIndex { documentInfo in
                         documentInfo.document.identifier == event.documentId
                     }
                     if (index != nil) {
-                        self.documentInfos[index!] = await getDocumentInfo(self.documentInfos[index!].document)
+                        self._documentInfos[index!] = await getDocumentInfo(self._documentInfos[index!].document)
                     }
                 } else if event is DocumentDeleted {
-                    self.documentInfos.removeAll { documentInfo in
+                    self._documentInfos.removeAll { documentInfo in
                         documentInfo.document.identifier == event.documentId
                     }
                 }
             }
         }
+    }
+    
+    private var _documentInfos: [DocumentInfo] = []
+
+    public var documentInfos: [DocumentInfo] {
+        _documentInfos.sorted { (a: DocumentInfo, b: DocumentInfo) -> Bool in
+            let sa = storageData.sortingOrder[a.document.identifier]
+            let sb = storageData.sortingOrder[b.document.identifier]
+            if sa != nil && sb != nil {
+                if sa != sb {
+                    return sa! < sb!
+                }
+            }
+            return Document.Comparator.shared.compare(a: a.document, b: b.document) < 0
+        }
+    }
+
+    private var documentStore: DocumentStore!
+    private var storageData: DocumentModelStorageData!
+    
+    /**
+     * Sets the position of a document.
+     *
+     * - Parameters:
+     *  - documentInfo: the ``DocumentInfo`` to set position for.
+     *  - position: the position to set.
+     * - Throws: ``DocumentError.noSuchDocument`` if the given ``DocumentInfo`` doesn't exist.
+     * - Throws: ``DocumentError.positionOutOfRange`` if the given position is out of range.
+     */
+    public func setDocumentPosition(
+        documentInfo: DocumentInfo,
+        position: Int
+    ) async throws {
+        var documentInfos = self.documentInfos
+        let index = documentInfos.firstIndex(of: documentInfo)
+        if index == nil {
+            throw DocumentModelError.noSuchDocument
+        }
+        documentInfos.remove(at: index!)
+        if position < 0 || position > documentInfos.count {
+            throw DocumentModelError.positionOutOfRange
+        }
+        documentInfos.insert(documentInfo, at: position)
+        var sortingOrder: [String:Int] = [:]
+        documentInfos.enumerated().forEach { index, di in
+            sortingOrder[di.document.identifier] = index
+        }
+        storageData = DocumentModelStorageData(sortingOrder: sortingOrder)
+        try await documentStore.getTags().edit(
+            editActionFn: { tags in
+                await tags.setByteString(
+                    key: self.documentOrderKey,
+                    value: ByteString(bytes: Cbor.shared.encode(item: self.storageData.toDataItem()))
+                )
+            }
+        )
     }
 
     private func getDocumentInfo(_ document: Document) async -> DocumentInfo {
@@ -117,5 +193,33 @@ public class DocumentModel {
             keyInfo: keyInfo,
             keyInvalidated: keyInvalidated
         )
+    }
+}
+
+
+
+fileprivate struct DocumentModelStorageData {
+    var sortingOrder: [String: Int] = [:]
+    
+    func toDataItem() -> DataItem {
+        let builder = CborMap.companion.builder()
+        let innerBuilder = builder.putMap(key: Tstr(value: "documentOrder"))
+        for (key, value) in sortingOrder {
+            innerBuilder.put(
+                key: Tstr(value: key),
+                value: value >= 0 ? Uint(value: UInt64(value)) : Nint(value: UInt64(value))
+            )
+        }
+        return builder.end()!.build()
+    }
+    
+    static func fromDataItem(_ dataItem: DataItem) -> DocumentModelStorageData {
+        var sortingOrder: [String: Int] = [:]
+        if dataItem.hasKey(key: "documentOrder") {
+            for (key, value) in dataItem.get(key: "documentOrder").asMap {
+                sortingOrder[key.asTstr] = Int(value.asNumber)
+            }
+        }
+        return DocumentModelStorageData(sortingOrder: sortingOrder)
     }
 }

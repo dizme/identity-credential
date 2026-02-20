@@ -6,6 +6,7 @@ plugins {
     alias(libs.plugins.kotlinMultiplatform)
     alias(libs.plugins.androidLibrary)
     id("maven-publish")
+    id("org.jetbrains.dokka") version "2.1.0"
 }
 
 val projectVersionCode: Int by rootProject.extra
@@ -55,6 +56,7 @@ kotlin {
         it.binaries.all {
             linkerOpts(
                 "-L/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/${platform}/",
+                "-Wl,-rpath,/usr/lib/swift"
             )
         }
     }
@@ -82,7 +84,6 @@ kotlin {
         }
 
         val commonTest by getting {
-            kotlin.srcDir("build/generated/ksp/metadata/commonTest/kotlin")
             dependencies {
                 implementation(libs.kotlin.test)
                 implementation(libs.kotlinx.coroutines.test)

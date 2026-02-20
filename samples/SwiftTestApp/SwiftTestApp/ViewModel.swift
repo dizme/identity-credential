@@ -20,14 +20,13 @@ class ViewModel {
     var documentStore: DocumentStore!
     var documentModel: DocumentModel!
     var readerTrustManager: TrustManagerLocal!
+    var provisioningModel: ProvisioningModel!
+    var provisioningSupport: ProvisioningSupport!
 
     let promptModel = Platform.shared.promptModel
     
     private let presentmentModel = PresentmentModel()
 
-    //var provisioningModel: ProvisioningModel!
-    //var provisioningState: ProvisioningModel.State = ProvisioningModel.Idle()
-            
     func load() async {
         PromptModel.Companion.shared.setGlobal(promptModel: promptModel)
         
@@ -43,6 +42,7 @@ class ViewModel {
             .build()
         documentTypeRepository = DocumentTypeRepository()
         documentTypeRepository.addDocumentType(documentType: DrivingLicense.shared.getDocumentType())
+        documentTypeRepository.addDocumentType(documentType: EUPersonalID.shared.getDocumentType())
         documentTypeRepository.addDocumentType(documentType: PhotoID.shared.getDocumentType())
         documentTypeRepository.addDocumentType(documentType: UtopiaBoardingPass.shared.getDocumentType())
         documentStore = DocumentStore.Builder(
@@ -168,49 +168,54 @@ class ViewModel {
                 )
             )
 
-        /*
-        self.provisioningModel = ProvisioningModel.companion.create(
-            documentStore: documentStore,
-            secureArea: secureArea,
+        self.provisioningModel = ProvisioningModel(
+            documentProvisioningHandler: DocumentProvisioningHandler(
+                secureArea: secureArea,
+                documentStore: documentStore,
+                mdocCredentialDomain: "mdoc",
+                sdJwtCredentialDomain: "sdJwt",
+                keylessCredentialDomain: "sdJwtKeyless",
+                batchSize: 5,
+                metadataHandler: nil
+            ),
             httpClient: HttpClient(engineFactory: Darwin()) { config in
                 config.followRedirects = false
             },
-            promptModel: Platform.shared.promptModel,
-            documentMetadataInitializer: { documentMetadata, credentialDisplay, issuerDisplay in
-                print("Setting metadata from \(credentialDisplay) and \(issuerDisplay)")
-                try! await documentMetadata.setMetadata(
-                    displayName: credentialDisplay.text,
-                    typeDisplayName: credentialDisplay.text, // TODO: doctype instead
-                    cardArt: credentialDisplay.logo,
-                    issuerLogo: issuerDisplay.logo,
-                    other: nil
-                )
-            }
+            promptModel: promptModel,
+            authorizationSecureArea: secureArea
         )
-         */
+        self.provisioningSupport = ProvisioningSupport(
+            storage: storage,
+            secureArea: secureArea
+        )
+        await self.provisioningSupport.initialize()
         
-        let dcApi = DigitalCredentialsCompanion.shared.Default
-        if dcApi.available {
-            try! await dcApi.startExportingCredentials(
+        let dcApi = try! await DigitalCredentialsCompanion.shared.getDefault()
+        if dcApi.registerAvailable {
+            try! await dcApi.register(
                 documentStore: documentStore,
-                documentTypeRepository: documentTypeRepository
+                documentTypeRepository: documentTypeRepository,
+                selectedProtocols: dcApi.supportedProtocols
             )
+            Task {
+                for await _ in documentStore.eventFlow {
+                    try! await dcApi.register(
+                        documentStore: documentStore,
+                        documentTypeRepository: documentTypeRepository,
+                        selectedProtocols: dcApi.supportedProtocols
+                    )
+                }
+            }
         }
         
-        documentModel = DocumentModel(documentTypeRepository: documentTypeRepository)
-        await documentModel.setDocumentStore(documentStore: documentStore)
+        documentModel = try! await DocumentModel(
+            documentStore: documentStore,
+            documentTypeRepository: documentTypeRepository
+        )
     
         isLoading = false
     }
     
-    private func getIsRunningOnSimulator() -> Bool {
-#if targetEnvironment(simulator)
-        return true
-#else
-        return false
-#endif
-    }
-
     func addSelfsignedMdoc(
         documentType: DocumentType,
         displayName: String,
@@ -259,7 +264,7 @@ class ViewModel {
             createKeySettings: CreateKeySettings(
                 algorithm: Algorithm.esp256,
                 nonce: ByteStringBuilder(initialCapacity: 3).appendString(string: "123").toByteString(),
-                userAuthenticationRequired: getIsRunningOnSimulator() ? false : true,
+                userAuthenticationRequired: true,
                 userAuthenticationTimeout: 0,
                 validFrom: nil,
                 validUntil: nil

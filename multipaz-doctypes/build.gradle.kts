@@ -5,6 +5,7 @@ import org.jetbrains.kotlin.gradle.ExperimentalWasmDsl
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
     id("maven-publish")
+    id("org.jetbrains.dokka") version "2.1.0"
 }
 
 val projectVersionCode: Int by rootProject.extra
@@ -47,6 +48,7 @@ kotlin {
         it.binaries.all {
             linkerOpts(
                 "-L/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/${platform}/",
+                "-Wl,-rpath,/usr/lib/swift"
             )
         }
     }
@@ -109,6 +111,3 @@ publishing {
     }
 }
 
-subprojects {
-	apply(plugin = "org.jetbrains.dokka")
-}

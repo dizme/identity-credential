@@ -9,6 +9,7 @@ plugins {
     alias(libs.plugins.androidLibrary)
     alias(libs.plugins.ksp)
     id("maven-publish")
+    id("org.jetbrains.dokka") version "2.1.0"
 }
 
 val projectVersionCode: Int by rootProject.extra
@@ -76,6 +77,7 @@ kotlin {
         it.binaries.all {
             linkerOpts(
                 "-L$rootDir/multipaz-longfellow/src/iosMain/nativeLibs/$zkLibExt/lib",
+                "-Wl,-rpath,/usr/lib/swift",
                 "-lmdoc_static"
             )
         }
@@ -193,6 +195,3 @@ tasks.withType<Test>().configureEach {
     }
 }
 
-subprojects {
-	apply(plugin = "org.jetbrains.dokka")
-}

@@ -14,6 +14,7 @@ plugins {
     alias(libs.plugins.jetbrainsCompose)
     alias(libs.plugins.compose.compiler)
     id("maven-publish")
+    id("org.jetbrains.dokka") version "2.1.0"
 }
 
 val projectVersionCode: Int by rootProject.extra
@@ -71,6 +72,7 @@ kotlin {
         it.binaries.all {
             linkerOpts(
                 "-L/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/${platform}/",
+                "-Wl,-rpath,/usr/lib/swift"
             )
         }
     }
@@ -195,6 +197,3 @@ publishing {
 
 tasks.named("generateResourceAccessorsForAndroidMain").configure { dependsOn("sourceReleaseJar") }
 
-subprojects {
-	apply(plugin = "org.jetbrains.dokka")
-}

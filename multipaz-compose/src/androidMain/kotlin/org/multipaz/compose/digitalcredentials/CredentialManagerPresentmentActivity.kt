@@ -6,6 +6,7 @@ import android.os.Bundle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.core.graphics.drawable.toDrawable
 import androidx.credentials.DigitalCredential
@@ -23,6 +24,7 @@ import io.ktor.client.HttpClient
 import io.ktor.client.engine.android.Android
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -34,8 +36,8 @@ import org.multipaz.compose.prompt.PromptDialogs
 import org.multipaz.context.initializeApplication
 import org.multipaz.digitalcredentials.getAppOrigin
 import org.multipaz.digitalcredentials.lookupForCredmanId
-import org.multipaz.presentment.model.PresentmentSource
-import org.multipaz.presentment.model.digitalCredentialsPresentment
+import org.multipaz.presentment.PresentmentSource
+import org.multipaz.presentment.digitalCredentialsPresentment
 import org.multipaz.prompt.AndroidPromptModel
 import org.multipaz.util.Logger
 import java.lang.IllegalStateException
@@ -88,16 +90,11 @@ abstract class CredentialManagerPresentmentActivity: FragmentActivity() {
             setTranslucent(true)
         }
 
-        CoroutineScope(Dispatchers.Main + promptModel).launch {
-            startPresentment(getSettings())
-        }
-    }
-
-    @OptIn(ExperimentalDigitalCredentialApi::class)
-    private suspend fun startPresentment(settings: Settings) {
         val imageLoader = ImageLoader.Builder(applicationContext).components {
             add(KtorNetworkFetcherFactory(HttpClient(Android.create())))
         }.build()
+
+        val startChannel = Channel<Unit>()
 
         setContent {
             val currentBranding = Branding.Current.collectAsState().value
@@ -106,9 +103,20 @@ abstract class CredentialManagerPresentmentActivity: FragmentActivity() {
                     promptModel = promptModel,
                     imageLoader = imageLoader,
                 )
+                LaunchedEffect(true) {
+                    startChannel.send(Unit)
+                }
             }
         }
 
+        CoroutineScope(Dispatchers.Main + promptModel).launch {
+            startChannel.receive()  // wait until PromptModel is bound
+            startPresentment(getSettings())
+        }
+    }
+
+    @OptIn(ExperimentalDigitalCredentialApi::class)
+    private suspend fun startPresentment(settings: Settings) {
         try {
             val credentialRequest = PendingIntentHandler.retrieveProviderGetCredentialRequest(intent)!!
 

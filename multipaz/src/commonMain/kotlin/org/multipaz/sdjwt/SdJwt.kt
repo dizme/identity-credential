@@ -6,10 +6,12 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.addJsonObject
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -25,17 +27,24 @@ import org.multipaz.crypto.SignatureVerificationException
 import org.multipaz.crypto.AsymmetricKey
 import org.multipaz.crypto.X509CertChain
 import org.multipaz.revocation.RevocationStatus
+import org.multipaz.sdjwt.DisclosureMetadata.Companion.isClaimSelectivelyDisclosable
+import org.multipaz.sdjwt.DisclosureMetadata.Companion.isIndexSelectivelyDisclosable
+import org.multipaz.sdjwt.DisclosureMetadata.Companion.toDisclosureMetadata
+import org.multipaz.sdjwt.DisclosureUtil.putClaimDisclosureDigests
+import org.multipaz.sdjwt.DisclosureUtil.toArrayDigestElement
+import org.multipaz.sdjwt.DisclosureUtil.toArrayDisclosure
+import org.multipaz.sdjwt.DisclosureUtil.toClaimDisclosure
 import org.multipaz.webtoken.buildJwt
 import org.multipaz.util.fromBase64Url
 import org.multipaz.util.toBase64Url
+import kotlin.collections.iterator
 import kotlin.random.Random
 import kotlin.time.Duration
 
 private const val TAG = "SdJwt"
 
 /**
- * A SD-JWT according to
- * [draft-ietf-oauth-selective-disclosure-jwt](https://datatracker.ietf.org/doc/draft-ietf-oauth-selective-disclosure-jwt/).
+ * A SD-JWT according to [RFC 9901](https://datatracker.ietf.org/doc/rfc9901/).
  *
  * When a [SdJwt] instance is initialized, cursory checks on the provided string with the compact serialization are
  * performed. Full verification of the SD-JWT can be performed using the [verify] method which also returns
@@ -338,6 +347,247 @@ class SdJwt private constructor(
             )
         }
 
+        private fun toCompactSerialization(
+            jwt: String,
+            disclosures: List<JsonArray>
+        ): String {
+            val sb = StringBuilder()
+            sb.append(jwt)
+            sb.append('~')
+            for (disclosure in disclosures) {
+                sb.append(disclosure.toString().encodeToByteArray().toBase64Url())
+                sb.append('~')
+            }
+            return sb.toString()
+        }
+
+        /**
+         * Creates a SD-JWT.
+         *
+         * This implementation uses [DisclosureMetadata] in the "_sd" claim of each nested
+         * JsonObject in the [claims] parameter to describe which claims to disclose.
+         *
+         * Note: this variant with [String] instead of [JsonObject] only exists for interoperability with Swift.
+         *
+         * @param issuerKey the key to sign the issuerSigned JWT with. If this is a [AsymmetricKey.X509Certified]
+         *   the certificate chain will be included in the `x5c` claim and always be disclosed.
+         * @param kbKey if set, a `cnf` claim with this public key will be included in the Issuer-signed JWT.
+         * @param claims the object with claims that can be selectively disclosed.
+         * @param digestAlgorithm the hash algorithm to use, e.g. [Algorithm.SHA256].
+         * @param random the [Random] to use to generate salts.
+         * @param saltSizeNumBits number of bits to use for each salt.
+         * @param creationTime the time the SD-JWT was created, pass [Instant.DISTANT_PAST] to not set `iat` claim.
+         * @param expiresIn the duration in which the SD-JWT expire or `null`.
+         */
+        suspend fun createFromMetadata(
+            issuerKey: AsymmetricKey,
+            kbKey: EcPublicKey?,
+            claims: String,
+            digestAlgorithm: Algorithm = Algorithm.SHA256,
+            random: Random = Random.Default,
+            saltSizeNumBits: Int = 128,
+            creationTime: Instant = Instant.DISTANT_PAST,
+            expiresIn: Duration? = null
+        ): SdJwt {
+            return createFromMetadata(
+                issuerKey = issuerKey,
+                kbKey = kbKey,
+                claims = Json.decodeFromString<JsonObject>(claims),
+                digestAlgorithm = digestAlgorithm,
+                random = random,
+                saltSizeNumBits = saltSizeNumBits,
+                creationTime = creationTime,
+                expiresIn = expiresIn
+            )
+        }
+
+        /**
+         * Creates a SD-JWT.
+         *
+         * This implementation uses [DisclosureMetadata] in the "_sd" claim of each nested
+         * JsonObject in the [claims] parameter to describe which claims to disclose.
+         *
+         * @param issuerKey the key to sign the issuerSigned JWT with. If this is a [AsymmetricKey.X509Certified]
+         *   the certificate chain will be included in the `x5c` claim and always be disclosed.
+         * @param kbKey if set, a `cnf` claim with this public key will be included in the Issuer-signed JWT.
+         * @param claims the object with claims that can be selectively disclosed.
+         * @param digestAlgorithm the hash algorithm to use, e.g. [Algorithm.SHA256].
+         * @param random the [Random] to use to generate salts.
+         * @param saltSizeNumBits number of bits to use for each salt.
+         * @param creationTime the time the SD-JWT was created, pass [Instant.DISTANT_PAST] to not set `iat` claim.
+         * @param expiresIn the duration in which the SD-JWT expire or `null`.
+         */
+        suspend fun createFromMetadata(
+            issuerKey: AsymmetricKey,
+            kbKey: EcPublicKey?,
+            claims: JsonObject,
+            digestAlgorithm: Algorithm = Algorithm.SHA256,
+            random: Random = Random.Default,
+            saltSizeNumBits: Int = 128,
+            creationTime: Instant = Instant.DISTANT_PAST,
+            expiresIn: Duration? = null
+        ): SdJwt {
+            require(claims["iss"] != null) { "Must include `iss`" }
+
+            val disclosures = mutableListOf<JsonArray>()
+            val jwt = buildJwt(
+                type = "dc+sd-jwt",
+                key = issuerKey,
+                creationTime = creationTime,
+                expiresIn = expiresIn
+            ) {
+                mergeAndDiscloseJsonObject(
+                    disclosures,
+                    claims,
+                    digestAlgorithm,
+                    random,
+                    saltSizeNumBits
+                )
+
+                put("_sd_alg", JsonPrimitive(digestAlgorithm.hashAlgorithmName))
+
+                val kbKeyJwk = kbKey?.toJwk()
+                if (kbKeyJwk != null) {
+                    putJsonObject("cnf") {
+                        put("jwk", kbKeyJwk)
+                    }
+                }
+            }
+
+            return fromCompactSerialization(toCompactSerialization(jwt, disclosures))
+        }
+
+        private suspend fun JsonObjectBuilder.mergeAndDiscloseJsonObject(
+            disclosures: MutableList<JsonArray>,
+            claims: JsonObject,
+            digestAlgorithm: Algorithm,
+            random: Random,
+            saltSizeNumBits: Int
+        ): JsonObjectBuilder {
+
+            val disclosureMetadata = claims["_sd"]?.jsonObject?.toDisclosureMetadata()
+
+            val claimDisclosures = mutableListOf<JsonArray>()
+
+            for (claim in claims) {
+                if(claim.key == "_sd") continue
+
+                val updatedClaimValue = claim.value.extractDisclosures(
+                    claim.key,
+                    disclosures,
+                    disclosureMetadata,
+                    digestAlgorithm,
+                    random,
+                    saltSizeNumBits
+                )
+                if (disclosureMetadata.isClaimSelectivelyDisclosable(claim.key)) {
+                    val disclosure = updatedClaimValue.toClaimDisclosure(
+                        claim.key,
+                        random.getRandomSalt(saltSizeNumBits)
+                    )
+                    claimDisclosures.add(disclosure)
+                    disclosures.add(disclosure)
+                } else {
+                    put(claim.key, updatedClaimValue)
+                }
+            }
+
+            putClaimDisclosureDigests(claimDisclosures, digestAlgorithm)
+
+            return this
+        }
+
+        private suspend fun JsonElement.extractDisclosures(
+            claimName: String,
+            disclosures: MutableList<JsonArray>,
+            disclosureMetadata: DisclosureMetadata?,
+            digestAlgorithm: Algorithm,
+            random: Random,
+            saltSizeNumBits: Int
+        ): JsonElement {
+            return when (this) {
+                is JsonPrimitive -> this
+                is JsonObject -> buildJsonObject {
+                    mergeAndDiscloseJsonObject(
+                        disclosures,
+                        this@extractDisclosures,
+                        digestAlgorithm,
+                        random,
+                        saltSizeNumBits
+                    )
+                }
+                is JsonArray -> {
+                    JsonArray(
+                        this.jsonArray.mapIndexed { index, element ->
+                            val claimValue = element.extractDisclosures(
+                                claimName,
+                                disclosures,
+                                disclosureMetadata,
+                                digestAlgorithm,
+                                random,
+                                saltSizeNumBits
+                            )
+                            if (disclosureMetadata.isIndexSelectivelyDisclosable(
+                                    claimName,
+                                    index
+                                )
+                            ) {
+                                val disclosure = claimValue.toArrayDisclosure(
+                                    random.getRandomSalt(saltSizeNumBits)
+                                )
+                                disclosures.add(disclosure)
+                                disclosure.toArrayDigestElement(digestAlgorithm)
+                            } else {
+                                claimValue
+                            }
+                        })
+                }
+            }
+        }
+
+        /**
+         * Creates a SD-JWT.
+         *
+         * This implementation uses recursive disclosures for all claims in the [claims] parameter.
+         *
+         * Note: this variant with [String] instead of [JsonObject] only exists for interoperability with Swift.
+         *
+         * @param issuerKey the key to sign the issuerSigned JWT with. If this is a [AsymmetricKey.X509Certified]
+         *   the certificate chain will be included in the `x5c` claim and always be disclosed.
+         * @param kbKey if set, a `cnf` claim with this public key will be included in the Issuer-signed JWT.
+         * @param claims the object with claims that can be selectively disclosed.
+         * @param nonSdClaims claims to include in the Issuer-signed JWT which are always disclosed. This must at least
+         *   include the `iss` claim and may include more such as `vct`, `sub`, `iat`, `nbf`, `exp`.
+         * @param digestAlgorithm the hash algorithm to use, e.g. [Algorithm.SHA256].
+         * @param random the [Random] to use to generate salts.
+         * @param saltSizeNumBits number of bits to use for each salt.
+         * @param creationTime the time the SD-JWT was created, pass [Instant.DISTANT_PAST] to not set `iat` claim.
+         * @param expiresIn the duration in which the SD-JWT expire or `null`.
+         */
+        suspend fun create(
+            issuerKey: AsymmetricKey,
+            kbKey: EcPublicKey?,
+            claims: String,
+            nonSdClaims: String,
+            digestAlgorithm: Algorithm = Algorithm.SHA256,
+            random: Random = Random.Default,
+            saltSizeNumBits: Int = 128,
+            creationTime: Instant = Instant.DISTANT_PAST,
+            expiresIn: Duration? = null
+        ): SdJwt {
+            return create(
+                issuerKey = issuerKey,
+                kbKey = kbKey,
+                claims = Json.decodeFromString<JsonObject>(claims),
+                nonSdClaims = Json.decodeFromString<JsonObject>(nonSdClaims),
+                digestAlgorithm = digestAlgorithm,
+                random = random,
+                saltSizeNumBits = saltSizeNumBits,
+                creationTime = creationTime,
+                expiresIn = expiresIn
+            )
+        }
+
         /**
          * Creates a SD-JWT.
          *
@@ -352,6 +602,8 @@ class SdJwt private constructor(
          * @param digestAlgorithm the hash algorithm to use, e.g. [Algorithm.SHA256].
          * @param random the [Random] to use to generate salts.
          * @param saltSizeNumBits number of bits to use for each salt.
+         * @param creationTime the time the SD-JWT was created, pass [Instant.DISTANT_PAST] to not set `iat` claim.
+         * @param expiresIn the duration in which the SD-JWT expire or `null`.
          */
         suspend fun create(
             issuerKey: AsymmetricKey,
@@ -361,7 +613,7 @@ class SdJwt private constructor(
             digestAlgorithm: Algorithm = Algorithm.SHA256,
             random: Random = Random.Default,
             saltSizeNumBits: Int = 128,
-            creationTime: Instant = Instant.DISTANT_PAST,  // TODO: switch to System.Clock.now()?
+            creationTime: Instant = Instant.DISTANT_PAST,
             expiresIn: Duration? = null
         ): SdJwt {
             require(nonSdClaims["iss"] != null) { "Must include `iss` claim in nonSdClaims" }
@@ -376,15 +628,7 @@ class SdJwt private constructor(
                 creationTime = creationTime,
                 expiresIn = expiresIn
             ) {
-                if (issuerKey is AsymmetricKey.X509Certified) {
-                    put("x5c", issuerKey.certChain.toX5c())
-                }
                 for (claim in nonSdClaims) {
-                    if (claim.key == "x5c" && issuerKey is AsymmetricKey.X509Certified) {
-                        throw IllegalArgumentException(
-                            "Claim x5c is already included because `issuerKey` is X509Certified"
-                        )
-                    }
                     put(claim.key, claim.value)
                 }
 
@@ -418,17 +662,8 @@ class SdJwt private constructor(
                     }
                 }
             }
-            val sb = StringBuilder()
-            sb.append(jwt)
-            sb.append('~')
-            for (disclosure in disclosures) {
-                sb.append(disclosure.toString().encodeToByteArray().toBase64Url())
-                sb.append('~')
-            }
-            return fromCompactSerialization(sb.toString())
+            return fromCompactSerialization(toCompactSerialization(jwt, disclosures))
         }
-
-
     }
 }
 
