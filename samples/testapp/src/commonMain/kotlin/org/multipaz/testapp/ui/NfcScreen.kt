@@ -1,84 +1,164 @@
 package org.multipaz.testapp.ui
 
+import kotlinx.coroutines.CancellationException
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import org.multipaz.nfc.Nfc
 import org.multipaz.prompt.PromptDismissedException
 import org.multipaz.prompt.PromptModel
 import org.multipaz.util.Logger
 import org.multipaz.util.toHex
 import kotlinx.coroutines.launch
+import org.multipaz.nfc.ExternalNfcReader
+import org.multipaz.nfc.ExternalNfcReaderState
+import org.multipaz.nfc.ExternalNfcReaderStore
 import org.multipaz.nfc.NfcTagReader
 import kotlin.time.Duration.Companion.seconds
 
 private const val TAG = "NfcScreen"
 
+internal sealed class NfcReaderEntry(
+    open val displayName: String,
+) {
+    abstract suspend fun getNfcTagReader(): NfcTagReader
+}
+
+internal data class NfcReaderInternal(
+    override val displayName: String,
+    val index: Int
+): NfcReaderEntry(displayName) {
+    override suspend fun getNfcTagReader(): NfcTagReader = NfcTagReader.getReaders()[index]
+}
+
+internal data class NfcReaderExternal(
+    override val displayName: String,
+    val externalReader: ExternalNfcReader
+): NfcReaderEntry(displayName) {
+
+    override suspend fun getNfcTagReader(): NfcTagReader {
+        when (externalReader.observeState().first()) {
+            ExternalNfcReaderState.NOT_CONNECTED -> {
+                throw IllegalStateException("Reader is not connected")
+            }
+            ExternalNfcReaderState.CONNECTED_NO_PERMISSION -> {
+                if (!externalReader.requestPermission()) {
+                    throw IllegalStateException("Permission not granted")
+                }
+                return externalReader.getNfcTagReader()
+            }
+            ExternalNfcReaderState.CONNECTED -> {
+                return externalReader.getNfcTagReader()
+            }
+        }
+    }
+}
+
+internal class NfcReaderNoneAvailable: NfcReaderEntry("No NFC readers available") {
+    override suspend fun getNfcTagReader(): NfcTagReader {
+        throw IllegalStateException("No NFC readers available")
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun NfcScreen(
-    externalNfcTagReaders: List<NfcTagReader>,
+    externalNfcReaderStore: ExternalNfcReaderStore,
     promptModel: PromptModel,
     showToast: (message: String) -> Unit
 ) {
     val coroutineScope = rememberCoroutineScope { promptModel }
-    val showCustomNfcDialog = remember { mutableStateOf(false) }
     val dismissableNfcJob = remember { mutableStateOf<Job?>(null) }
+    var externalReaderPromptMessage by remember { mutableStateOf<String?>(null) }
 
-    if (showCustomNfcDialog.value) {
-        fun onDismissRequest() {
-            println("TODO: stop NFC scanning")
-            showCustomNfcDialog.value = false
-            dismissableNfcJob.value?.cancel()
-            dismissableNfcJob.value = null
+    val readers = mutableListOf<NfcReaderEntry>()
+    NfcTagReader.getReaders().forEachIndexed { index, reader ->
+        readers.add(NfcReaderInternal("Internal NFC Reader", index))
+    }
+    externalNfcReaderStore.readers.value.forEach { externalReader ->
+        readers.add(NfcReaderExternal(externalReader.displayName, externalReader))
+    }
+    if (readers.isEmpty()) {
+        readers.add(NfcReaderNoneAvailable())
+    }
+    val readerSelected = remember { mutableStateOf<NfcReaderEntry>(
+        if (lastNfcReaderSelected < readers.size) {
+            readers[lastNfcReaderSelected]
+        } else {
+            readers[0]
         }
-        AlertDialog(
-            modifier = Modifier,
-            title = { Text(text = "Custom NFC scanning") },
-            text = {
-                Column(
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
-                    Text(text = "This is a custom NFC scanning dialog.")
-                    Text(text = "Its only purpose is to demonstrate that NFC scanning works " +
-                            "without showing a dialog on some platforms, including Android. Scanning " +
-                            "will stop when this dialog is closed. " +
-                            "Scanning an NDEF tag will also dismiss the dialog")
-                }
-            },
-            onDismissRequest = ::onDismissRequest,
-            confirmButton = {},
-            dismissButton = {
-                TextButton(onClick = { onDismissRequest() }) {
-                    Text("Close")
+    )}
+    val readerDropdownExpanded = remember { mutableStateOf(false) }
+
+    val sheetState = rememberModalBottomSheetState()
+    if (externalReaderPromptMessage != null) {
+        fun onCancel() {
+            dismissableNfcJob.value?.cancel()
+        }
+        ModalBottomSheet(
+            onDismissRequest = { onCancel() },
+            sheetState = sheetState,
+            dragHandle = null,
+            containerColor = MaterialTheme.colorScheme.surface,
+        ) {
+            Column(
+                modifier = Modifier.padding(10.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                Text(
+                    text = "Prompt not shown for NFC scanning",
+                    style = MaterialTheme.typography.titleLarge
+                )
+                Text(text = "This happens for external NFC readers or if the OS doesn't draw a dialog.")
+                Text(text = "Message: $externalReaderPromptMessage")
+                TextButton(onClick = { onCancel() }) {
+                    Text("Cancel")
                 }
             }
-        )
+        }
     }
 
     LazyColumn(
         modifier = Modifier.padding(8.dp)
     ) {
         item {
+            ComboBox(
+                headline = "NFC Reader",
+                options = readers,
+                comboBoxSelected = readerSelected,
+                comboBoxExpanded = readerDropdownExpanded,
+                getDisplayName = { it.displayName },
+                onSelected = { index, value -> lastNfcReaderSelected = index }
+            )
+        }
+
+        item {
             TextButton(
                 onClick = {
-                    coroutineScope.launch {
+                    dismissableNfcJob.value = coroutineScope.launch {
                         try {
-                            val reader = if (externalNfcTagReaders.size > 0)  {
-                                externalNfcTagReaders.first()
-                            } else {
-                                NfcTagReader.getReaders().first()
+                            val reader = readerSelected.value.getNfcTagReader()
+                            if (reader.dialogNeverShown) {
+                                externalReaderPromptMessage = "Hold your phone near a NDEF tag."
                             }
                             val ccFile = reader.scan(
                                 message = "Hold your phone near a NDEF tag.",
@@ -95,10 +175,14 @@ fun NfcScreen(
                             showToast("NDEF CC file: ${ccFile.toHex()}")
                         } catch (e: PromptDismissedException) {
                             showToast("Dialog dismissed by user")
-                        } catch (e: Throwable) {
+                        } catch (e: Exception) {
+                            if (e is CancellationException) throw e
                             Logger.e(TAG, "Fail", e)
                             e.printStackTrace()
                             showToast("Fail: ${e.message}")
+                        } finally {
+                            externalReaderPromptMessage = null
+                            dismissableNfcJob.value = null
                         }
                     }
                 },
@@ -111,7 +195,10 @@ fun NfcScreen(
                 onClick = {
                     dismissableNfcJob.value = coroutineScope.launch {
                         try {
-                            val reader = NfcTagReader.getReaders().first()
+                            val reader = readerSelected.value.getNfcTagReader()
+                            if (reader.dialogNeverShown) {
+                                externalReaderPromptMessage = "Hold your phone near a NDEF tag."
+                            }
                             val ccFile = reader.scan(
                                 message = "Hold your phone near a NDEF tag.",
                                 tagInteractionFunc = { tag ->
@@ -127,10 +214,14 @@ fun NfcScreen(
                             showToast("NDEF CC file: ${ccFile.toHex()}")
                         } catch (e: PromptDismissedException) {
                             showToast("Dialog dismissed by user")
-                        } catch (e: Throwable) {
+                        } catch (e: Exception) {
+                            if (e is CancellationException) throw e
                             Logger.e(TAG, "Fail", e)
                             e.printStackTrace()
                             showToast("Fail: ${e.message}")
+                        } finally {
+                            externalReaderPromptMessage = null
+                            dismissableNfcJob.value = null
                         }
                     }
                     coroutineScope.launch {
@@ -148,7 +239,8 @@ fun NfcScreen(
                 onClick = {
                     dismissableNfcJob.value = coroutineScope.launch {
                         try {
-                            val reader = NfcTagReader.getReaders().first()
+                            val reader = readerSelected.value.getNfcTagReader()
+                            externalReaderPromptMessage = "Hold your phone near a NDEF tag."
                             val ccFile = reader.scan(
                                 message = null,
                                 tagInteractionFunc = { tag ->
@@ -164,15 +256,16 @@ fun NfcScreen(
                             showToast("NDEF CC file: ${ccFile.toHex()}")
                         } catch (e: PromptDismissedException) {
                             showToast("Dialog dismissed by user")
-                        } catch (e: Throwable) {
+                        } catch (e: Exception) {
+                            if (e is CancellationException) throw e
                             Logger.e(TAG, "Fail", e)
                             e.printStackTrace()
                             showToast("Fail: ${e.message}")
                         } finally {
-                            showCustomNfcDialog.value = false
+                            externalReaderPromptMessage = null
+                            dismissableNfcJob.value = null
                         }
                     }
-                    showCustomNfcDialog.value = true
                 },
                 content = { Text("Scan for NDEF tag and read CC file (invisible prompt)") }
             )

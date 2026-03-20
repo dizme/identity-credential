@@ -1,5 +1,6 @@
 package org.multipaz.claim
 
+import kotlinx.coroutines.CancellationException
 import org.multipaz.cbor.Cbor
 import org.multipaz.cbor.CborMap
 import org.multipaz.cbor.DataItem
@@ -18,6 +19,7 @@ import kotlinx.datetime.toLocalDateTime
 /**
  * A claim in an ISO mdoc credential.
  *
+ * @property docType the document type.
  * @property namespaceName the mdoc namespace.
  * @property dataElementName the data element name.
  * @property value the value of the claim.
@@ -25,6 +27,7 @@ import kotlinx.datetime.toLocalDateTime
 data class MdocClaim(
     override val displayName: String,
     override val attribute: DocumentAttribute?,
+    val docType: String,
     val namespaceName: String,
     val dataElementName: String,
     val value: DataItem
@@ -140,7 +143,8 @@ data class MdocClaim(
                 }
 
             }
-        } catch (e: Throwable) {
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
             val fallback = Cbor.toDiagnostics(value, setOf(DiagnosticOption.BSTR_PRINT_LENGTH))
             "$fallback (fallback, error occurred during rendering: ${e.message})"
         }

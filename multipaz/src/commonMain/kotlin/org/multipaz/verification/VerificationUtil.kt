@@ -44,7 +44,6 @@ import org.multipaz.mdoc.response.DeviceResponse
 import org.multipaz.mdoc.zkp.ZkSystemRepository
 import org.multipaz.mdoc.zkp.ZkSystemSpec
 import org.multipaz.openid.OpenID4VP
-import org.multipaz.openid.dcql.DcqlQuery
 import org.multipaz.request.JsonRequestedClaim
 import org.multipaz.request.MdocRequestedClaim
 import org.multipaz.sdjwt.SdJwt
@@ -154,7 +153,8 @@ object VerificationUtil {
      *   if this is `null` for such protocols
      * @param readerAuthenticationKey an optional key to use for reader authentication and its
      *    certificate chain.
-     * @throws IllegalArgumentException if [dcqlQuery] contains features not supported by [DeviceRequest], for
+     * @param transactionData base64url-encoded transaction data if any.
+     * @throws IllegalArgumentException if [dcql] contains features not supported by [DeviceRequest], for
      *   example a request for credentials that aren't ISO mdocs.
      * @return a [JsonObject] with the request.
      */
@@ -167,6 +167,7 @@ object VerificationUtil {
         clientId: String?,
         responseEncryptionKey: EcPublicKey?,
         readerAuthenticationKey: AsymmetricKey.X509Compatible?,
+        transactionData: List<String> = listOf(),
     ): JsonObject {
         val requests = exchangeProtocols.map { exchangeProtocol ->
             generateSingleRequestDcql(
@@ -177,6 +178,7 @@ object VerificationUtil {
                 clientId = clientId,
                 responseEncryptionKey = responseEncryptionKey,
                 readerAuthenticationKey = readerAuthenticationKey,
+                transactionData = transactionData
             )
         }
         return buildJsonObject {
@@ -192,6 +194,7 @@ object VerificationUtil {
         clientId: String?,
         responseEncryptionKey: EcPublicKey?,
         readerAuthenticationKey: AsymmetricKey.X509Compatible?,
+        transactionData: List<String>,
     ): JsonObject = buildJsonObject {
         put("protocol", exchangeProtocol)
         when (exchangeProtocol) {
@@ -213,7 +216,8 @@ object VerificationUtil {
                         requestSigningKey = readerAuthenticationKey,
                         responseMode = OpenID4VP.ResponseMode.DC_API,
                         responseUri = null,
-                        dclqQuery = dcql
+                        dclqQuery = dcql,
+                        transactionData = transactionData
                     )
                 )
             }
@@ -221,6 +225,9 @@ object VerificationUtil {
             "org-iso-mdoc" -> {
                 if (responseEncryptionKey == null) {
                     throw IllegalArgumentException("Response encryption is mandatory for org-iso-mdoc")
+                }
+                if (transactionData.isNotEmpty()) {
+                    throw IllegalArgumentException("Transaction data is not yet supported")
                 }
                 val encryptionInfo = buildCborArray {
                     add("dcapi")
@@ -775,6 +782,7 @@ object VerificationUtil {
             claims.add(JsonClaim(
                 displayName = jsonAttr?.displayName ?: claimName,
                 attribute = jsonAttr,
+                vct = vct,
                 claimPath = JsonArray(listOf(JsonPrimitive(claimName))),
                 value = claimValue
             ))
@@ -787,6 +795,7 @@ object VerificationUtil {
                 claims.add(JsonClaim(
                     displayName = jsonAttr?.displayName ?: claimName + " (Device Signed)",
                     attribute = jsonAttr,
+                    vct = vct,
                     claimPath = JsonArray(listOf(JsonPrimitive(claimName))),
                     value = claimValue
                 ))
@@ -842,6 +851,7 @@ object VerificationUtil {
                         MdocClaim(
                             displayName = mdocAttr?.attribute?.displayName ?: dataElementName,
                             attribute = mdocAttr?.attribute,
+                            docType = document.docType,
                             namespaceName = namespaceName,
                             dataElementName = dataElementName,
                             value = issuerSignedItem.dataElementValue
@@ -858,6 +868,7 @@ object VerificationUtil {
                         MdocClaim(
                             displayName = mdocAttr?.attribute?.displayName ?: dataElementName,
                             attribute = mdocAttr?.attribute,
+                            docType = document.docType,
                             namespaceName = namespaceName,
                             dataElementName = dataElementName,
                             value = dataElementValue
@@ -904,6 +915,7 @@ object VerificationUtil {
                         MdocClaim(
                             displayName = mdocAttr?.attribute?.displayName ?: dataElementName,
                             attribute = mdocAttr?.attribute,
+                            docType = zkDocument.documentData.docType,
                             namespaceName = namespaceName,
                             dataElementName = dataElementName,
                             value = value
@@ -920,6 +932,7 @@ object VerificationUtil {
                         MdocClaim(
                             displayName = mdocAttr?.attribute?.displayName ?: dataElementName,
                             attribute = mdocAttr?.attribute,
+                            docType = zkDocument.documentData.docType,
                             namespaceName = namespaceName,
                             dataElementName = dataElementName,
                             value = value

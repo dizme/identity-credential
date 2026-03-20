@@ -65,6 +65,8 @@ fun runServer(
             Logger.i("Main", "SQL driver: ${Driver()}")
         } else if (jdbc.startsWith("jdbc:postgresql:")) {
             Logger.i("Main", "SQL driver: ${org.postgresql.Driver()}")
+        } else if (jdbc.startsWith("jdbc:sqlite:")) {
+            Logger.i("Main", "SQL driver: ${org.sqlite.JDBC()}")
         }
     }
     if (needAdminPassword) {
@@ -118,7 +120,7 @@ fun Application.installServerEnvironment(
                     }.toString(),
                     contentType = ContentType.Application.Json
                 )
-            } catch (err: Throwable) {
+            } catch (err: Exception) {
                 Logger.e(TAG, "Error", err)
                 err.printStackTrace()
                 call.respondText(

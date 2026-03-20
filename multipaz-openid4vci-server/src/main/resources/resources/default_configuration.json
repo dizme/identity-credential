@@ -5,7 +5,7 @@
     "sorotokin.com/**"
   ],
   "credential_mdl": {
-    "title": "{core.given_name}'s Driver License",
+    "title": "{core.given_name}'s driver license",
     "card_art": {
       "blank": "blank_mdl.png",
       "content": [
@@ -138,7 +138,7 @@
     }
   },
   "credential_naturalization": {
-    "title": "{core.given_name}'s Naturalization",
+    "title": "{core.given_name}'s naturalization",
     "card_art": {
       "blank": "blank_naturalization.png",
       "content": [
@@ -164,6 +164,63 @@
           "max_width": 650,
           "effects": [
             {"type": "lighting", "argb": "FF80C0C0" }
+          ]
+        }
+      ]
+    }
+  },
+  "credential_payment": {
+    "title": "{core.given_name}'s payment card",
+    "card_art": {
+      "blank": "card_payment_sca.png",
+      "content": [
+        {
+          "op": "text",
+          "text": "{display.masked_account_reference}",
+          "font": "fonts/OpenSans-SemiBold.ttf",
+          "font_size": 50,
+          "x": 180,
+          "y": 370,
+          "effects": [
+            {"type": "blur", "radius": 1, "argb": "44000000"},
+            {"type": "fill", "argb": "FF1D2430"}
+          ]
+        },
+        {
+          "op": "text",
+          "text": "VALID THRU",
+          "font": "fonts/OpenSans-SemiBold.ttf",
+          "font_size": 18,
+          "x": 540,
+          "y": 348,
+          "effects": [
+            {"type": "fill", "argb": "FF6B7280"}
+          ]
+        },
+        {
+          "op": "text",
+          "text": "{display.expiry_short}",
+          "font": "fonts/OpenSans-SemiBold.ttf",
+          "font_size": 44,
+          "x": 540,
+          "y": 370,
+          "effects": [
+            {"type": "blur", "radius": 1, "argb": "44000000"},
+            {"type": "fill", "argb": "FF1D2430"}
+          ]
+        },
+        {
+          "op": "text",
+          "text": "{core.given_name} {core.family_name}",
+          "uppercase": true,
+          "font": "fonts/OpenSans-SemiBold.ttf",
+          "font_size": 40,
+          "x": 70,
+          "y": 470,
+          "max_width": 520,
+          "effects": [
+            {"type": "blur", "radius": 1, "argb": "44000000"},
+            {"type": "fill", "argb": "FF1D2430"}
           ]
         }
       ]

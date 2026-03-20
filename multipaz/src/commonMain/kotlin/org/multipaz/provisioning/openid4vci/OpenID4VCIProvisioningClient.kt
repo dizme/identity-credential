@@ -1,5 +1,6 @@
 package org.multipaz.provisioning.openid4vci
 
+import kotlinx.coroutines.CancellationException
 import io.ktor.client.HttpClient
 import io.ktor.client.request.forms.submitForm
 import io.ktor.client.request.headers
@@ -261,9 +262,14 @@ internal class OpenID4VCIProvisioningClient(
         when (keyInfo) {
             KeyBindingInfo.Keyless -> listOf("")
             is KeyBindingInfo.OpenidProofOfPossession -> keyInfo.jwtList.map { jwt ->
-                val header = Json.parseToJsonElement(jwt.take(jwt.indexOf('.') - 1))
-                // 'kid' must be present and corresponds to the credential id
-                header.jsonObject["kid"]!!.jsonPrimitive.content
+                val headerB64 = jwt.substringBefore('.')
+                val header = Json.parseToJsonElement(
+                    headerB64.fromBase64Url().decodeToString()
+                )
+                val headerObj = header.jsonObject
+                headerObj["kid"]?.jsonPrimitive?.content
+                    ?: headerObj["jwk"]?.jsonObject?.get("kid")?.jsonPrimitive?.content
+                    ?: ""
             }
             is KeyBindingInfo.Attestation -> keyInfo.attestations.map { it.credentialId }
         }
@@ -707,6 +713,7 @@ internal class OpenID4VCIProvisioningClient(
                     keys.forEach { secureArea.deleteKey(it) }
                 }
             } catch (err: Exception) {
+                if (err is CancellationException) throw err
                 Logger.e(TAG, "Failed to clean up authorization data", err)
             }
         }

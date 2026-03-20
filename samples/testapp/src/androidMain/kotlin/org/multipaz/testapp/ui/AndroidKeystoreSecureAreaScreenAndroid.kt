@@ -1,5 +1,6 @@
 package org.multipaz.testapp.ui
 
+import kotlinx.coroutines.CancellationException
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.pm.FeatureInfo
@@ -122,6 +123,36 @@ actual fun AndroidKeystoreSecureAreaScreen(
             }
         }
 
+        for (n in listOf(0, 1)) {
+            val useStrongBox = if (n == 0) false else true
+            val buttonText = if (useStrongBox) "StrongBox Sanity Check" else "Sanity Check"
+            item {
+                TextButton(onClick = {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                        coroutineScope.launch {
+                            val t0 = Clock.System.now()
+                            try {
+                                androidKeystoreCapabilities.testKeyAttestationsAndEcdsaSigning(useStrongBox)
+                                val durationMsec = (Clock.System.now() - t0).inWholeMilliseconds
+                                showToast("Sanity check passed ($durationMsec msec)")
+                            } catch (e: Exception) {
+                                if (e is CancellationException) throw e
+                                val durationMsec = (Clock.System.now() - t0).inWholeMilliseconds
+                                e.printStackTrace()
+                                showToast("Sanity check failed ($durationMsec msec): ${e.message}")
+                            }
+                        }
+                    } else {
+                        showToast("This is only available on API 28 or later, you are running API ${Build.VERSION.SDK_INT}")
+                    }
+                }) {
+                    Text(
+                        text = buttonText, fontSize = 15.sp
+                    )
+                }
+            }
+        }
+
         item {
             TextButton(onClick = {
                 coroutineScope.launch {
@@ -131,7 +162,8 @@ actual fun AndroidKeystoreSecureAreaScreen(
                         withContext(Dispatchers.Main) {
                             onViewCertificate(Cbor.encode(attestation.certChain!!.toDataItem()).toBase64Url())
                         }
-                    } catch (e: Throwable) {
+                    } catch (e: Exception) {
+                        if (e is CancellationException) throw e
                         e.printStackTrace();
                         showToast("${e.message}")
                     }
@@ -154,7 +186,8 @@ actual fun AndroidKeystoreSecureAreaScreen(
                         withContext(Dispatchers.Main) {
                             onViewCertificate(Cbor.encode(attestation.certChain!!.toDataItem()).toBase64Url())
                         }
-                    } catch (e: Throwable) {
+                    } catch (e: Exception) {
+                        if (e is CancellationException) throw e
                         e.printStackTrace();
                         showToast("${e.message}")
                     }
@@ -179,7 +212,8 @@ actual fun AndroidKeystoreSecureAreaScreen(
                                 Cbor.encode(attestation.certChain!!.toDataItem()).toBase64Url()
                             )
                         }
-                    } catch (e: Throwable) {
+                    } catch (e: Exception) {
+                        if (e is CancellationException) throw e
                         e.printStackTrace();
                         showToast("${e.message}")
                     }
@@ -204,7 +238,8 @@ actual fun AndroidKeystoreSecureAreaScreen(
                                 Cbor.encode(attestation.certChain!!.toDataItem()).toBase64Url()
                             )
                         }
-                    } catch (e: Throwable) {
+                    } catch (e: Exception) {
+                        if (e is CancellationException) throw e
                         e.printStackTrace();
                         showToast("${e.message}")
                     }
@@ -575,7 +610,8 @@ private suspend fun aksTest(
     try {
         aksTestUnguarded(algorithm, authRequired, authTimeout, userAuthType,
             biometricConfirmationRequired, strongBox, showToast)
-    } catch (e: Throwable) {
+    } catch (e: Exception) {
+        if (e is CancellationException) throw e
         e.printStackTrace();
         showToast("${e.message}")
     }

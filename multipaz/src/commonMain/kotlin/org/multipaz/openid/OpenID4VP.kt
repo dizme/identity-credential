@@ -3,8 +3,10 @@ package org.multipaz.openid
 import kotlinx.io.bytestring.decodeToString
 import kotlin.time.Clock
 import kotlinx.io.bytestring.encodeToByteString
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonObjectBuilder
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
@@ -29,6 +31,7 @@ import org.multipaz.crypto.JsonWebEncryption
 import org.multipaz.crypto.AsymmetricKey
 import org.multipaz.crypto.X509CertChain
 import org.multipaz.document.Document
+import org.multipaz.eventlogger.EventPresentmentData
 import org.multipaz.webtoken.buildJwt
 import org.multipaz.mdoc.credential.MdocCredential
 import org.multipaz.mdoc.response.DeviceResponse
@@ -36,10 +39,12 @@ import org.multipaz.mdoc.response.MdocDocument
 import org.multipaz.mdoc.response.buildDeviceResponse
 import org.multipaz.mdoc.zkp.ZkSystem
 import org.multipaz.mdoc.zkp.ZkSystemSpec
+import org.multipaz.openid.dcql.DcqlCredentialQueryException
 import org.multipaz.openid.dcql.DcqlQuery
 import org.multipaz.presentment.CredentialMatchSourceOpenID4VP
 import org.multipaz.presentment.CredentialPresentmentSetOptionMemberMatch
-import org.multipaz.presentment.PresentmentCanceled
+import org.multipaz.presentment.PresentmentCanceledException
+import org.multipaz.presentment.PresentmentCannotSatisfyRequestException
 import org.multipaz.presentment.PresentmentSource
 import org.multipaz.request.JsonRequestedClaim
 import org.multipaz.request.MdocRequestedClaim
@@ -79,6 +84,7 @@ object OpenID4VP {
      * @param responseMode the response mode.
      * @param responseUri the response URI or `null`.
      * @param dclqQuery the DCQL query.
+     * @param transactionData strings from `transaction_data` array, see OpenID4VP 1.0 section 8.4.
      * @return the OpenID4VP request.
      */
     suspend fun generateRequest(
@@ -91,6 +97,7 @@ object OpenID4VP {
         responseMode: ResponseMode,
         responseUri: String?,
         dclqQuery: JsonObject,
+        transactionData: List<String> = emptyList()
     ): JsonObject {
         if (version == Version.DRAFT_24) {
             return generateRequestDraft24(
@@ -158,6 +165,11 @@ object OpenID4VP {
                         }
                     }
                 }
+            }
+            if (transactionData.isNotEmpty()) {
+                put("transaction_data", JsonArray(transactionData.map {
+                    JsonPrimitive(it)
+                }))
             }
         }
 
@@ -253,6 +265,19 @@ object OpenID4VP {
     }
 
     /**
+     * Represents the response to an OpenID4VP request.
+     *
+     * @property response the response containing [vpToken], possibly encrypted.
+     * @property vpToken the VP Token.
+     * @property eventData a [EventPresentmentData] to be used for logging.
+     */
+    data class OpenID4VPResponse(
+        val response: JsonObject,
+        val vpToken: JsonObject,
+        val eventData: EventPresentmentData
+    )
+
+    /**
      * Generates an OpenID4VP response.
      *
      * @param version the version of OpenID4VP to generate a response for.
@@ -268,12 +293,14 @@ object OpenID4VP {
      * @param requesterCertChain the X.509 certificate chain if the request is signed or `null`
      *   if the request is not signed.
      * @return the generated response according to OpenID4VP Section 8 Response.
-     * @throws PresentmentCanceled if the user canceled in a consent prompt.
+     * @throws PresentmentCanceledException if the user canceled in a consent prompt.
+     * @throws PresentmentCannotSatisfyRequestException if it's not possible to satisfy the request.
      */
     @Throws(
         CancellationException::class,
         IllegalStateException::class,
-        PresentmentCanceled::class
+        PresentmentCanceledException::class,
+        PresentmentCannotSatisfyRequestException::class
     )
     @OptIn(ExperimentalEncodingApi::class)
     suspend fun generateResponse(
@@ -284,7 +311,8 @@ object OpenID4VP {
         origin: String?,
         request: JsonObject,
         requesterCertChain: X509CertChain?,
-    ): JsonObject {
+        onDocumentsInFocus: (documents: List<Document>) -> Unit = {},
+    ): OpenID4VPResponse {
         Logger.iJson(TAG, "request", request)
 
         val nonce = request["nonce"]!!.jsonPrimitive.content
@@ -300,6 +328,7 @@ object OpenID4VP {
                     ?: throw IllegalArgumentException("No response_uri set for $responseModeText")
                 Pair(uri, ResponseMode.DIRECT_POST)
             }
+
             else -> throw IllegalArgumentException("Unexpected response_mode $responseModeText")
         }
         // TODO: in the future, maybe flat out reject requests that doesn't use encrypted response
@@ -392,9 +421,13 @@ object OpenID4VP {
 
         val vpTokens = mutableMapOf<String, String>()
         val dcqlQuery = DcqlQuery.fromJson(request["dcql_query"]!!.jsonObject)
-        val dcqlResponse = dcqlQuery.execute(
-            presentmentSource = source,
-        )
+        val dcqlResponse = try {
+            dcqlQuery.execute(
+                presentmentSource = source,
+            )
+        } catch (e: DcqlCredentialQueryException) {
+            throw PresentmentCannotSatisfyRequestException("Unable to satisfy the request", e)
+        }
 
         val requester = Requester(
             certChain = requesterCertChain,
@@ -402,18 +435,24 @@ object OpenID4VP {
             origin = origin
         )
 
+        val transactionDataMap = request["transaction_data"]?.let {
+            TransactionData.parse(it)
+        }
+        // TODO: incorporate transaction data into the consent prompt and event logging
+        val trustMetadata = source.resolveTrust(requester)
         val selection = source.showConsentPrompt(
-            requester,
-            source.resolveTrust(requester),
-            dcqlResponse,
-            preselectedDocuments,
-            { selection -> },
+            requester = requester,
+            trustMetadata = trustMetadata,
+            credentialPresentmentData = dcqlResponse,
+            preselectedDocuments = preselectedDocuments,
+            onDocumentsInFocus = onDocumentsInFocus
         )
         if (selection == null) {
-            throw PresentmentCanceled("User canceled at document selection time")
+            throw PresentmentCanceledException("User canceled at document selection time")
         }
 
         var usingZk = false
+        val credentialsPresented = mutableSetOf<Credential>()
         selection.matches.forEach { match ->
             match.source as CredentialMatchSourceOpenID4VP
             val requestIsForZk = match.source.credentialQuery.format == "mso_mdoc_zk"
@@ -439,12 +478,14 @@ object OpenID4VP {
                     origin = origin,
                     clientId = clientId,
                     nonce = nonce,
-                    responseMode = responseMode
+                    responseMode = responseMode,
+                    transactionData = transactionDataMap?.get(match.source.credentialQuery.id)
                 )
             } else {
                 throw IllegalArgumentException("Expected ISO mdoc or IETF SD-JWT, got neither")
             }
             vpTokens.put(match.source.credentialQuery.id, credentialResponse)
+            credentialsPresented.add(match.credential)
         }
 
         val vpToken = when (version) {
@@ -477,7 +518,7 @@ object OpenID4VP {
         val compressionLevel = if (usingZk) 9 else null
 
         val walletGeneratedNonce = Random.nextBytes(16).toBase64Url()
-        return if (reReaderPublicKey != null) {
+        val response = if (reReaderPublicKey != null) {
             buildJsonObject {
                 put("response",
                     JsonWebEncryption.encrypt(
@@ -494,6 +535,16 @@ object OpenID4VP {
         } else {
             vpToken
         }
+
+        return OpenID4VPResponse(
+            response = response,
+            vpToken = vpToken,
+            eventData = EventPresentmentData.fromPresentmentSelection(
+                selection = selection,
+                requester = requester,
+                trustMetadata = trustMetadata
+            )
+        )
     }
 
     private suspend fun openID4VPMsoMdoc(
@@ -505,7 +556,8 @@ object OpenID4VP {
         nonce: String,
         reReaderPublicKey: EcPublicKey?,
         responseUri: String?,
-        requestIsForZk: Boolean
+        requestIsForZk: Boolean,
+        onDocumentsInFocus: (documents: List<Document>) -> Unit = {},
     ): String {
         match.source as CredentialMatchSourceOpenID4VP
         var zkSystemMatch: ZkSystem? = null
@@ -640,6 +692,7 @@ object OpenID4VP {
         clientId: String,
         nonce: String,
         responseMode: ResponseMode,
+        transactionData: List<TransactionData>?
     ): String {
         match.source as CredentialMatchSourceOpenID4VP
         val sdjwtVcCredential = match.credential as SdJwtVcCredential
@@ -671,9 +724,24 @@ object OpenID4VP {
                     clientId
                 },
                 creationTime = Clock.System.now()
-            ).compactSerialization
+            ) {
+                transactionData?.let { dataArray ->
+                    putJsonArray("transaction_data_hashes") {
+                        dataArray.forEach { data -> add(data.hash.toByteArray().toBase64Url()) }
+                    }
+                    dataArray.firstNotNullOfOrNull { it.hashAlgorithm }?.let { hashAlgorithm ->
+                        // Non-default hash algorithm; ensure all transaction data items are
+                        // using the same one
+                        dataArray.forEach { data ->
+                            check(hashAlgorithm == (data.hashAlgorithm ?: Algorithm.SHA256))
+                        }
+                        put("transaction_data_hashes_alg", hashAlgorithm.hashAlgorithmName)
+                    }
+                }
+            }.compactSerialization
         } else {
             filteredSdJwt.compactSerialization
         }
     }
+
 }

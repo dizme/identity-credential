@@ -29,7 +29,7 @@ func getPresentmentSource() async -> PresentmentSource {
     ).build()
     
     let ephemeralStorage = EphemeralStorage(clock: KotlinClockCompanion().getSystem())
-    let readerTrustManager = TrustManagerLocal(storage: ephemeralStorage, identifier: "default", partitionId: "default_default")
+    let readerTrustManager = TrustManager(storage: ephemeralStorage, identifier: "default", partitionId: "default_default")
     try! await readerTrustManager.addX509Cert(
         certificate: X509Cert.companion.fromPem(
             pemEncoding: """
@@ -49,7 +49,7 @@ func getPresentmentSource() async -> PresentmentSource {
                 """.trimmingCharacters(in: .whitespacesAndNewlines)
         ),
         metadata: TrustMetadata(
-            displayName: "Multipaz Identity Verifier",
+            displayName: "Multipaz Verifier",
             displayIcon: nil,
             displayIconUrl: "https://www.multipaz.org/multipaz-logo-200x200.png",
             privacyPolicyUrl: "https://apps.multipaz.org",

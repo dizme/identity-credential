@@ -1,5 +1,6 @@
 package org.multipaz.mdoc.response
 
+import kotlinx.coroutines.CancellationException
 import org.multipaz.cbor.DataItem
 import org.multipaz.cbor.addCborMap
 import org.multipaz.cbor.buildCborMap
@@ -64,7 +65,7 @@ data class DeviceResponse internal constructor(
      *
      * The following checks are expected to be done by the application:
      * - Determining whether the issuer's document signing certificate is trusted.
-     *   An application can use [org.multipaz.trustmanagement.TrustManager] to do this.
+     *   An application can use [org.multipaz.trustmanagement.TrustManagerInterface] to do this.
      * - Checking whether the MSO is revoked, or any of the keys involved are revoked.
      * - Checking the integrity of any Zero-Knowledge Proofs for documents returned in [zkDocuments].
      *   An application can use [org.multipaz.mdoc.zkp.ZkSystem] to do this.
@@ -85,7 +86,8 @@ data class DeviceResponse internal constructor(
         documents_.forEachIndexed { index, document ->
             try {
                 document.verify(sessionTranscript, eReaderKey, atTime)
-            } catch (e: Throwable) {
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
                 throw IllegalStateException("Error verifying document $index in DeviceResponse", e)
             }
         }

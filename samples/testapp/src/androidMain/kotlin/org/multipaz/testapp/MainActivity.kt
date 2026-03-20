@@ -2,12 +2,15 @@ package org.multipaz.testapp
 
 import android.content.ComponentName
 import android.content.Intent
+import android.hardware.usb.UsbDevice
+import android.hardware.usb.UsbManager
 import android.nfc.NfcAdapter
 import android.nfc.cardemulation.CardEmulation
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.core.content.IntentCompat
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.coroutineScope
 import io.ktor.client.HttpClient
@@ -15,6 +18,8 @@ import io.ktor.client.engine.android.Android
 import kotlinx.coroutines.launch
 import org.multipaz.applinks.AppLinksCheck
 import org.multipaz.context.initializeApplication
+import org.multipaz.nfc.handleUsbDeviceAttached
+import org.multipaz.testapp.TestAppConfiguration.ACTION_VIEW_DOCUMENT
 import org.multipaz.testapp.provisioning.ProvisioningSupport
 import org.multipaz.util.Logger
 
@@ -82,13 +87,35 @@ class MainActivity : FragmentActivity() {
     }
 
     private fun handleIntent(intent: Intent) {
-        if (intent.action == Intent.ACTION_VIEW) {
+        if (intent.action == ACTION_VIEW_DOCUMENT) {
+            val documentId = intent.getStringExtra("documentId")
+            if (documentId != null) {
+                lifecycle.coroutineScope.launch {
+                    val app = App.getInstance()
+                    app.initialize()
+                    app.viewDocument(documentId)
+                }
+            }
+        } else if (intent.action == Intent.ACTION_VIEW) {
             val url = intent.dataString
             if (url != null) {
                 lifecycle.coroutineScope.launch {
                     val app = App.getInstance()
                     app.initialize()
                     app.handleUrl(url)
+                }
+            }
+        } else if (intent.action == UsbManager.ACTION_USB_DEVICE_ATTACHED) {
+            val device = IntentCompat.getParcelableExtra(
+                intent,
+                UsbManager.EXTRA_DEVICE,
+                UsbDevice::class.java
+            )
+            if (device != null) {
+                lifecycle.coroutineScope.launch {
+                    val app = App.getInstance()
+                    app.initialize()
+                    app.externalNfcReaderStore.handleUsbDeviceAttached(device)
                 }
             }
         }

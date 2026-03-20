@@ -30,7 +30,7 @@ import org.multipaz.mdoc.transport.MdocTransportFactory
 import org.multipaz.mdoc.transport.advertise
 import org.multipaz.mdoc.transport.waitForConnection
 import org.multipaz.presentment.Iso18013Presentment
-import org.multipaz.presentment.PresentmentCanceled
+import org.multipaz.presentment.PresentmentCanceledException
 import org.multipaz.presentment.PresentmentModel
 import org.multipaz.presentment.PresentmentSource
 import org.multipaz.prompt.PromptModel
@@ -139,8 +139,7 @@ private fun MdocProximityQrPresentmentAndroid(
                             )
 
                             PresentmentActivity.presentmentModel.reset(
-                                documentStore = source.documentStore,
-                                documentTypeRepository = source.documentTypeRepository,
+                                source = source,
                                 preselectedDocuments = preselectedDocuments
                             )
                             val intent = Intent(applicationContext, PresentmentActivity::class.java)
@@ -179,10 +178,10 @@ private fun MdocProximityQrPresentmentAndroid(
                                 onSendingResponse = { PresentmentActivity.presentmentModel.setSending() }
                             )
                             PresentmentActivity.presentmentModel.setCompleted(null)
-                        } catch (e: Throwable) {
+                        } catch (e: Exception) {
                             if (e is CancellationException) {
                                 PresentmentActivity.presentmentModel.setCompleted(
-                                    PresentmentCanceled("Presentment was cancelled")
+                                    PresentmentCanceledException("Presentment was cancelled")
                                 )
                             } else {
                                 PresentmentActivity.presentmentModel.setCompleted(e)

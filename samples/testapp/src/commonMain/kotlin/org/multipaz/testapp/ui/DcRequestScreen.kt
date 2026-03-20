@@ -1,5 +1,6 @@
 package org.multipaz.testapp.ui
 
+import kotlinx.coroutines.CancellationException
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -23,6 +24,7 @@ import org.multipaz.compose.rememberUiBoundCoroutineScope
 import org.multipaz.crypto.Crypto
 import org.multipaz.crypto.EcCurve
 import org.multipaz.crypto.EcPrivateKey
+import org.multipaz.crypto.Algorithm
 import org.multipaz.crypto.AsymmetricKey
 import org.multipaz.documenttype.DocumentCannedRequest
 import org.multipaz.mdoc.zkp.ZkSystemRepository
@@ -37,6 +39,7 @@ import org.multipaz.request.MdocRequestedClaim
 import org.multipaz.testapp.App
 import org.multipaz.testapp.TestAppUtils
 import org.multipaz.util.Logger
+import org.multipaz.util.toBase64Url
 import org.multipaz.verification.VerificationUtil
 import org.multipaz.testapp.ShowResponseMetadata
 import org.multipaz.testapp.TestAppConfiguration
@@ -185,7 +188,7 @@ fun DcRequestScreen(
         item {
             ComboBox(
                 headline = "Claims to request",
-                availableRequests = requestOptions,
+                options = requestOptions,
                 comboBoxSelected = requestSelected,
                 comboBoxExpanded = requestDropdownExpanded,
                 getDisplayName = { it.displayName },
@@ -195,7 +198,7 @@ fun DcRequestScreen(
         item {
             ComboBox(
                 headline = "W3C Digital Credentials Protocol(s)",
-                availableRequests = protocolOptions,
+                options = protocolOptions,
                 comboBoxSelected = protocolSelected,
                 comboBoxExpanded = protocolDropdownExpanded,
                 getDisplayName = { it.displayName },
@@ -205,7 +208,7 @@ fun DcRequestScreen(
         item {
             ComboBox(
                 headline = "Credential Format",
-                availableRequests = formatOptions,
+                options = formatOptions,
                 comboBoxSelected = formatSelected,
                 comboBoxExpanded = formatDropdownExpanded,
                 getDisplayName = { it.displayName },
@@ -226,7 +229,8 @@ fun DcRequestScreen(
                                 zkSystemRepository = app.zkSystemRepository,
                                 showResponse = showResponse
                             )
-                        } catch (error: Throwable) {
+                        } catch (error: Exception) {
+                            if (error is CancellationException) throw error
                             Logger.e(TAG, "Error requesting credentials", error)
                             showToast("Error: ${error.message}")
                         }
@@ -270,7 +274,14 @@ private suspend fun doDcRequestFlow(
     val responseEncryptionKey = Crypto.createEcPrivateKey(EcCurve.P256)
     val origin = TestAppConfiguration.getAppToAppOrigin()
     // According to OpenID4VP, Client ID must be set for signed requests and not for unsigned requests
-    val clientId = "web-origin:$origin"
+    val clientId = if (protocol.signRequest) {
+        val cert = appReaderKey.certChain?.certificates?.getOrNull(0)
+            ?: throw IllegalArgumentException("Certificate chain is missing or empty")
+        val certHash = Crypto.digest(Algorithm.SHA256, cert.encoded.toByteArray()).toBase64Url()
+        "x509_hash:$certHash"
+    } else {
+        null
+    }
 
     val dcRequestObject = when (request) {
         is SingleDocumentCannedRequest -> {
@@ -281,6 +292,7 @@ private suspend fun doDcRequestFlow(
                         namespaceRequest.dataElementsToRequest.forEach { (mdocDataElement, intentToRetain) ->
                             claims.add(
                                 MdocRequestedClaim(
+                                    docType = request.mdocRequest!!.docType,
                                     namespaceName = namespaceRequest.namespace,
                                     dataElementName = mdocDataElement.attribute.identifier,
                                     intentToRetain = intentToRetain
@@ -317,6 +329,7 @@ private suspend fun doDcRequestFlow(
                         }
                         path.add(JsonPrimitive(documentAttribute.identifier))
                         JsonRequestedClaim(
+                            vctValues = listOf(request.jsonRequest!!.vct),
                             claimPath = JsonArray(path),
                         )
                     }

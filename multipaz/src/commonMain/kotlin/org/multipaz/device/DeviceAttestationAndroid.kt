@@ -1,11 +1,13 @@
 package org.multipaz.device
 
+import kotlinx.coroutines.CancellationException
 import org.multipaz.crypto.Algorithm
 import org.multipaz.crypto.Crypto
 import org.multipaz.crypto.EcSignature
 import org.multipaz.crypto.X509CertChain
 import org.multipaz.util.validateAndroidKeyAttestation
 import org.multipaz.crypto.SignatureVerificationException
+import kotlin.time.Instant
 
 /**
  * On Android we create a private key in secure area and use its key attestation as the
@@ -14,7 +16,10 @@ import org.multipaz.crypto.SignatureVerificationException
 data class DeviceAttestationAndroid(
     val certificateChain: X509CertChain
 ) : DeviceAttestation() {
-    override suspend fun validate(validationData: DeviceAttestationValidationData) {
+    override suspend fun validate(
+        validationData: DeviceAttestationValidationData,
+        validateAt: Instant
+    ) {
         try {
             validateAndroidKeyAttestation(
                 chain = certificateChain,
@@ -23,10 +28,12 @@ data class DeviceAttestationAndroid(
                 requireVerifiedBootGreen = validationData.androidVerifiedBootGreen,
                 requireKeyMintSecurityLevel = validationData.androidRequiredKeyMintSecurityLevel,
                 requireAppSignatureCertificateDigests = validationData.androidAppSignatureCertificateDigests,
-                requireAppPackages = validationData.androidAppPackageNames
+                requireAppPackages = validationData.androidAppPackageNames,
+                validateAt = validateAt
             )
-        } catch (err: Exception) {
-            throw DeviceAttestationException("Failed Android device attestation", err)
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            throw DeviceAttestationException("Failed Android device attestation: ${e.message}", e)
         }
     }
 

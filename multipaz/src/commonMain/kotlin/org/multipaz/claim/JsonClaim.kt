@@ -1,5 +1,6 @@
 package org.multipaz.claim
 
+import kotlinx.coroutines.CancellationException
 import org.multipaz.datetime.formatLocalized
 import org.multipaz.documenttype.DocumentAttribute
 import org.multipaz.documenttype.DocumentAttributeType
@@ -18,12 +19,14 @@ import kotlinx.serialization.json.jsonPrimitive
 /**
  * A claim in a JSON-based credential.
  *
+ * @property vct the Verifiable Credential Type.
  * @property claimPath the claim name.
  * @property value the value of the claim
  */
 data class JsonClaim(
     override val displayName: String,
     override val attribute: DocumentAttribute?,
+    val vct: String,
     val claimPath: JsonArray,
     val value: JsonElement
 ) : Claim(displayName, attribute) {
@@ -88,7 +91,8 @@ data class JsonClaim(
                 }
 
             }
-        } catch (e: Throwable) {
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
             val fallback = value.toString()
             "$fallback (fallback, error occurred during rendering: ${e.message})"
         }

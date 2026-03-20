@@ -11,6 +11,7 @@ import org.multipaz.cbor.buildCborArray
 import org.multipaz.crypto.EcCurve
 import org.multipaz.crypto.EcPrivateKey
 import org.multipaz.document.Document
+import org.multipaz.eventlogger.EventPresentmentIso18013Proximity
 import org.multipaz.mdoc.request.DeviceRequest
 import org.multipaz.mdoc.role.MdocRole
 import org.multipaz.mdoc.sessionencryption.EReaderKey
@@ -46,14 +47,16 @@ private const val TAG = "Iso180135Presentment"
  * @param onSendingResponse called when sending a response to the remote reader.
  * @throws MdocTransportClosedException if [transport] was closed.
  * @throws Iso18013PresentmentTimeoutException if the reader didn't send a message without the given [timeout].
- * @throws PresentmentCanceled if the user canceled in a consent prompt.
+ * @throws PresentmentCanceledException if the user canceled in a consent prompt.
+ * @throws PresentmentCannotSatisfyRequestException if it's not possible to satisfy the request.
  */
 @Throws(
     CancellationException::class,
     IllegalStateException::class,
     MdocTransportClosedException::class,
     Iso18013PresentmentTimeoutException::class,
-    PresentmentCanceled::class
+    PresentmentCanceledException::class,
+    PresentmentCannotSatisfyRequestException::class
 )
 suspend fun Iso18013Presentment(
     transport: MdocTransport,
@@ -134,7 +137,7 @@ suspend fun Iso18013Presentment(
             Logger.iCbor(TAG, "DeviceRequest", deviceRequestCbor)
             val deviceRequest = DeviceRequest.fromDataItem(deviceRequestCbor)
             deviceRequest.verifyReaderAuthentication(sessionTranscript)
-            val deviceResponse = mdocPresentment(
+            val responseObject = mdocPresentment(
                 deviceRequest = deviceRequest,
                 eReaderKey = eReaderKey.publicKey,
                 sessionTranscript = sessionTranscript,
@@ -148,11 +151,21 @@ suspend fun Iso18013Presentment(
             onSendingResponse()
             transport.sendMessage(
                 sessionEncryption.encryptMessage(
-                    messagePlaintext = Cbor.encode(deviceResponse.toDataItem()),
+                    messagePlaintext = Cbor.encode(responseObject.deviceResponse.toDataItem()),
                     statusCode = null
                 )
             )
             numRequestsServed += 1
+
+            source.eventLogger?.addEventAsync(
+                EventPresentmentIso18013Proximity(
+                    presentmentData = responseObject.eventData,
+                    request = deviceRequest.toDataItem(),
+                    response = responseObject.deviceResponse.toDataItem(),
+                    sessionTranscript = sessionTranscript,
+                )
+            )
+
             Logger.i(TAG, "Response sent, keeping connection open")
         }
     } finally {
@@ -162,7 +175,8 @@ suspend fun Iso18013Presentment(
                 transport.sendMessage(
                     SessionEncryption.encodeStatus(Constants.SESSION_DATA_STATUS_SESSION_TERMINATION)
                 )
-            } catch (e: Throwable) {
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
                 Logger.w(TAG, "Caught error while sending session-termination", e)
             }
         }

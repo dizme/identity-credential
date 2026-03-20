@@ -1,5 +1,6 @@
 package org.multipaz.testapp.ui
 
+import kotlinx.coroutines.CancellationException
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.Text
@@ -20,13 +21,11 @@ import org.multipaz.util.Logger
 import org.multipaz.util.toHex
 import kotlinx.coroutines.launch
 import kotlin.time.Clock
-import org.jetbrains.compose.ui.tooling.preview.Preview
 import org.multipaz.crypto.Algorithm
 import org.multipaz.prompt.Reason
 
 private val TAG = "SoftwareSecureAreaScreen"
 
-@Preview
 @Composable
 fun SoftwareSecureAreaScreen(
     softwareSecureArea: SoftwareSecureArea,
@@ -98,7 +97,8 @@ private suspend fun swTest(
     )
     try {
         swTestUnguarded(softwareSecureArea, algorithm, passphrase, passphraseConstraints, showToast)
-    } catch (e: Throwable) {
+    } catch (e: Exception) {
+        if (e is CancellationException) throw e
         e.printStackTrace();
         showToast("${e.message}")
     }

@@ -1,5 +1,6 @@
 package org.multipaz.testapp.ui
 
+import kotlinx.coroutines.CancellationException
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -43,7 +44,7 @@ import org.multipaz.crypto.X509CertChain
 import org.multipaz.documenttype.DocumentAttributeType
 import org.multipaz.documenttype.DocumentTypeRepository
 import org.multipaz.mdoc.zkp.ZkSystemRepository
-import org.multipaz.trustmanagement.TrustManager
+import org.multipaz.trustmanagement.TrustManagerInterface
 import org.multipaz.util.Logger
 import org.multipaz.util.fromBase64Url
 import org.multipaz.verification.JsonVerifiedPresentation
@@ -109,7 +110,7 @@ fun ShowResponse(
     nonce: ByteString?,
     eReaderKey: EcPrivateKey?,
     metadata: ShowResponseMetadata?,
-    issuerTrustManager: TrustManager,
+    issuerTrustManager: TrustManagerInterface,
     documentTypeRepository: DocumentTypeRepository?,
     zkSystemRepository: ZkSystemRepository?,
     onViewCertChain: ((certChain: X509CertChain) -> Unit)?
@@ -135,7 +136,8 @@ fun ShowResponse(
                     issuerTrustManager = issuerTrustManager,
                     onViewCertChain = onViewCertChain
                 )
-            } catch (e: Throwable) {
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
                 Logger.e(TAG, "Error parsing response", e)
                 verificationError.value = e
             }
@@ -219,7 +221,7 @@ private suspend fun parseResponse(
     metadata: ShowResponseMetadata?,
     documentTypeRepository: DocumentTypeRepository?,
     zkSystemRepository: ZkSystemRepository?,
-    issuerTrustManager: TrustManager,
+    issuerTrustManager: TrustManagerInterface,
     onViewCertChain: ((certChain: X509CertChain) -> Unit)?
 ): VerificationResult {
     val sections = mutableListOf<Section>()

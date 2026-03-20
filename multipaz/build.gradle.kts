@@ -21,6 +21,8 @@ plugins {
 val projectVersionCode: Int by rootProject.extra
 val projectVersionName: String by rootProject.extra
 
+val disableWebTargets = project.properties["disable.web.targets"]?.toString()?.toBoolean() ?: false
+
 buildConfig {
     packageName("org.multipaz.util")
     buildConfigField("VERSION", projectVersionName)
@@ -46,18 +48,20 @@ kotlin {
         publishLibraryVariants("release")
     }
 
-    js {
-        outputModuleName = "multipaz"
-        browser {
+    if (!disableWebTargets) {
+        js {
+            outputModuleName = "multipaz"
+            browser {
+            }
+            binaries.executable()
         }
-        binaries.executable()
-    }
 
-    wasmJs {
-        outputModuleName = "multipaz"
-        browser {
+        wasmJs {
+            outputModuleName = "multipaz"
+            browser {
+            }
+            binaries.executable()
         }
-        binaries.executable()
     }
 
     listOf(
@@ -209,10 +213,12 @@ kotlin {
             }
         }
 
-        val webMain by getting {
-            dependencies {
-                implementation(libs.kotlin.wrappers.web)
-                implementation(libs.kotlinx.browser)
+        if (!disableWebTargets) {
+            val webMain by getting {
+                dependencies {
+                    implementation(libs.kotlin.wrappers.web)
+                    implementation(libs.kotlinx.browser)
+                }
             }
         }
     }
@@ -236,8 +242,10 @@ tasks["compileKotlinIosX64"].dependsOn("kspCommonMainKotlinMetadata")
 tasks["compileKotlinIosArm64"].dependsOn("kspCommonMainKotlinMetadata")
 tasks["compileKotlinIosSimulatorArm64"].dependsOn("kspCommonMainKotlinMetadata")
 tasks["compileKotlinJvm"].dependsOn("kspCommonMainKotlinMetadata")
-tasks["compileKotlinJs"].dependsOn("kspCommonMainKotlinMetadata")
-tasks["compileKotlinWasmJs"].dependsOn("kspCommonMainKotlinMetadata")
+if (!disableWebTargets) {
+    tasks["compileKotlinJs"].dependsOn("kspCommonMainKotlinMetadata")
+    tasks["compileKotlinWasmJs"].dependsOn("kspCommonMainKotlinMetadata")
+}
 
 tasks.withType<Test> {
     testLogging {
@@ -283,16 +291,32 @@ version = projectVersionName
 publishing {
     repositories {
         maven {
-            url = uri("${rootProject.rootDir}/repo")
+            url = uri(rootProject.layout.buildDirectory.dir("staging-repo"))
         }
     }
     publications.withType(MavenPublication::class) {
         pom {
+            name.set("multipaz")
+            description.set("Multipaz SDK core module")
+            url.set("https://github.com/openwallet-foundation/multipaz")
             licenses {
                 license {
-                    name = "Apache 2.0"
-                    url = "https://opensource.org/licenses/Apache-2.0"
+                    name.set("Apache-2.0")
+                    url.set("https://opensource.org/licenses/Apache-2.0")
+                    distribution.set("repo")
                 }
+            }
+            developers {
+                developer {
+                    id.set("zeuthen")
+                    name.set("David Zeuthen")
+                    email.set("zeuthen@google.com")
+                }
+            }
+            scm {
+                connection.set("scm:git:git://github.com/openwallet-foundation/multipaz.git")
+                developerConnection.set("scm:git:ssh://github.com/openwallet-foundation/multipaz.git")
+                url.set("https://github.com/openwallet-foundation/multipaz")
             }
         }
     }

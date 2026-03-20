@@ -1,5 +1,6 @@
 package org.multipaz.testapp.ui
 
+import kotlinx.coroutines.CancellationException
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -205,7 +206,7 @@ fun ConsentPromptScreen(
         documentTypeRepository.addDocumentType(PhotoID.getDocumentType())
         documentTypeRepository.addDocumentType(UtopiaBoardingPass.getDocumentType())
         documentStore = buildDocumentStore(storage, secureAreaRepository) {}
-        documentModel = DocumentModel(documentStore = documentStore!!, documentTypeRepository = documentTypeRepository)
+        documentModel = DocumentModel.create(documentStore = documentStore!!, documentTypeRepository = documentTypeRepository)
 
         val now = Clock.System.now().truncateToWholeSeconds()
         val iacaCertValidFrom = now - 1.days
@@ -390,7 +391,8 @@ fun ConsentPromptScreen(
                             onDocumentsInFocus = documents
                         },
                     )
-                } catch (e: Throwable) {
+                } catch (e: Exception) {
+                    if (e is CancellationException) throw e
                     e.printStackTrace()
                     showToast("Error evaluating query: $e")
                 } finally {
@@ -799,6 +801,7 @@ private suspend fun calculateRequester(
         readerRootKey = readerRootSigningKey,
         readerKey =readerKey.publicKey,
         subject = X500Name.fromName("CN=Multipaz Reader Single-Use key"),
+        dnsName = null,
         serial = ASN1Integer.fromRandom(128),
         validFrom = validFrom,
         validUntil = validUntil
@@ -807,6 +810,7 @@ private suspend fun calculateRequester(
         readerRootKey = readerRootSigningKey,
         readerKey = readerKey.publicKey,
         subject = X500Name.fromName("CN=Multipaz Reader Single-Use key"),
+        dnsName = null,
         serial = ASN1Integer.fromRandom(128),
         validFrom = validFrom,
         validUntil = validUntil,

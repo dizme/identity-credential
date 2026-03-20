@@ -14,9 +14,13 @@ import kotlinx.datetime.TimeZone
 import org.multipaz.cbor.addCborMap
 import org.multipaz.cbor.buildCborArray
 import org.multipaz.cbor.buildCborMap
+import org.multipaz.documenttype.knowntypes.DigitalPaymentCredential
 import org.multipaz.documenttype.knowntypes.EUPersonalID
+import org.multipaz.documenttype.knowntypes.Aadhaar
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
+import kotlin.test.assertTrue
 
 class TestDocumentTypeRepository {
     companion object {
@@ -37,7 +41,7 @@ class TestDocumentTypeRepository {
         documentTypeRepository.addDocumentType(DrivingLicense.getDocumentType())
         val documentTypes = documentTypeRepository.documentTypes
         assertEquals(1, documentTypes.count())
-        assertEquals("Driving License", documentTypes[0].displayName)
+        assertEquals("Driving license", documentTypes[0].displayName)
         assertEquals("org.iso.18013.5.1.mDL", documentTypes[0].mdocDocumentType?.docType)
         assertEquals(
             "org.iso.18013.5.1",
@@ -58,6 +62,66 @@ class TestDocumentTypeRepository {
         assertEquals(
             DocumentAttributeType.ComplexType,
             documentTypes[0].mdocDocumentType?.namespaces?.get("org.iso.18013.5.1.aamva")?.dataElements?.get("domestic_driving_privileges")?.attribute?.type
+        )
+    }
+
+    @Test
+    fun testAadhaarDocumentType() {
+        val documentType = Aadhaar.getDocumentType()
+        val mdoc = documentType.mdocDocumentType
+        assertNotNull(mdoc)
+
+        assertEquals("Aadhaar", documentType.displayName)
+        assertEquals(Aadhaar.AADHAAR_DOCTYPE, mdoc.docType)
+        assertTrue(mdoc.namespaces.containsKey(Aadhaar.AADHAAR_NAMESPACE))
+
+        val aadhaarNamespace = mdoc.namespaces[Aadhaar.AADHAAR_NAMESPACE]
+        assertNotNull(aadhaarNamespace)
+
+        listOf(
+            "resident_name",
+            "enrolment_number",
+            "mobile",
+            "email",
+            "dob",
+        ).forEach { dataElementName ->
+            assertTrue(
+                aadhaarNamespace.dataElements.containsKey(dataElementName),
+                "Expected data element '$dataElementName' in aadhaar namespace"
+            )
+        }
+    }
+
+    @Test
+    fun testDigitalPaymentCredentialDocumentType() {
+        val documentType = DigitalPaymentCredential.getDocumentType()
+        val mdoc = documentType.mdocDocumentType
+        assertNotNull(mdoc)
+
+        assertEquals("Payment card", documentType.displayName)
+        assertEquals(DigitalPaymentCredential.CARD_DOCTYPE, mdoc.docType)
+        assertTrue(mdoc.namespaces.containsKey(DigitalPaymentCredential.CARD_NAMESPACE))
+
+        val paymentNamespace = mdoc.namespaces[DigitalPaymentCredential.CARD_NAMESPACE]
+        assertNotNull(paymentNamespace)
+
+        listOf(
+            "issuer_name",
+            "payment_instrument_id",
+            "masked_account_reference",
+            "holder_name",
+            "issue_date",
+            "expiry_date",
+        ).forEach { dataElementName ->
+            assertTrue(
+                paymentNamespace.dataElements.containsKey(dataElementName),
+                "Expected data element '$dataElementName' in payment namespace"
+            )
+        }
+
+        assertEquals(
+            listOf("payment_sca_minimal", "payment_sca_full"),
+            documentType.cannedRequests.map { it.id }
         )
     }
 

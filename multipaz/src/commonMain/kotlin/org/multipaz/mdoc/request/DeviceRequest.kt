@@ -129,13 +129,15 @@ data class DeviceRequest private constructor(
                             CoseNumberLabel(Cose.COSE_LABEL_ALG)
                         ]!!.asNumber.toInt()
                     )
+                    certChain.validate()
                     Cose.coseSign1Check(
                         publicKey = certChain.certificates.first().ecPublicKey,
                         detachedData = readerAuthenticationAllBytes,
                         signature = readerAuthAllSignature,
                         signatureAlgorithm = alg
                     )
-                } catch (e: Throwable) {
+                } catch (e: Exception) {
+                    if (e is kotlinx.coroutines.CancellationException) throw e
                     throw SignatureVerificationException(
                         message = "Error verifying ReaderAuthAll at index $readerAuthAllIndex",
                         cause = e
@@ -161,7 +163,8 @@ data class DeviceRequest private constructor(
                         signature = docRequest.readerAuth_,
                         signatureAlgorithm = docRequest.readerAuthAlgorithm!!
                     )
-                } catch (e: Throwable) {
+                } catch (e: Exception) {
+                    if (e is CancellationException) throw e
                     throw SignatureVerificationException(
                         message = "Error verifying reader authentication for DocRequest at index $docRequestIndex",
                         cause = e
@@ -627,6 +630,7 @@ data class DeviceRequest private constructor(
                 // Base Option (Index 0)
                 val baseClaim = MdocRequestedClaim(
                     id = null, // ID not strictly needed for internal logic
+                    docType = docRequest.docType,
                     namespaceName = namespace,
                     dataElementName = elementName,
                     intentToRetain = intentToRetain,
@@ -644,6 +648,7 @@ data class DeviceRequest private constructor(
                     val altOptionClaims = altSet.map { altElement ->
                         MdocRequestedClaim(
                             id = null,
+                            docType = docRequest.docType,
                             namespaceName = altElement.namespace,
                             dataElementName = altElement.dataElement,
                             intentToRetain = intentToRetain, // Inherit intent from base request

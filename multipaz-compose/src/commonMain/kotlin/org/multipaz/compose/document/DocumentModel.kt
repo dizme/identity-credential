@@ -1,6 +1,7 @@
 package org.multipaz.compose.document
 
 import androidx.compose.ui.graphics.ImageBitmap
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -59,7 +60,8 @@ private data class DocumentModelStorageData(
                         key.asTstr to value.asNumber.toInt()
                     }.toMap()
                 }
-            } catch (e: Throwable) {
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
                 Logger.e(TAG, "Error decoding sortingOrder", e)
             }
             return DocumentModelStorageData(sortingOrder)
@@ -76,15 +78,12 @@ private data class DocumentModelStorageData(
  * maintains a persistent order of documents and applications can call e.g.
  * [setDocumentPosition] to change the order.
  *
- * @param documentStore the [DocumentStore] which manages [Document] and [Credential] instances.
- * @param documentTypeRepository a [DocumentTypeRepository] with information about document types or `null`.
- * @param documentOrderKey the name of the key to use for storing the document order in the [Tags] object
- *   associated with  [documentStore].
+ * Use [DocumentModel.create] to create an instance.
  */
-class DocumentModel(
-    val documentStore: DocumentStore,
-    val documentTypeRepository: DocumentTypeRepository?,
-    val documentOrderKey: String = "org.multipaz.DocumentModel.orderingKey",
+class DocumentModel private constructor(
+    private val documentStore: DocumentStore,
+    private val documentTypeRepository: DocumentTypeRepository?,
+    private val documentOrderKey: String = "org.multipaz.DocumentModel.orderingKey",
 ) {
     private val scope: CoroutineScope = CoroutineScope(Dispatchers.Default)
     private val _documentInfos = MutableStateFlow<List<DocumentInfo>>(emptyList())
@@ -96,21 +95,19 @@ class DocumentModel(
      */
     val documentInfos: StateFlow<List<DocumentInfo>> = _documentInfos.asStateFlow()
 
-    init {
-        scope.launch {
-            storageData = documentStore.getTags().get<ByteString>(documentOrderKey)?.let {
-                DocumentModelStorageData.fromDataItem(Cbor.decode(it.toByteArray()))
-            } ?: DocumentModelStorageData()
+    private suspend fun initialize() {
+        storageData = documentStore.getTags().get<ByteString>(documentOrderKey)?.let {
+            DocumentModelStorageData.fromDataItem(Cbor.decode(it.toByteArray()))
+        } ?: DocumentModelStorageData()
 
-            val docIds = documentStore.listDocumentIds()
-            docIds.forEach { documentId ->
-                updateDocumentInfo(documentId, DocumentAdded(documentId))
-            }
-
-            documentStore.eventFlow
-                .onEach { event -> updateDocumentInfo(event = event) }
-                .launchIn(scope)
+        val docIds = documentStore.listDocumentIds()
+        docIds.forEach { documentId ->
+            updateDocumentInfo(documentId, DocumentAdded(documentId))
         }
+
+        documentStore.eventFlow
+            .onEach { event -> updateDocumentInfo(event = event) }
+            .launchIn(scope)
     }
 
     private suspend fun updateDocumentInfo(
@@ -238,11 +235,27 @@ class DocumentModel(
     }
 
     companion object {
-        private val documentModelTableSpec = StorageTableSpec(
-            name = "DocumentModel",
-            supportPartitions = true,
-            supportExpiration = false,
-        )
+        /**
+         * Creates a [DocumentModel] instance.
+         *
+         * @param documentStore the [DocumentStore] which manages [Document] and [Credential] instances.
+         * @param documentTypeRepository a [DocumentTypeRepository] with information about document types or `null`.
+         * @param documentOrderKey the name of the key to use for storing the document order in the [Tags] object
+         *   associated with  [documentStore].
+         */
+        suspend fun create(
+            documentStore: DocumentStore,
+            documentTypeRepository: DocumentTypeRepository?,
+            documentOrderKey: String = "org.multipaz.DocumentModel.orderingKey",
+        ): DocumentModel {
+            val documentModel = DocumentModel(
+                documentStore,
+                documentTypeRepository,
+                documentOrderKey
+            )
+            documentModel.initialize()
+            return documentModel
+        }
 
         private suspend fun Document.buildCredentialInfos(
             documentTypeRepository: DocumentTypeRepository?

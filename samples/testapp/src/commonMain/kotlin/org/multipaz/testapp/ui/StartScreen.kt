@@ -39,7 +39,6 @@ fun StartScreen(
     onClickSecureEnclaveSecureArea: () -> Unit = {},
     onClickPassphraseEntryField: () -> Unit = {},
     onClickPassphrasePrompt: () -> Unit = {},
-    onClickProvisioningTestField: () -> Unit = {},
     onClickConsentSheetList: () -> Unit = {},
     onClickQrCodes: () -> Unit = {},
     onClickNfc: () -> Unit = {},
@@ -51,7 +50,12 @@ fun StartScreen(
     onClickRichText: () -> Unit = {},
     onClickNotifications: () -> Unit = {},
     onClickScreenLock: () -> Unit = {},
-    onClickPickersScreen: () -> Unit = {}
+    onClickPickersScreen: () -> Unit = {},
+    onClickNfcReadersScreen: () -> Unit = {},
+    onClickDocumentListScreen: () -> Unit = {},
+    onClickQuickAccessWallet: () -> Unit = {},
+    onClickEventLog: () -> Unit = {},
+    onClickShareSheet: () -> Unit = {}
 ) {
     val blePermissionState = rememberBluetoothPermissionState()
     val coroutineScope = rememberCoroutineScope()
@@ -121,7 +125,13 @@ fun StartScreen(
 
                 item {
                     TextButton(onClick = onClickDocumentStore) {
-                        Text("Document store")
+                        Text("Document Store")
+                    }
+                }
+
+                item {
+                    TextButton(onClick = onClickDocumentListScreen) {
+                        Text("Vertical Document List")
                     }
                 }
 
@@ -258,6 +268,30 @@ fun StartScreen(
                 item {
                     TextButton(onClick = onClickPickersScreen) {
                         Text("Pickers")
+                    }
+                }
+
+                item {
+                    TextButton(onClick = onClickNfcReadersScreen) {
+                        Text("External NFC Readers")
+                    }
+                }
+
+                item {
+                    TextButton(onClick = onClickQuickAccessWallet) {
+                        Text("QuickAccessWallet")
+                    }
+                }
+
+                item {
+                    TextButton(onClick = onClickEventLog) {
+                        Text("Event Log")
+                    }
+                }
+
+                item {
+                    TextButton(onClick = onClickShareSheet) {
+                        Text("Share sheet")
                     }
                 }
             }

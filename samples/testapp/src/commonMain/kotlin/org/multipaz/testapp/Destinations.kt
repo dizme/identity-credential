@@ -41,9 +41,30 @@ data object TrustedIssuersDestination: Destination()
 data object TrustedVerifiersDestination: Destination()
 
 @Serializable
-data class TrustPointViewerDestination(
+data class TrustEntryDestination(
     val trustManagerId: String,
-    val trustPointId: String
+    val trustEntryId: String,
+    val justImported: Boolean = false
+): Destination()
+
+@Serializable
+data class TrustEntryEditDestination(
+    val trustManagerId: String,
+    val trustEntryId: String
+): Destination()
+
+@Serializable
+data class TrustEntryVicalEntryDestination(
+    val trustManagerId: String,
+    val trustEntryId: String,
+    val vicalCertNumber: Int
+): Destination()
+
+@Serializable
+data class TrustEntryRicalEntryDestination(
+    val trustManagerId: String,
+    val trustEntryId: String,
+    val ricalCertNumber: Int
 ): Destination()
 
 @Serializable
@@ -63,9 +84,6 @@ data object PassphraseEntryFieldDestination: Destination()
 
 @Serializable
 data object PassphrasePromptDestination: Destination()
-
-@Serializable
-data object ProvisioningTestDestination: Destination()
 
 @Serializable
 data object ConsentPromptDestination: Destination()
@@ -117,3 +135,26 @@ data object ScreenLockDestination: Destination()
 
 @Serializable
 data object PickersDestination: Destination()
+
+@Serializable
+data object NfcReadersDestination: Destination()
+
+@Serializable
+data class NfcReaderDestination(
+    val readerId: String
+): Destination()
+
+@Serializable
+data object DocumentListDestination: Destination()
+
+@Serializable
+data object EventLogDestination: Destination()
+
+@Serializable
+data class EventViewerDestination(
+    val eventId: String,
+): Destination()
+
+@Serializable
+data object ShareSheetDestination: Destination()
+

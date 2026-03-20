@@ -54,16 +54,24 @@ invoke `multipazctl` like any other system tool.
 
 ## Library releases, Versioning, and Stability
 
-Libraries are released on [GMaven](https://maven.google.com/) with a two-month cadence
-and [Semantic Versioning](https://en.wikipedia.org/wiki/Software_versioning#Semantic_versioning)
+Libraries are released on [Maven Central](https://mvnrepository.com/artifact/org.multipaz/multipaz)
+usually every 4-8 weeks. Releases up until and including 0.97.0 can be found on [GMaven](https://maven.google.com/).
+[Semantic Versioning](https://en.wikipedia.org/wiki/Software_versioning#Semantic_versioning)
 is used. At this time we're in pre-1.0 territory but we expect to hit 1.0 around
-early 2026.
+late 2026 or early 2027.
 
 We are also making Multipaz available as a [Swift package](https://github.com/openwallet-foundation/multipaz/blob/main/Package.swift)
 which includes an the `multipaz`, `multipaz-doctypes`, `multipaz-doctypes`,
 `multipaz-longfellow`, and `multipaz-swift` libraries. This is built using
 [SKIE](https://skie.touchlab.co/). Be careful relying on this as Swift/Kotlin
 interop technology might change in the near future.
+
+The Swift package exposes two products:
+
+- `Multipaz` includes the higher-level `multipaz-swift` wrapper APIs.
+- `MultipazCore` exposes the core binary target directly for applications that
+  build their own UI and only need the lower-level APIs. When using this
+  product, the module import remains `import Multipaz`.
 
 At this point both API interfaces and data stored on disk is subject to change
 but we expect to provide stability guarantees post 1.0. We only expect minor changes
@@ -78,6 +86,7 @@ to the Multipaz project
 - [CODING-STYLE.md](CODING-STYLE.md) for guidelines on writing code to be included in the project.
 - [TESTING.md](TESTING.md) explains our approach to unit and manual testing.
 - [DEVELOPER-ENVIRONMENT.md](DEVELOPER-ENVIRONMENT.md) for how to set up your system for building Multipaz.
+- [Lokalize Plugin](build-logic/lokalize/README.md) for managing translations in `multipaz-compose` (AI-assisted translation and validation).
 
 Note: If you're just looking to use the Multipaz libraries you do not need to build
 the entire Multipaz project from source. Instead, just use our released libraries,
@@ -130,4 +139,3 @@ a number of samples for different platforms.
 ## Note
 
 This is not an official or supported Google product.
-

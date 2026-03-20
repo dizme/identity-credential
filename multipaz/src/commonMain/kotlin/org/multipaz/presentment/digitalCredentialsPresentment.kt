@@ -17,6 +17,8 @@ import org.multipaz.crypto.Hpke
 import org.multipaz.crypto.JsonWebSignature
 import org.multipaz.crypto.X509CertChain
 import org.multipaz.document.Document
+import org.multipaz.eventlogger.EventPresentmentDigitalCredentialsMdocApi
+import org.multipaz.eventlogger.EventPresentmentDigitalCredentialsOpenID4VP
 import org.multipaz.mdoc.request.DeviceRequest
 import org.multipaz.openid.OpenID4VP
 import org.multipaz.prompt.PromptDismissedException
@@ -43,16 +45,20 @@ private const val TAG = "digitalCredentialsPresentment"
  * @param preselectedDocuments the list of documents the user may have preselected earlier (for
  *   example an OS-provided credential picker like Android's Credential Manager) or the empty list
  *   if the user didn't preselect.
+ * @param source the source of truth used for presentment.
+ * @param onDocumentsInFocus called with the documents currently selected for the user, including when
+ *   first shown. If the user selects a different set of documents in the prompt, this will be called again.
  * @return a string with JSON with the result, this is a JSON object containing the `protocol` and `data` fields in [DigitalCredential](https://www.w3.org/TR/digital-credentials/#the-digitalcredential-interface) interface.
  * @throws PromptDismissedException if the user dismissed a prompt.
  * @throws PromptModelNotAvailableException if `coroutineContext` does not have [PromptModel].
  * @throws PromptUiNotAvailableException if the UI layer hasn't bound any UI for [PromptModel].
- * @throws PresentmentCanceled if the user canceled in a consent prompt.
+ * @throws PresentmentCanceledException if the user canceled in a consent prompt.
+ * @throws PresentmentCannotSatisfyRequestException if it's not possible to satisfy the request.
  */
 @Throws(
     CancellationException::class,
     IllegalStateException::class,
-    PresentmentCanceled::class
+    PresentmentCanceledException::class
 )
 suspend fun digitalCredentialsPresentment(
     protocol: String,
@@ -61,6 +67,7 @@ suspend fun digitalCredentialsPresentment(
     origin: String,
     preselectedDocuments: List<Document>,
     source: PresentmentSource,
+    onDocumentsInFocus: (documents: List<Document>) -> Unit = {},
 ): String {
     return Json.encodeToString(
         digitalCredentialsPresentment(
@@ -70,6 +77,7 @@ suspend fun digitalCredentialsPresentment(
             origin = origin,
             preselectedDocuments = preselectedDocuments,
             source = source,
+            onDocumentsInFocus = onDocumentsInFocus
         )
     )
 }
@@ -84,16 +92,21 @@ suspend fun digitalCredentialsPresentment(
  * @param preselectedDocuments the list of documents the user may have preselected earlier (for
  *   example an OS-provided credential picker like Android's Credential Manager) or the empty list
  *   if the user didn't preselect.
+ * @param source the source of truth used for presentment.
+ * @param onDocumentsInFocus called with the documents currently selected for the user, including when
+ *   first shown. If the user selects a different set of documents in the prompt, this will be called again.
  * @return JSON with the result, this is a JSON object containing the `protocol` and `data` fields in [DigitalCredential](https://www.w3.org/TR/digital-credentials/#the-digitalcredential-interface) interface.
  * @throws PromptDismissedException if the user dismissed a prompt.
  * @throws PromptModelNotAvailableException if `coroutineContext` does not have [PromptModel].
  * @throws PromptUiNotAvailableException if the UI layer hasn't bound any UI for [PromptModel].
- * @throws PresentmentCanceled if the user canceled in a consent prompt.
+ * @throws PresentmentCanceledException if the user canceled in a consent prompt.
+ * @throws PresentmentCannotSatisfyRequestException if it's not possible to satisfy the request.
  */
 @Throws(
     CancellationException::class,
     IllegalStateException::class,
-    PresentmentCanceled::class
+    PresentmentCanceledException::class,
+    PresentmentCannotSatisfyRequestException::class
 )
 suspend fun digitalCredentialsPresentment(
     protocol: String,
@@ -102,6 +115,7 @@ suspend fun digitalCredentialsPresentment(
     origin: String,
     preselectedDocuments: List<Document>,
     source: PresentmentSource,
+    onDocumentsInFocus: (documents: List<Document>) -> Unit = {},
 ): JsonObject {
     when (protocol) {
         "openid4vp", "openid4vp-v1-unsigned", "openid4vp-v1-signed" -> {
@@ -112,6 +126,7 @@ suspend fun digitalCredentialsPresentment(
                 origin = origin,
                 preselectedDocuments = preselectedDocuments,
                 source = source,
+                onDocumentsInFocus = onDocumentsInFocus
             )
         }
         "org.iso.mdoc", "org-iso-mdoc" -> {
@@ -122,6 +137,7 @@ suspend fun digitalCredentialsPresentment(
                 origin = origin,
                 preselectedDocuments = preselectedDocuments,
                 source = source,
+                onDocumentsInFocus = onDocumentsInFocus
             )
         }
         else -> {
@@ -138,6 +154,7 @@ private suspend fun digitalCredentialsOpenID4VPProtocol(
     origin: String,
     preselectedDocuments: List<Document>,
     source: PresentmentSource,
+    onDocumentsInFocus: (documents: List<Document>) -> Unit
 ): JsonObject {
     val version = when (protocol) {
         "openid4vp" -> OpenID4VP.Version.DRAFT_24
@@ -154,14 +171,12 @@ private suspend fun digitalCredentialsOpenID4VPProtocol(
         check(info.x5c != null) { "x5c missing in JWS" }
         JsonWebSignature.verify(jws.jsonPrimitive.content, info.x5c.certificates.first().ecPublicKey)
         requesterCertChain = info.x5c
-        for (cert in requesterCertChain.certificates) {
-            println("cert: ${cert.toPem()}")
-        }
+        info.x5c.validate()
         info.claimsSet
     } else {
         preReq
     }
-    val response = OpenID4VP.generateResponse(
+    val responseObject = OpenID4VP.generateResponse(
         version = version,
         preselectedDocuments = preselectedDocuments,
         source = source,
@@ -169,10 +184,24 @@ private suspend fun digitalCredentialsOpenID4VPProtocol(
         origin = origin,
         request = req,
         requesterCertChain = requesterCertChain,
+        onDocumentsInFocus = onDocumentsInFocus
     )
+
+    source.eventLogger?.addEventAsync(
+        EventPresentmentDigitalCredentialsOpenID4VP(
+            presentmentData = responseObject.eventData,
+            appId = appId,
+            origin = origin,
+            protocol = protocol,
+            requestJson = Json.encodeToString(data),
+            responseJson = Json.encodeToString(responseObject.response),
+            vpToken = Json.encodeToString(responseObject.vpToken)
+        )
+    )
+
     return buildJsonObject {
         put("protocol", protocol)
-        put("data", response)
+        put("data", responseObject.response)
     }
 }
 
@@ -184,6 +213,7 @@ private suspend fun digitalCredentialsMdocApiProtocol(
     origin: String,
     preselectedDocuments: List<Document>,
     source: PresentmentSource,
+    onDocumentsInFocus: (documents: List<Document>) -> Unit
 ): JsonObject {
     val arfRequest = data
     val deviceRequestBase64 = arfRequest["deviceRequest"]!!.jsonPrimitive.content
@@ -215,7 +245,7 @@ private suspend fun digitalCredentialsMdocApiProtocol(
 
     val deviceRequest = DeviceRequest.fromDataItem(Cbor.decode(deviceRequestBase64.fromBase64Url()))
     deviceRequest.verifyReaderAuthentication(sessionTranscript)
-    val deviceResponse = mdocPresentment(
+    val responseObject = mdocPresentment(
         deviceRequest = deviceRequest,
         eReaderKey = null,
         sessionTranscript = sessionTranscript,
@@ -225,7 +255,7 @@ private suspend fun digitalCredentialsMdocApiProtocol(
         requesterOrigin = origin,
         preselectedDocuments = preselectedDocuments,
         onWaitingForUserInput = {},
-        onDocumentsInFocus = {},
+        onDocumentsInFocus = onDocumentsInFocus,
     )
 
     val encrypter = Hpke.getEncrypter(
@@ -234,7 +264,7 @@ private suspend fun digitalCredentialsMdocApiProtocol(
         info = Cbor.encode(sessionTranscript)
     )
     val ciphertext = encrypter.encrypt(
-        plaintext = Cbor.encode(deviceResponse.toDataItem()),
+        plaintext = Cbor.encode(responseObject.deviceResponse.toDataItem()),
         aad = ByteArray(0),
     )
     val encryptedResponse =
@@ -248,11 +278,24 @@ private suspend fun digitalCredentialsMdocApiProtocol(
             }
         )
 
-    val data = buildJsonObject {
+    val responseData = buildJsonObject {
         put("response", encryptedResponse.toBase64Url())
     }
+
+    source.eventLogger?.addEventAsync(
+        EventPresentmentDigitalCredentialsMdocApi(
+            presentmentData = responseObject.eventData,
+            appId = appId,
+            origin = origin,
+            protocol = protocol,
+            requestJson = Json.encodeToString(data),
+            responseJson = Json.encodeToString(responseData),
+            deviceResponse = responseObject.deviceResponse.toDataItem()
+        )
+    )
+
     return buildJsonObject {
         put("protocol", protocol)
-        put("data", data)
+        put("data", responseData)
     }
 }

@@ -85,6 +85,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import coil3.ImageLoader
 import coil3.compose.AsyncImage
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.stringResource
@@ -95,6 +96,7 @@ import org.multipaz.compose.certificateviewer.X509CertViewer
 import org.multipaz.compose.decodeImage
 import org.multipaz.compose.getApplicationInfo
 import org.multipaz.compose.getOutlinedImageVector
+import org.multipaz.compose.text.fromMarkdown
 import org.multipaz.credential.Credential
 import org.multipaz.document.Document
 import org.multipaz.documenttype.Icon
@@ -105,6 +107,7 @@ import org.multipaz.multipaz_compose.generated.resources.credential_presentment_
 import org.multipaz.multipaz_compose.generated.resources.credential_presentment_select_document
 import org.multipaz.multipaz_compose.generated.resources.credential_presentment_data_element_icon_description
 import org.multipaz.multipaz_compose.generated.resources.credential_presentment_headline_share_with_unknown_requester
+import org.multipaz.multipaz_compose.generated.resources.credential_presentment_headline_share_with_unknown_website
 import org.multipaz.multipaz_compose.generated.resources.credential_presentment_info_verifier_in_trust_list
 import org.multipaz.multipaz_compose.generated.resources.credential_presentment_info_verifier_in_trust_list_app
 import org.multipaz.multipaz_compose.generated.resources.credential_presentment_info_verifier_in_trust_list_website
@@ -254,7 +257,8 @@ fun Consent(
         requester.appId?.let {
             try {
                 getApplicationInfo(it)
-            } catch (e: Throwable) {
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
                 Logger.w(TAG, "Error looking up information for appId $it")
                 null
             }
@@ -467,9 +471,11 @@ private fun ConsentPage(
             iconUrl = trustMetadata.displayIconUrl,
             disclaimer = trustMetadata.disclaimer,
         )
-    } else if (requester.origin != null && isWebOrigin(requester.origin!!)) {
+    } else if (requester.isWebOrigin) {
         RequesterDisplayData(
-            name = requester.origin,
+            name = requester.origin!!.ifEmpty {
+                stringResource(Res.string.credential_presentment_headline_share_with_unknown_website)
+            },
         )
     } else if (appInfo != null) {
         RequesterDisplayData(
@@ -785,7 +791,7 @@ private fun CredentialSetViewer(
                     Res.string.credential_presentment_share_with_known_requester,
                     requesterDisplayData.name
                 )
-            } else if (requester.origin != null && isWebOrigin(requester.origin!!)) {
+            } else if (requester.isWebOrigin) {
                 stringResource(
                     Res.string.credential_presentment_share_with_known_requester,
                     requester.origin!!
@@ -804,7 +810,7 @@ private fun CredentialSetViewer(
                     Res.string.credential_presentment_share_and_stored_by_known_requester,
                     requesterDisplayData.name
                 )
-            } else if (requester.origin != null && isWebOrigin(requester.origin!!)) {
+            } else if (requester.isWebOrigin) {
                 stringResource(
                     Res.string.credential_presentment_share_and_stored_by_known_requester,
                     requester.origin!!
@@ -959,7 +965,7 @@ private fun RelyingPartyTrailer(
     trustMetadata: TrustMetadata?,
 ) {
     if (trustMetadata != null) {
-        var text = if (requester.origin != null && isWebOrigin(requester.origin!!)) {
+        var text = if (requester.isWebOrigin) {
             stringResource(Res.string.credential_presentment_info_verifier_in_trust_list_website)
         } else if (requester.appId != null) {
             stringResource(Res.string.credential_presentment_info_verifier_in_trust_list_app)
@@ -985,12 +991,12 @@ private fun RelyingPartyTrailer(
             )
             Text(
                 modifier = Modifier.align(Alignment.CenterVertically),
-                text = AnnotatedString.Companion.fromMarkdown(markdownString = text),
+                text = AnnotatedString.fromMarkdown(markdownString = text),
                 style = MaterialTheme.typography.bodySmall,
             )
         }
     } else {
-        val text = if (requester.origin != null && isWebOrigin(requester.origin!!)) {
+        val text = if (requester.isWebOrigin) {
             stringResource(Res.string.credential_presentment_warning_verifier_not_in_trust_list_website)
         } else if (requester.appId != null) {
             stringResource(Res.string.credential_presentment_warning_verifier_not_in_trust_list_app)
@@ -1184,49 +1190,6 @@ private fun ClaimsView(
     }
 }
 
-// This only supports links for now, would be nice to have a full support...
-//
-private fun AnnotatedString.Companion.fromMarkdown(
-    markdownString: String,
-    linkInteractionListener: LinkInteractionListener? = null
-): AnnotatedString {
-    val linkRegex = """\[(.*?)\]\((.*?)\)""".toRegex()
-
-    val links = linkRegex.findAll(markdownString).toMutableList()
-    links.sortBy { it.range.start }
-
-    return buildAnnotatedString {
-        var idx = 0
-        for (link in links) {
-            if (idx < link.range.start) {
-                append(markdownString.substring(idx, link.range.start))
-            }
-            val linkText = link.groupValues[1]
-            val linkUrl = link.groupValues[2]
-            val styleStart = length
-            append(linkText)
-            addLink(
-                url = LinkAnnotation.Url(
-                    url = linkUrl,
-                    styles = TextLinkStyles(
-                        style = SpanStyle(
-                            color = Color.Companion.Blue,
-                            textDecoration = TextDecoration.Companion.Underline
-                        ),
-                    ),
-                    linkInteractionListener = linkInteractionListener
-                ),
-                start = styleStart,
-                end = length,
-            )
-            idx = link.range.endInclusive + 1
-        }
-        if (idx < markdownString.length) {
-            append(markdownString.substring(idx, markdownString.length))
-        }
-    }
-}
-
 @Composable
 private fun RelyingPartySection(
     requester: Requester,
@@ -1284,5 +1247,3 @@ private fun RelyingPartySection(
         )
     }
 }
-
-private fun isWebOrigin(origin: String) = origin.startsWith("http://") || origin.startsWith("https://")

@@ -68,6 +68,7 @@ class MatcherDcqlQueryExecuteTest {
                 readerRootKey = harness.readerRootKey,
                 readerKey = key.publicKey,
                 subject = X500Name.fromName("CN=Multipaz Reader Cert Single-Use key"),
+                dnsName = "localhost",
                 serial = ASN1Integer.fromRandom(128),
                 validFrom = readerRootCerts.first().validityNotBefore,
                 validUntil = readerRootCerts.first().validityNotAfter
@@ -158,11 +159,11 @@ class MatcherDcqlQueryExecuteTest {
                                 claims
                                   claim
                                     claimName org.iso.18013.5.1.age_over_21
-                                    displayName Older Than 21 Years
+                                    displayName Older than 21 years
                                     value true
                                   claim
                                     claimName org.iso.18013.5.1.portrait
-                                    displayName Photo of Holder
+                                    displayName Photo of holder
                                     value 5318 bytes
             """.trimIndent().trim() + "\n",
             dcqlExecutionDump
@@ -221,22 +222,22 @@ class MatcherDcqlQueryExecuteTest {
                                 claims
                                   claim
                                     claimName age_equal_or_over.18
-                                    displayName Older Than 18
+                                    displayName Older than 18
                                     value true
                                   claim
                                     claimName picture
-                                    displayName Photo of Holder
+                                    displayName Photo of holder
                                     value Image (5318 bytes)
                               match
                                 credential EU PID 2
                                 claims
                                   claim
                                     claimName age_equal_or_over.18
-                                    displayName Older Than 18
+                                    displayName Older than 18
                                     value true
                                   claim
                                     claimName picture
-                                    displayName Photo of Holder
+                                    displayName Photo of holder
                                     value Image (5318 bytes)
             """.trimIndent().trim() + "\n",
             dcqlExecutionDump
@@ -327,11 +328,11 @@ class MatcherDcqlQueryExecuteTest {
                                 claims
                                   claim
                                     claimName org.iso.18013.5.1.given_name
-                                    displayName Given Names
+                                    displayName Given names
                                     value Erika
                                   claim
                                     claimName org.iso.18013.5.1.family_name
-                                    displayName Family Name
+                                    displayName Family name
                                     value Mustermann
                       option
                         members
@@ -342,22 +343,22 @@ class MatcherDcqlQueryExecuteTest {
                                 claims
                                   claim
                                     claimName family_name
-                                    displayName Family Name
+                                    displayName Family name
                                     value Mustermann
                                   claim
                                     claimName given_name
-                                    displayName Given Names
+                                    displayName Given names
                                     value Erika
                               match
                                 credential EU PID 2
                                 claims
                                   claim
                                     claimName family_name
-                                    displayName Family Name
+                                    displayName Family name
                                     value Mustermann
                                   claim
                                     claimName given_name
-                                    displayName Given Names
+                                    displayName Given names
                                     value Max
             """.trimIndent().trim() + "\n",
             dcqlExecutionDump

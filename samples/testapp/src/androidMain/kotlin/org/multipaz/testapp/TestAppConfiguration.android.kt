@@ -1,8 +1,9 @@
 package org.multipaz.testapp
 
+import android.app.PendingIntent
+import android.content.ComponentName
+import android.content.Intent
 import android.content.pm.PackageManager
-import android.os.Build
-import android.widget.Toast
 import com.jakewharton.processphoenix.ProcessPhoenix
 import io.ktor.client.engine.HttpClientEngineFactory
 import io.ktor.client.engine.android.Android
@@ -13,12 +14,12 @@ import multipazproject.samples.testapp.generated.resources.app_icon
 import multipazproject.samples.testapp.generated.resources.app_icon_red
 import org.bouncycastle.jce.provider.BouncyCastleProvider
 import org.multipaz.compose.notifications.NotificationManagerAndroid
+import org.multipaz.compose.prompt.PresentmentActivity
 import org.multipaz.digitalcredentials.getAppOrigin
-import org.multipaz.nfc.NfcTagReader
+import org.multipaz.presentment.PresentmentSource
 import org.multipaz.prompt.AndroidPromptModel
 import org.multipaz.prompt.PromptDialogModel
 import org.multipaz.prompt.PromptModel
-import org.multipaz.testapp.externalnfc.nfcTagReaderUsbCheck
 import org.multipaz.util.Logger
 import java.net.NetworkInterface
 import java.security.Security
@@ -98,7 +99,7 @@ actual object TestAppConfiguration {
                 if (!inetAddress.isLoopbackAddress) {
                     val address = inetAddress.hostAddress
                     if (address != null && address.indexOf(':') < 0) {
-                        address
+                        return@lazy address
                     }
                 }
             }
@@ -121,16 +122,41 @@ actual object TestAppConfiguration {
         return getAppOrigin(packageInfo.signatures!![0].toByteArray())
     }
 
-    actual suspend fun getExternalNfcTagReaders(): List<NfcTagReader> {
-        val externalNfcReader = nfcTagReaderUsbCheck()
-        if (externalNfcReader == null) {
-            return emptyList()
-        }
-        Toast.makeText(
-            applicationContext,
-            "Using USB-connected NFC reader ${externalNfcReader.readerName}",
-            Toast.LENGTH_LONG
-        ).show()
-        return listOf(externalNfcReader)
+    const val ACTION_VIEW_DOCUMENT = "org.multipaz.testapp.action.viewDocument"
+
+    fun getPendingIntentForLaunchingQuickAccessWallet(
+        source: PresentmentSource,
+        initiallySelectedDocumentId: String?
+    ): PendingIntent {
+        return PresentmentActivity.getPendingIntent(
+            source = source,
+            initiallySelectedDocumentId = initiallySelectedDocumentId,
+            openWalletAppPendingIntentFn = { document ->
+                PendingIntent.getActivity(
+                    /* context = */ applicationContext,
+                    /* requestCode = */ 0,
+                    /* intent = */ Intent(applicationContext, MainActivity::class.java).apply {
+                        addFlags(
+                            Intent.FLAG_ACTIVITY_NEW_TASK or
+                                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                                    Intent.FLAG_ACTIVITY_SINGLE_TOP
+                        )
+                        action = ACTION_VIEW_DOCUMENT
+                        putExtra("documentId", document.identifier)
+                    },
+                    /* flags = */ PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+            },
+            preferredServices = listOf(
+                ComponentName(applicationContext, TestAppMdocNdefService::class.java)
+            )
+        )
+    }
+
+    actual suspend fun launchQuickAccessWallet(
+        source: PresentmentSource,
+        initiallySelectedDocumentId: String?
+    ) {
+        getPendingIntentForLaunchingQuickAccessWallet(source, initiallySelectedDocumentId).send()
     }
 }

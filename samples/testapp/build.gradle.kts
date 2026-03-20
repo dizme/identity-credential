@@ -19,6 +19,8 @@ plugins {
 val projectVersionCode: Int by rootProject.extra
 val projectVersionName: String by rootProject.extra
 
+val disableWebTargets = project.properties["disable.web.targets"]?.toString()?.toBoolean() ?: false
+
 // If changing it here, it must also be changed in XCode "Signing and Capabilities", under
 // "Associated Domains"
 val applinkHost = "apps.multipaz.org"
@@ -45,10 +47,12 @@ kotlin {
         }
     }
 
-    wasmJs {
-        browser {
+    if (!disableWebTargets) {
+        wasmJs {
+            browser {
+            }
+            binaries.executable()
         }
-        binaries.executable()
     }
 
     listOf(
@@ -118,9 +122,11 @@ kotlin {
             }
         }
 
-        val wasmJsMain by getting {
-            dependencies {
-                implementation(libs.ktor.client.js)
+        if (!disableWebTargets) {
+            val wasmJsMain by getting {
+                dependencies {
+                    implementation(libs.ktor.client.js)
+                }
             }
         }
 
@@ -134,6 +140,7 @@ kotlin {
                 implementation(compose.components.resources)
                 implementation(compose.components.uiToolingPreview)
                 implementation(compose.materialIconsExtended)
+                implementation(libs.jetbrains.navigationevent.compose)
                 implementation(libs.jetbrains.navigation.compose)
                 implementation(libs.jetbrains.navigation.runtime)
                 implementation(libs.jetbrains.lifecycle.viewmodel.compose)
@@ -170,7 +177,7 @@ android {
     defaultConfig {
         applicationId = "org.multipaz.testapp"
         manifestPlaceholders["applinkHost"] = applinkHost
-        minSdk = libs.versions.android.minSdk.get().toInt()
+        minSdk = 29
         targetSdk = libs.versions.android.targetSdk.get().toInt()
         versionCode = projectVersionCode
         versionName = projectVersionName
@@ -230,5 +237,6 @@ tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().all {
 tasks["compileKotlinIosX64"].dependsOn("kspCommonMainKotlinMetadata")
 tasks["compileKotlinIosArm64"].dependsOn("kspCommonMainKotlinMetadata")
 tasks["compileKotlinIosSimulatorArm64"].dependsOn("kspCommonMainKotlinMetadata")
-tasks["compileKotlinWasmJs"].dependsOn("kspCommonMainKotlinMetadata")
-
+if (!disableWebTargets) {
+    tasks["compileKotlinWasmJs"].dependsOn("kspCommonMainKotlinMetadata")
+}
