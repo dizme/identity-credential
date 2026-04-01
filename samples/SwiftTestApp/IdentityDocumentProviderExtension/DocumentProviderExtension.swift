@@ -10,7 +10,7 @@ import IdentityDocumentServices
 import IdentityDocumentServicesUI
 import SwiftUI
 @preconcurrency import Multipaz
-import MultipazSwift
+import Multipaz
 
 func getPresentmentSource() async -> PresentmentSource {
     let storage = IosStorage(
@@ -20,8 +20,10 @@ func getPresentmentSource() async -> PresentmentSource {
         excludeFromBackup: true
     )
     let secureArea = try! await Platform.shared.getSecureArea(storage: storage)
+    let softwareSecureArea = try! await SoftwareSecureArea.companion.create(storage: storage)
     let secureAreaRepository = SecureAreaRepository.Builder()
         .add(secureArea: secureArea)
+        .add(secureArea: softwareSecureArea)
         .build()
     let documentTypeRepository = DocumentTypeRepository()
     documentTypeRepository.addDocumentType(documentType: DrivingLicense.shared.getDocumentType())
@@ -87,7 +89,7 @@ func getPresentmentSource() async -> PresentmentSource {
             )
         },
         preferSignatureToKeyAgreement: false,
-        domainMdocSignature: "mdoc"
+        domainsMdocSignature: ["mdoc"]
     )
 }
 

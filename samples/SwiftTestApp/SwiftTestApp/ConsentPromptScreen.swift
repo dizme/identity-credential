@@ -1,6 +1,5 @@
 import SwiftUI
 import Multipaz
-import MultipazSwift
 
 private enum RequestType: String, CaseIterable {
     case mdlUsTransportation = "mDL: US transportation"
@@ -582,8 +581,8 @@ private func calcConsentData(
                 onDocumentsInFocus: { documents in onDocumentsInFocus(documents) }
             )
         },
-        domainMdocSignature: "mdoc",
-        domainKeyBoundSdJwt: "sdjwt"
+        domainsMdocSignature: ["mdoc"],
+        domainsKeyBoundSdJwt: ["sdjwt"]
     )
 
     let query = try! DcqlQuery.companion.fromJsonString(dcql: dcqlString)

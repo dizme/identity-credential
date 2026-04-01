@@ -1,7 +1,6 @@
 import Foundation
 import UIKit
 import Multipaz
-import MultipazSwift
 import Observation
 import SwiftUI
 
@@ -15,6 +14,7 @@ class ViewModel {
 
     var storage: Storage!
     var secureArea: SecureArea!
+    var softwareSecureArea: SecureArea!
     var secureAreaRepository: SecureAreaRepository!
     var documentTypeRepository: DocumentTypeRepository!
     var documentStore: DocumentStore!
@@ -37,8 +37,10 @@ class ViewModel {
             excludeFromBackup: true
         )
         secureArea = try! await Platform.shared.getSecureArea(storage: storage)
+        softwareSecureArea = try! await SoftwareSecureArea.companion.create(storage: storage)
         secureAreaRepository = SecureAreaRepository.Builder()
             .add(secureArea: secureArea)
+            .add(secureArea: softwareSecureArea)
             .build()
         documentTypeRepository = DocumentTypeRepository()
         documentTypeRepository.addDocumentType(documentType: DrivingLicense.shared.getDocumentType())
@@ -197,11 +199,15 @@ class ViewModel {
             )
             Task {
                 for await _ in documentStore.eventFlow {
-                    try! await dcApi.register(
-                        documentStore: documentStore,
-                        documentTypeRepository: documentTypeRepository,
-                        selectedProtocols: dcApi.supportedProtocols
-                    )
+                    do {
+                        try await dcApi.register(
+                            documentStore: documentStore,
+                            documentTypeRepository: documentTypeRepository,
+                            selectedProtocols: dcApi.supportedProtocols
+                        )
+                    } catch {
+                        print("Error updating DC registration: \(error)")
+                    }
                 }
             }
         }
@@ -311,7 +317,7 @@ class ViewModel {
                 )
             },
             preferSignatureToKeyAgreement: false,
-            domainMdocSignature: "mdoc",
+            domainsMdocSignature: ["mdoc"],
         )
     }
 }

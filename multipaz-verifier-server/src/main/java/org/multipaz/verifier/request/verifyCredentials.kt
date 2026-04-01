@@ -23,30 +23,40 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
+import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
 import org.multipaz.cbor.Bstr
 import org.multipaz.cbor.Cbor
+import org.multipaz.cbor.CborArray
 import org.multipaz.cbor.DataItem
 import org.multipaz.cbor.Nint
 import org.multipaz.cbor.Simple
+import org.multipaz.cbor.Tagged
 import org.multipaz.cbor.Tstr
 import org.multipaz.cbor.Uint
 import org.multipaz.cbor.addCborArray
 import org.multipaz.cbor.addCborMap
 import org.multipaz.cbor.buildCborArray
+import org.multipaz.cbor.buildCborMap
+import org.multipaz.cbor.toDataItem
 import org.multipaz.crypto.Algorithm
 import org.multipaz.crypto.AsymmetricKey
 import org.multipaz.crypto.Crypto
 import org.multipaz.crypto.Hpke
 import org.multipaz.crypto.JsonWebEncryption
+import org.multipaz.documenttype.DocumentAttribute
+import org.multipaz.documenttype.DocumentAttributeType
 import org.multipaz.mdoc.response.DeviceResponse
 import org.multipaz.openid.OpenID4VP
-import org.multipaz.openid.TransactionData
+import org.multipaz.presentment.TransactionData
+import org.multipaz.presentment.TransactionDataCbor
+import org.multipaz.presentment.TransactionDataJson
 import org.multipaz.rpc.backend.BackendEnvironment
 import org.multipaz.rpc.cache
 import org.multipaz.rpc.handler.InvalidRequestException
@@ -54,6 +64,7 @@ import org.multipaz.rpc.handler.SimpleCipher
 import org.multipaz.sdjwt.SdJwt
 import org.multipaz.sdjwt.SdJwtKb
 import org.multipaz.server.common.getBaseUrl
+import org.multipaz.server.common.getDomain
 import org.multipaz.server.enrollment.ServerIdentity
 import org.multipaz.server.enrollment.getServerIdentity
 import org.multipaz.storage.ephemeral.EphemeralStorage
@@ -67,7 +78,9 @@ import org.multipaz.verification.VerificationUtil
 import org.multipaz.verifier.session.RequestedClaim
 import org.multipaz.verifier.session.RequestedDocument
 import org.multipaz.verifier.session.Session
-import org.multipaz.verifier.session.TransactionDataHashes
+import org.multipaz.verifier.customization.VerifierAssistant
+import org.multipaz.verifier.customization.VerifierRequest
+import org.multipaz.verifier.customization.VerifierResponse
 import kotlin.collections.component1
 import kotlin.collections.component2
 import kotlin.collections.iterator
@@ -83,22 +96,29 @@ suspend fun makeRequest(call: ApplicationCall) {
         ?: throw InvalidRequestException("'dcql.credentials' is missing or invalid")
     val exchangeProtocols = (request["protocols"] as? JsonArray)?.map { it.jsonPrimitive.content }
         ?: defaultExchangeProtocols
-    val transactionData = request["transaction_data"]?.jsonArray?.map {
-        it.toString().encodeToByteArray().toBase64Url()
-    }
+    val transactionData = request["transaction_data"]?.jsonArray
     val nonMdoc = credentials.firstOrNull {
         it.jsonObject["format"]!!.jsonPrimitive.content != "mso_mdoc"
     }
-    val protocols = if (transactionData == null && nonMdoc == null) {
+    val protocols = if (nonMdoc == null) {
         exchangeProtocols
     } else {
-        // no support for transaction data yet in org_iso_mdoc
-        // org_iso_mdoc can only handle mdoc credentials
+        // org_iso_mdoc protocol can only handle mdoc credentials
         exchangeProtocols.filter { it != "org-iso-mdoc" }
     }
+
+    BackendEnvironment.getInterface(VerifierAssistant::class)?.checkRequest(
+        object: VerifierRequest {
+            override suspend fun getDcql(): JsonObject = dcqlQuery
+            override suspend fun getTransactions(): List<JsonObject> = transactionData?.map {
+                    it as JsonObject
+                } ?: emptyList()
+        }
+    )
+
     val (sessionId, session) = Session.createSession(
         dcqlQuery = dcqlQuery.toString(),
-        transactionData = transactionData
+        jsonTransactionData = transactionData?.map { it.toString() },
     )
     val encodedSessionId = encodeSessionId(sessionId)
     val dcRequest = generateRequest(
@@ -133,7 +153,7 @@ suspend fun processResponse(call: ApplicationCall) {
     val sessionId = decodeSessionId(encodedSessionId)
     val session = Session.getSession(sessionId)
         ?: throw InvalidRequestException("Session '$encodedSessionId' is missing or expired")
-    session.responseProtocol = protocol
+    session.responseProtocol = "dcapi:$protocol"
     val result = if (protocol == "org-iso-mdoc") {
         val response = dcData["response"]!!.jsonPrimitive.content.fromBase64Url()
         session.response = ByteString(response)
@@ -146,17 +166,18 @@ suspend fun processResponse(call: ApplicationCall) {
         session.response = responseText.encodeToByteString()
         processOpenID4VPResponseText(
             session = session,
-            responseText = responseText
+            responseText = responseText,
+            dcApi = true,
+            sessionId = encodedSessionId
         )
     }
-    session.result = result.toString()
+
+    processResult(session, result)
+
     Session.updateSession(sessionId, session)
     call.respondText(
         contentType = ContentType.Application.Json,
-        text = buildJsonObject {
-            put("session_id", encodedSessionId)
-            put("result", result)
-        }.toString()
+        text = session.result!!
     )
 }
 
@@ -190,24 +211,45 @@ suspend fun processDirectPost(call: ApplicationCall, encodedSessionId: String) {
         ?: throw InvalidRequestException("'response' parameter is missing")
     val session = Session.getSession(sessionId)
         ?: throw InvalidRequestException("Session '$encodedSessionId' is missing or expired")
-    session.responseProtocol = "openid4vp-v1-signed"
+    session.responseProtocol = "custom-url:openid4vp-v1-signed"
     session.response = responseText.encodeToByteString()
     val result = processOpenID4VPResponseText(
         session = session,
-        responseText = responseText
-    ).toString()
-    session.result = result
+        responseText = responseText,
+        dcApi = false,
+        sessionId = encodedSessionId
+    )
+    processResult(session, result)
     Session.updateSession(sessionId, session)
     val channels = resultChannelMutex.withLock {
         resultChannels[sessionId]?.toMutableSet() ?: setOf()
     }
     for (channel in channels) {
-        channel.trySend(result)
+        channel.trySend(session.result!!)
     }
     call.respondText(
         contentType = ContentType.Application.Json,
         text = "{}"
     )
+}
+
+private suspend fun processResult(session: Session, result: JsonObject) {
+    val revised = BackendEnvironment.getInterface(VerifierAssistant::class)?.processResponse(
+        request = object: VerifierRequest {
+            override suspend fun getDcql(): JsonObject =
+                Json.parseToJsonElement(session.dcqlQuery).jsonObject
+            override suspend fun getTransactions(): List<JsonObject> =
+                session.jsonTransactionData?.map {
+                    Json.parseToJsonElement(it).jsonObject
+                } ?: emptyList()
+        },
+        response = object: VerifierResponse {
+            override val responseProtocol: String = session.responseProtocol!!
+            override val rawResponse: ByteString = session.response!!
+            override val response = result
+        }
+    )
+    session.result = (revised ?: result).toString()
 }
 
 suspend fun getResult(call: ApplicationCall, encodedSessionId: String) {
@@ -234,15 +276,7 @@ suspend fun getResult(call: ApplicationCall, encodedSessionId: String) {
     }
     call.respondText(
         contentType = ContentType.Application.Json,
-        text = buildJsonObject {
-            if (result == null) {
-                put("status", "not_ready")
-            } else {
-                put("status", "ready")
-                put("session_id", encodedSessionId)
-                put("result", Json.parseToJsonElement(result))
-            }
-        }.toString()
+        text = result ?: """{"status": "not_ready"}"""
     )
 }
 
@@ -254,14 +288,26 @@ private suspend fun generateRequest(
 ): JsonObject {
     val sessionIdentity = getServerIdentity(ServerIdentity.VERIFIER)
     val baseUrl = BackendEnvironment.getBaseUrl()
+    val origin = BackendEnvironment.getDomain()
     val query = Json.parseToJsonElement(session.dcqlQuery).jsonObject
     return if (responseMode == OpenID4VP.ResponseMode.DC_API) {
+        val docRequestOtherInfo = if (session.jsonTransactionData.isNullOrEmpty()) {
+            emptyMap()
+        } else {
+            createDocRequestOtherInfo(TransactionDataJson.parse(
+                base64UrlEncodedJson = session.jsonTransactionData.map {
+                    it.encodeToByteArray().toBase64Url()
+                },
+                documentTypeRepository = documentTypeRepo
+            ))
+        }
         VerificationUtil.generateDcRequestDcql(
             exchangeProtocols = exchangeProtocols,
             dcql = query,
-            transactionData = session.transactionData ?: listOf(),
+            jsonTransactionData = session.jsonTransactionData ?: listOf(),
+            docRequestOtherInfo = docRequestOtherInfo,
             nonce = session.nonce,
-            origin = baseUrl,
+            origin = origin,
             clientId = getClientId(),
             responseEncryptionKey = session.encryptionPrivateKey.publicKey,
             readerAuthenticationKey = sessionIdentity,
@@ -281,14 +327,92 @@ private suspend fun generateRequest(
                 null
             },
             dclqQuery = Json.parseToJsonElement(session.dcqlQuery).jsonObject,
-            transactionData = session.transactionData ?: listOf()
+            jsonTransactionData = session.jsonTransactionData ?: listOf()
         )
     }
 }
 
+private fun createDocRequestOtherInfo(
+    transactionDataMap: Map<String, List<TransactionDataJson>>
+): Map<String, Map<String, DataItem>> {
+    return transactionDataMap.mapValues { (_, transactionData) ->
+        transactionData.associate { data ->
+            Pair(data.type.mdocRequestInfoKeyName, convertTransactionDataToCbor(data))
+        }
+    }
+}
+
+private fun convertTransactionDataToCbor(data: TransactionDataJson): Tagged =
+    Tagged(
+        Tagged.ENCODED_CBOR,
+        Bstr(Cbor.encode(buildCborMap {
+            data.data["transaction_data_hashes_alg"]?.jsonArray?.mapNotNull {
+                Algorithm.fromHashAlgorithmIdentifier(it.jsonPrimitive.content)
+                    .coseAlgorithmIdentifier?.toDataItem()
+            }?.let { hashAlgorithms ->
+                if (hashAlgorithms.isEmpty()) {
+                    throw IllegalArgumentException("no supported hash algorithms")
+                }
+                put("transaction_data_hashes_alg", CborArray(hashAlgorithms.toMutableList()))
+            }
+            for (element in data.type.dataElements.values) {
+                val value = data.data[element.attribute.identifier]
+                if (value == null) {
+                    if (element.mandatory) {
+                        throw InvalidRequestException(
+                            "missing mandatory '${element.attribute.identifier}' in transaction '${data.type.identifier}'"
+                        )
+                    }
+                    continue
+                }
+                put(element.attribute.identifier, convertToCbor(
+                    transactionTypeIdentifier = data.type.identifier,
+                    attribute = element.attribute,
+                    value = value
+                ))
+            }
+        })
+    ))
+
+private fun convertToCbor(
+    transactionTypeIdentifier: String,
+    attribute: DocumentAttribute,
+    value: JsonElement
+): DataItem =
+    when (attribute.type) {
+        DocumentAttributeType.String -> if (value is JsonPrimitive && value.isString) {
+            value.content.toDataItem()
+        } else {
+            throw InvalidRequestException("'${attribute.identifier}' in '$transactionTypeIdentifier' is not a string")
+        }
+
+        DocumentAttributeType.Number -> convertToNumber(value)
+            ?: throw InvalidRequestException("'${attribute.identifier}' in '$transactionTypeIdentifier': not a number")
+
+        DocumentAttributeType.Blob -> if (value is JsonPrimitive && value.isString) {
+            value.content.fromBase64Url().toDataItem()
+        } else {
+            throw InvalidRequestException("'${attribute.identifier}' in '$transactionTypeIdentifier': not a number")
+        }
+
+        DocumentAttributeType.Boolean -> (value as? JsonPrimitive)?.booleanOrNull?.toDataItem()
+            ?: throw InvalidRequestException("'${attribute.identifier}' in '$transactionTypeIdentifier': not a boolean")
+
+        else -> throw InvalidRequestException("'${attribute.identifier}' in '$transactionTypeIdentifier': unsupported type")
+    }
+
+private fun convertToNumber(value: JsonElement): DataItem? =
+    if (value is JsonPrimitive && !value.isString) {
+        value.longOrNull?.toDataItem() ?: value.doubleOrNull?.toDataItem()
+    } else {
+        null
+    }
+
 private suspend fun processOpenID4VPResponseText(
     session: Session,
-    responseText: String
+    responseText: String,
+    dcApi: Boolean,
+    sessionId: String?
 ): JsonObject {
     val decryptedResponse = JsonWebEncryption.decrypt(
         responseText,
@@ -298,15 +422,23 @@ private suspend fun processOpenID4VPResponseText(
         )
     ).jsonObject
     val baseUrl = BackendEnvironment.getBaseUrl()
+    val origin = BackendEnvironment.getDomain()
     val token = decryptedResponse["vp_token"]!!.jsonObject
     val jwkThumbPrint = session.encryptionPrivateKey.publicKey
         .toJwkThumbprint(Algorithm.SHA256).toByteArray()
     val nonce = session.nonce.toByteArray().toBase64Url()
     val handoverInfo = Cbor.encode(
         buildCborArray {
-            add(baseUrl)
-            add(nonce)
-            add(jwkThumbPrint)
+            if (dcApi) {
+                add(origin)
+                add(nonce)
+                add(jwkThumbPrint)
+            } else {
+                add(getClientId())
+                add(nonce)
+                add(jwkThumbPrint)
+                add("$baseUrl/direct_post/$sessionId")
+            }
         }
     )
     val handoverInfoDigest = Crypto.digest(Algorithm.SHA256, handoverInfo)
@@ -315,17 +447,26 @@ private suspend fun processOpenID4VPResponseText(
             add(Simple.NULL) // DeviceEngagementBytes
             add(Simple.NULL) // EReaderKeyBytes
             addCborArray {
-                add("OpenID4VPDCAPIHandover")
+                if (dcApi) {
+                    add("OpenID4VPDCAPIHandover")
+                } else {
+                    add("OpenID4VPHandover")
+                }
                 add(handoverInfoDigest)
             }
         }
     }
+    val transactionMap = TransactionDataJson.parse(
+        base64UrlEncodedJson = session.jsonTransactionData?.map {
+            it.encodeToByteArray().toBase64Url()
+        } ?: emptyList(),
+        documentTypeRepository = documentTypeRepo
+    )
     val requestedDocuments = extractRequestedDocuments(
         dcql = Json.parseToJsonElement(session.dcqlQuery).jsonObject
     )
     val documentRequests = requestedDocuments.associateBy { it.id }
-    val transactionDataHashMap = mutableMapOf<String, TransactionDataHashes>()
-    val result = buildJsonObject {
+    return buildJsonObject {
         for ((id, value) in token) {
             val documentRequest = documentRequests[id]!!
             val cbor = documentRequest.format == "mso_mdoc"
@@ -333,57 +474,30 @@ private suspend fun processOpenID4VPResponseText(
                 val responseText = credentialResponse.jsonPrimitive.content
                 if (cbor) {
                     val decoded = Cbor.decode(responseText.fromBase64Url())
-                    val responses = processMdocResponse(
+                    processMdocResponse(
                         credentialResponse = decoded,
                         mdocSessionTranscript = mdocSessionTranscript,
-                        documentRequests = listOf(documentRequest)
-                    )
-                    check(responses.size == 1)
-                    Pair(responses.first(), null)
+                        eReaderKey = null,
+                        documentRequests = listOf(documentRequest),
+                        transactionDataList = listOf(transactionMap[id] ?: emptyList())
+                    ).first()
                 } else {
                     processSdJwtResponse(
                         credentialResponse = responseText,
                         documentRequest = documentRequest,
-                        sessionNonce = nonce
+                        sessionNonce = nonce,
+                        transactionData = transactionMap[id] ?: listOf()
                     )
                 }
             }
-            responses.first().second?.let { transactionDataHashMap.put(id, it) }
             if (documentRequest.multiple) {
-                put(id, JsonArray(responses.map { it.first }))
-                for (response in responses) {
-                    // Ensures that all responses include exactly the same transaction data hashes
-                    check(responses.first().second == response.second)
-                }
+                put(id, JsonArray(responses))
             } else {
                 check(responses.size == 1)
-                put(id, responses.first().first)
+                put(id, responses.first())
             }
         }
     }
-
-    // Validate that transaction data got acknowledged in the response
-    if (session.transactionData == null) {
-        // No transaction data hashes most have been embedded in the response
-        check(transactionDataHashMap.isEmpty())
-    } else {
-        val transactionDataMap = TransactionData.parse(
-            transactionData = session.transactionData,
-            hashAlgorithmOverrides = transactionDataHashMap.mapValues { (_, transactionDataHashes) ->
-                transactionDataHashes.hashAlgorithm
-            }
-        )
-        check(transactionDataMap.size == transactionDataHashMap.size)
-        for ((id, transactionDataHashes) in transactionDataHashMap) {
-            val transactionDataList = transactionDataMap[id]!!
-            check(transactionDataList.size == transactionDataHashes.hashes.size)
-            for ((transactionData, hash) in transactionDataList.zip(transactionDataHashes.hashes)) {
-                check(transactionData.hash == hash)
-            }
-        }
-    }
-
-    return result
 }
 
 private suspend fun processIsoMdocResponse(
@@ -408,10 +522,10 @@ private suspend fun processIsoMdocResponse(
     }
     val base64EncryptionInfo = Cbor.encode(encryptionInfo).toBase64Url()
 
-    val baseUrl = BackendEnvironment.getBaseUrl()
+    val origin = BackendEnvironment.getDomain()
     val dcapiInfo = buildCborArray {
         add(base64EncryptionInfo)
-        add(baseUrl)  // origin
+        add(origin)
     }
 
     val dcapiInfoDigest = Crypto.digest(Algorithm.SHA256, Cbor.encode(dcapiInfo))
@@ -434,16 +548,32 @@ private suspend fun processIsoMdocResponse(
     val requestedDocuments = extractRequestedDocuments(
         dcql = Json.parseToJsonElement(session.dcqlQuery).jsonObject
     )
+
     // In ISO world document ids are not used and responses rely on document index
     // TODO: it is not clear how this would work when there are document sets.
-    val jsonResponses = processMdocResponse(
+
+    val transactionDataList = TransactionDataJson.parse(
+        base64UrlEncodedJson = session.jsonTransactionData?.map {
+            it.encodeToByteArray().toBase64Url()
+        } ?: emptyList(),
+        documentTypeRepository = documentTypeRepo
+    ).values.map { value ->
+        value.map {
+            TransactionDataCbor(it.type, convertTransactionDataToCbor(it))
+        }
+    }
+
+    val responses = processMdocResponse(
         credentialResponse = Cbor.decode(deviceResponseRaw),
         mdocSessionTranscript = sessionTranscript,
-        documentRequests = requestedDocuments
+        eReaderKey = null,
+        documentRequests = requestedDocuments,
+        transactionDataList = transactionDataList
     )
+
     return buildJsonObject {
-        for ((documentRequest, jsonResponse) in requestedDocuments.zip(jsonResponses)) {
-            put(documentRequest.id, jsonResponse)
+        for ((documentRequest, response) in requestedDocuments.zip(responses)) {
+            put(documentRequest.id, response)
         }
     }
 }
@@ -457,46 +587,72 @@ private suspend fun getTrustManager(): TrustManagerInterface =
 private suspend fun processMdocResponse(
     credentialResponse: DataItem,
     mdocSessionTranscript: DataItem,
-    documentRequests: List<RequestedDocument>
+    eReaderKey: AsymmetricKey?,
+    documentRequests: List<RequestedDocument>,
+    transactionDataList: List<List<TransactionData>>
 ): List<JsonObject> {
     val trustManager = getTrustManager()
     val deviceResponse = DeviceResponse.fromDataItem(credentialResponse)
-    try {
-        deviceResponse.verify(sessionTranscript = mdocSessionTranscript)
-    } catch (err: Exception) {
-        if (err is CancellationException) throw err
-        Logger.e(TAG, "Device response verification failed", err)
-    }
-    return deviceResponse.documents.zip(documentRequests).map { (document, request) ->
+    val transactionResponses = deviceResponse.verify(
+        sessionTranscript = mdocSessionTranscript,
+        eReaderKey = eReaderKey,
+        transactionDataList = transactionDataList
+    )
+    return deviceResponse.documents.mapIndexed { index, document ->
+        val request = documentRequests[index]
+        val transactionResponse = transactionResponses[index]
         buildJsonObject {
             try {
                 val trustResult = trustManager.verify(document.issuerCertChain.certificates)
-                put("_trusted", trustResult.isTrusted)
+                put("trusted", trustResult.isTrusted)
             } catch (e: Exception) {
                 if (e is CancellationException) throw e
                 Logger.e(TAG, "Trust verification failed", e)
             }
+            putJsonObject("claims") {
+                for (claim in request.claims) {
+                    if (claim.path.size != 2) {
+                        // TODO: nested values in mdoc?
+                        continue
+                    }
+                    val issuerSignedItemsMap =
+                        document.issuerNamespaces.data[claim.path.first().asTstr]
+                            ?: continue
+                    val issuerSignedItem = issuerSignedItemsMap[claim.path.last().asTstr]
+                        ?: continue
+                    val jsonItem = when (val item = issuerSignedItem.dataElementValue) {
+                        is Tstr -> JsonPrimitive(item.asTstr)
+                        is Bstr -> JsonPrimitive(item.asBstr.toBase64())
+                        is Nint, is Uint -> JsonPrimitive(item.asNumber)
+                        Simple.TRUE -> JsonPrimitive(true)
+                        Simple.FALSE -> JsonPrimitive(false)
+                        Simple.NULL -> JsonPrimitive(null as String?)
+                        is Tagged -> when (item.tagNumber) {
+                            Tagged.DATE_TIME_STRING,
+                            Tagged.FULL_DATE_STRING -> JsonPrimitive((item.taggedItem as Tstr).asTstr)
 
-            for (claim in request.claims) {
-                if (claim.path.size != 2) {
-                    // TODO: nested values in mdoc?
-                    continue
+                            else -> JsonPrimitive("<unsupported>")
+                        }
+
+                        else -> JsonPrimitive("<unsupported>")
+                    }
+                    val id = claim.id ?: claim.path.last().asTstr
+                    put(id, jsonItem)
                 }
-                val issuerSignedItemsMap = document.issuerNamespaces.data[claim.path.first().asTstr]
-                    ?: continue
-                val issuerSignedItem = issuerSignedItemsMap[claim.path.last().asTstr]
-                    ?: continue
-                val jsonItem = when (val item = issuerSignedItem.dataElementValue) {
-                    is Tstr -> JsonPrimitive(item.asTstr)
-                    is Bstr -> JsonPrimitive(item.asBstr.toBase64())
-                    is Nint, is Uint -> JsonPrimitive(item.asNumber)
-                    Simple.TRUE -> JsonPrimitive(true)
-                    Simple.FALSE -> JsonPrimitive(false)
-                    Simple.NULL -> JsonPrimitive(null as String?)
-                    else -> JsonPrimitive("<unsupported>")
+            }
+            if (transactionResponse.isNotEmpty()) {
+                putJsonObject("transactions") {
+                    for ((transactionIdentifier, transactionResult) in transactionResponse) {
+                        putJsonObject(transactionIdentifier) {
+                            for ((name, value) in transactionResult) {
+                                if (name != "transaction_data_hash" &&
+                                    name != "transaction_data_hash_alg") {
+                                    put(name, value.toJson())
+                                }
+                            }
+                        }
+                    }
                 }
-                val id = claim.id ?: claim.path.last().asTstr
-                put(id, jsonItem)
             }
         }
     }
@@ -505,8 +661,9 @@ private suspend fun processMdocResponse(
 private suspend fun processSdJwtResponse(
     credentialResponse: String,
     documentRequest: RequestedDocument,
-    sessionNonce: String
-): Pair<JsonObject, TransactionDataHashes?> {
+    sessionNonce: String,
+    transactionData: List<TransactionData>
+): JsonObject {
     val (sdJwt, sdJwtKb) = if (credentialResponse.endsWith("~")) {
         Pair(SdJwt.fromCompactSerialization(credentialResponse), null)
     } else {
@@ -520,8 +677,8 @@ private suspend fun processSdJwtResponse(
         ?: throw InvalidRequestException("'x5c' not found")
     val trustManager = getTrustManager()
     val trustResult = trustManager.verify(sdJwt.x5c!!.certificates)
-    val jsonResult = buildJsonObject {
-        put("_trusted", trustResult.isTrusted)
+    return buildJsonObject {
+        put("trusted", trustResult.isTrusted)
 
         val claimMap = sdJwtKb?.verify(
             issuerKey = issuerCert.ecPublicKey,
@@ -529,34 +686,35 @@ private suspend fun processSdJwtResponse(
             // TODO: check audience, and creationTime
             checkAudience = { audience -> true },
             checkCreationTime = { creationTime -> true },
+            transactionData = transactionData
         )
             ?: sdJwt.verify(issuerCert.ecPublicKey)
 
-        for (claim in documentRequest.claims) {
-            var value: JsonElement = claimMap
-            for (key in claim.path) {
-                value = when (key) {
-                    is Tstr -> value.jsonObject[key.asTstr]!!
-                    is Uint -> value.jsonArray[key.asNumber.toInt()]
-                    else -> throw IllegalStateException("Unexpected key in claim path")
+        putJsonObject("claims") {
+            for (claim in documentRequest.claims) {
+                var value: JsonElement = claimMap
+                for (key in claim.path) {
+                    value = when (key) {
+                        is Tstr -> value.jsonObject[key.asTstr]!!
+                        is Uint -> value.jsonArray[key.asNumber.toInt()]
+                        else -> throw IllegalStateException("Unexpected key in claim path")
+                    }
+                }
+                val id = claim.id ?: claim.path.last().asTstr
+                put(id, value)
+            }
+        }
+
+        if (transactionData.isNotEmpty() && sdJwtKb != null) {
+            putJsonObject("transactions") {
+                for (transaction in transactionData) {
+                    sdJwtKb.jwtBody[transaction.type.kbJwtResponseClaimName]?.let {
+                        put(transaction.type.identifier, it)
+                    }
                 }
             }
-            val id = claim.id ?: claim.path.last().asTstr
-            put(id, value)
         }
     }
-
-    val transactionDataHashes = sdJwtKb?.jwtBody["transaction_data_hashes"]?.let { hashes ->
-        val hashAlgorithm = sdJwtKb.jwtBody["transaction_data_hashes_alg"]?.jsonPrimitive?.content
-        TransactionDataHashes(
-            hashAlgorithm = hashAlgorithm?.let {
-                Algorithm.fromHashAlgorithmIdentifier(hashAlgorithm)
-            } ?: Algorithm.SHA256,
-            hashes = hashes.jsonArray.map { ByteString(it.jsonPrimitive.content.fromBase64Url()) }
-        )
-    }
-
-    return Pair(jsonResult, transactionDataHashes)
 }
 
 private fun extractRequestedDocuments(
@@ -634,4 +792,3 @@ private suspend fun decodeSessionId(code: String): String {
 }
 
 private const val TAG = "verifyCredentials"
-

@@ -30,6 +30,103 @@ const examples = {
            ]
         }
     },
+    "Payment SCA (minimal)": {
+        "dcql": {
+            "credentials": [
+                {
+                    "id": "payment",
+                    "format": "mso_mdoc",
+                    "meta": {
+                        "doctype_value": "org.multipaz.payment.sca.1"
+                    },
+                    "claims": [
+                        {
+                            "path": [
+                                "org.multipaz.payment.sca.1",
+                                "issuer_name"
+                            ]
+                        },
+                        {
+                            "path": [
+                                "org.multipaz.payment.sca.1",
+                                "masked_account_reference"
+                            ]
+                        },
+                        {
+                            "path": [
+                                "org.multipaz.payment.sca.1",
+                                "holder_name"
+                            ]
+                        },
+                        {
+                            "path": [
+                                "org.multipaz.payment.sca.1",
+                                "expiry_date"
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }
+    },
+    "Payment SCA (full)": {
+        "dcql": {
+            "credentials": [
+                {
+                    "id": "payment",
+                    "format": "mso_mdoc",
+                    "meta": {
+                        "doctype_value": "org.multipaz.payment.sca.1"
+                    },
+                    "claims": [
+                        {
+                            "path": [
+                                "org.multipaz.payment.sca.1",
+                                "issuer_name"
+                            ]
+                        },
+                        {
+                            "path": [
+                                "org.multipaz.payment.sca.1",
+                                "payment_instrument_id"
+                            ]
+                        },
+                        {
+                            "path": [
+                                "org.multipaz.payment.sca.1",
+                                "masked_account_reference"
+                            ]
+                        },
+                        {
+                            "path": [
+                                "org.multipaz.payment.sca.1",
+                                "holder_name"
+                            ]
+                        },
+                        {
+                            "path": [
+                                "org.multipaz.payment.sca.1",
+                                "issue_date"
+                            ]
+                        },
+                        {
+                            "path": [
+                                "org.multipaz.payment.sca.1",
+                                "expiry_date"
+                            ]
+                        }
+                    ]
+                }
+            ]
+        },
+        "transaction_data": [
+            {
+                "type": "org.multipaz.transaction.ping",
+                "credential_ids": ["payment"],
+                "string": "foobar"
+            }
+        ]
+    },
     "Movie ticket + EU PID age": {
         "dcql": {
           "credentials": [
@@ -75,8 +172,9 @@ const examples = {
         },
         "transaction_data": [
             {
-                "type": "org.multipaz.transaction_data.test",
-                "credential_ids": ["pid"]
+                "type": "org.multipaz.transaction.ping",
+                "credential_ids": ["pid"],
+                "string": "foobar"
             }
         ]
     }
@@ -126,11 +224,11 @@ async function run() {
     if (transactionDataPresent.checked && transactionDataText.trim().length !== 0) {
         req["transaction_data"] = JSON.parse(transactionDataText);
     }
-    const response = await multipazVerifyCredentials(req);
     const result = document.getElementById("result");
     result.innerHTML = "";
-    for (let label in response.result) {
-        renderContent(result, label, response.result[label], 0);
+    const response = await multipazVerifyCredentials(req);
+    for (let label in response) {
+        renderContent(result, label, response[label], 0);
     }
 }
 

@@ -15,8 +15,10 @@ import SwiftUI
 func getPresentmentSource() async -> PresentmentSource {
     let storage = TestAppConfiguration.shared.storage
     let secureArea = try! await Platform.shared.getSecureArea(storage: storage)
+    let softwareSecureArea = try! await SoftwareSecureArea.companion.create(storage: storage)
     let secureAreaRepository = SecureAreaRepository.Builder()
         .add(secureArea: secureArea)
+        .add(secureArea: softwareSecureArea)
         .build()
     let documentTypeRepository = DocumentTypeRepository()
     documentTypeRepository.addDocumentType(documentType: DrivingLicense.shared.getDocumentType())
@@ -139,10 +141,10 @@ func getPresentmentSource() async -> PresentmentSource {
             )
         },
         preferSignatureToKeyAgreement: false,
-        domainMdocSignature: TestAppUtils.shared.CREDENTIAL_DOMAIN_MDOC_USER_AUTH,
-        domainMdocKeyAgreement: TestAppUtils.shared.CREDENTIAL_DOMAIN_MDOC_MAC_USER_AUTH,
-        domainKeylessSdJwt: nil,
-        domainKeyBoundSdJwt: nil
+        domainsMdocSignature: [TestAppUtils.shared.CREDENTIAL_DOMAIN_MDOC_USER_AUTH],
+        domainsMdocKeyAgreement: [TestAppUtils.shared.CREDENTIAL_DOMAIN_MDOC_MAC_USER_AUTH],
+        domainsKeylessSdJwt: [],
+        domainsKeyBoundSdJwt: []
     )
 }
 
