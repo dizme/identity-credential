@@ -35,8 +35,8 @@ val projectVersionCode: Int by extra {
 // For a tagged release, projectVersionNext should be blank and the next commit
 // following the release should bump it to the next version number.
 //
-val projectVersionLast = "0.98.0"
-val projectVersionNext = "0.99.0"
+val projectVersionLast = "0.99.0"
+val projectVersionNext = "0.100.0"
 
 private fun runCommand(args: List<String>): String {
     val stdout = ByteArrayOutputStream()
@@ -56,7 +56,10 @@ private fun runCommand(args: List<String>): String {
 // where we cut the pre-release from. Example: 0.91.0-pre.48.574b479c
 //
 val projectVersionName: String by extra {
-    if (projectVersionNext.isEmpty()) {
+    val isSnapshot = providers.gradleProperty("snapshot").map { it.toBoolean() }.getOrElse(false)
+    if (isSnapshot) {
+        projectVersionNext + "-SNAPSHOT"
+    } else if (projectVersionNext.isEmpty()) {
         projectVersionLast
     } else {
         val numCommitsSinceTag = runCommand(listOf("git", "rev-list", "${projectVersionLast}..", "--count"))
@@ -105,6 +108,14 @@ subprojects {
                 maven {
                     name = "PortalStaging"
                     url = uri(rootProject.layout.buildDirectory.dir("staging-repo"))
+                }
+                maven {
+                    name = "CentralSnapshots"
+                    url = uri("https://central.sonatype.com/repository/maven-snapshots/")
+                    credentials {
+                        username = providers.gradleProperty("mavenCentralUsername").orNull
+                        password = providers.gradleProperty("mavenCentralPassword").orNull
+                    }
                 }
             }
 
@@ -166,7 +177,16 @@ dependencies {
     dokka(project(":multipaz-compose"))
     dokka(project(":multipaz-dcapi"))
     dokka(project(":multipaz-doctypes"))
+    dokka(project(":multipaz-utopia"))
     dokka(project(":multipaz-longfellow"))
     dokka(project(":multipaz-cbor-rpc"))
     dokka(project(":multipaz-android-legacy"))
+}
+
+subprojects {
+    plugins.withId("org.jetbrains.dokka") {
+        dependencies {
+            "dokkaPlugin"("org.multipaz:dokka-known-subclasses-plugin:1.0.0")
+        }
+    }
 }

@@ -5,8 +5,6 @@ import org.jetbrains.kotlin.gradle.ExperimentalKotlinGradlePluginApi
 import org.jetbrains.kotlin.gradle.ExperimentalWasmDsl
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.plugin.KotlinSourceSetTree
-import org.multipaz.lokalize.util.LLMProvider
-import org.multipaz.lokalize.util.LLmModel
 
 
 plugins {
@@ -16,7 +14,7 @@ plugins {
     alias(libs.plugins.compose.compiler)
     id("maven-publish")
     id("org.jetbrains.dokka") version "2.1.0"
-    id("org.multipaz.lokalize")
+    id("org.multipaz.lokalize.convention")
 }
 
 val projectVersionCode: Int by rootProject.extra
@@ -95,6 +93,7 @@ kotlin {
                 implementation(compose.materialIconsExtended)
                 implementation(libs.jetbrains.navigation.compose)
                 implementation(libs.jetbrains.navigation.runtime)
+                implementation(libs.jetbrains.navigationevent.compose)
                 api(compose.runtime)
                 api(compose.foundation)
                 api(compose.material3)
@@ -103,6 +102,7 @@ kotlin {
                 api(compose.materialIconsExtended)
                 api(libs.jetbrains.navigation.compose)
                 api(libs.jetbrains.navigation.runtime)
+                api(libs.jetbrains.navigationevent.compose)
 
                 implementation(project(":multipaz"))
                 implementation(project(":multipaz-dcapi"))
@@ -138,6 +138,7 @@ kotlin {
                 implementation(libs.androidx.credentials)
                 implementation(libs.androidx.credentials.registry.provider)
                 implementation(libs.ktor.client.android)
+                implementation(libs.androidx.browser)
             }
         }
     }
@@ -218,13 +219,12 @@ publishing {
     }
 }
 
-tasks.named("generateResourceAccessorsForAndroidMain").configure { dependsOn("sourceReleaseJar") }
+tasks.configureEach {
+    if (name == "androidReleaseSourcesJar") {
+        dependsOn("generateMultipazStrings")
+    }
+}
 
 lokalize {
-    defaultLocale = "en"
-    targetLocales = listOf("da", "ar", "cs", "de", "el", "es", "fr", "he", "hi", "id", "it", "ja", "ko", "nl", "pl", "pt", "ru", "th", "tr", "uk", "vi", "zh-rCN")
     resourcesDir.set("src/commonMain/composeResources")
-    llmProvider.set(LLMProvider.GOOGLE)
-    llModel.set(LLmModel.GEMINI2_5_FLASH)
-    llmApiKey.set("API_KEY")
 }

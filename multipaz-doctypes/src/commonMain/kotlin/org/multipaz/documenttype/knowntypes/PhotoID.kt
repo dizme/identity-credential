@@ -8,7 +8,9 @@ import org.multipaz.documenttype.Icon
 import org.multipaz.util.fromBase64Url
 import kotlinx.datetime.LocalDate
 import org.multipaz.cbor.buildCborMap
-import org.multipaz.documenttype.knowntypes.DrivingLicense.MDL_NAMESPACE
+import org.multipaz.doctypes.localization.LocalizedStrings
+import org.multipaz.doctypes.localization.GeneratedStringKeys
+import org.multipaz.documenttype.DocumentAttributeSensitivity
 
 /**
  * PhotoID according to ISO/IEC 23220-4 Annex C.
@@ -19,55 +21,58 @@ object PhotoID {
     const val PHOTO_ID_DOCTYPE = "org.iso.23220.photoid.1"
     const val ISO_23220_2_NAMESPACE = "org.iso.23220.1"
     const val PHOTO_ID_NAMESPACE = "org.iso.23220.photoid.1"
-    const val DTC_NAMESPACE = "org.iso.23220.dtc.1"
+    const val DATAGROUPS_NAMESPACE = "org.iso.23220.datagroups.1"
 
     /**
      * Build the PhotoID Document Type.
      */
-    fun getDocumentType(): DocumentType = with(DocumentType.Builder("Photo ID")) {
+    fun getDocumentType(locale: String = LocalizedStrings.getCurrentLocale()): DocumentType {
+        fun getLocalizedString(key: String) = LocalizedStrings.getString(key, locale)
+
+        return with(DocumentType.Builder(getLocalizedString(GeneratedStringKeys.DOCUMENT_DISPLAY_NAME_PHOTO_ID))) {
         addMdocDocumentType(PHOTO_ID_DOCTYPE)
 
         // Data elements from ISO/IEC 23220-4 Table C.1 — PhotoID data elements defined by ISO/IEC TS 23220-2
         //
         addMdocAttribute(
-            DocumentAttributeType.String,
-            "family_name",
-            "Family name",
-            "Last name, surname, or primary identifier, of the document holder",
-            true,
-            ISO_23220_2_NAMESPACE,
-            Icon.PERSON,
-            SampleData.FAMILY_NAME.toDataItem()
+            type = DocumentAttributeType.String,
+            identifier = "family_name",
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_ATTRIBUTE_FAMILY_NAME),
+            description = getLocalizedString(GeneratedStringKeys.PHOTO_ID_DESCRIPTION_FAMILY_NAME),
+            mandatory = true,
+            mdocNamespace = ISO_23220_2_NAMESPACE,
+            icon = Icon.PERSON,
+            sampleValue = SampleData.FAMILY_NAME.toDataItem()
         )
         addMdocAttribute(
-            DocumentAttributeType.String,
-            "family_name_viz",
-            "Family name (VIZ)",
-            "Family name as defined for VIZ (visual inspection zone) in ICAO 9303",
-            false,
-            ISO_23220_2_NAMESPACE,
-            Icon.PERSON,
-            SampleData.FAMILY_NAME.toDataItem()
+            type = DocumentAttributeType.String,
+            identifier = "family_name_viz",
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_ATTRIBUTE_FAMILY_NAME_VIZ),
+            description = getLocalizedString(GeneratedStringKeys.PHOTO_ID_DESCRIPTION_FAMILY_NAME_VIZ),
+            mandatory = false,
+            mdocNamespace = ISO_23220_2_NAMESPACE,
+            icon = Icon.PERSON,
+            sampleValue = SampleData.FAMILY_NAME.toDataItem()
         )
         addMdocAttribute(
-            DocumentAttributeType.String,
-            "given_name",
-            "Given names",
-            "First name(s), other name(s), or secondary identifier, of the document holder",
-            true,
-            ISO_23220_2_NAMESPACE,
-            Icon.PERSON,
-            SampleData.GIVEN_NAME.toDataItem()
+            type = DocumentAttributeType.String,
+            identifier = "given_name",
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_ATTRIBUTE_GIVEN_NAMES),
+            description = getLocalizedString(GeneratedStringKeys.PHOTO_ID_DESCRIPTION_GIVEN_NAMES),
+            mandatory = true,
+            mdocNamespace = ISO_23220_2_NAMESPACE,
+            icon = Icon.PERSON,
+            sampleValue = SampleData.GIVEN_NAME.toDataItem()
         )
         addMdocAttribute(
-            DocumentAttributeType.String,
-            "given_name_viz",
-            "Given name (VIZ)",
-            "Given name as defined for VIZ (visual inspection zone) in ICAO 9303",
-            false,
-            ISO_23220_2_NAMESPACE,
-            Icon.PERSON,
-            SampleData.GIVEN_NAME.toDataItem()
+            type = DocumentAttributeType.String,
+            identifier = "given_name_viz",
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_ATTRIBUTE_GIVEN_NAME_VIZ),
+            description = getLocalizedString(GeneratedStringKeys.PHOTO_ID_DESCRIPTION_GIVEN_NAME_VIZ),
+            mandatory = false,
+            mdocNamespace = ISO_23220_2_NAMESPACE,
+            icon = Icon.PERSON,
+            sampleValue = SampleData.GIVEN_NAME.toDataItem()
         )
         // Note, this is more complicated than mDL and EU PID, according to ISO/IEC 23220-2
         // clause "6.3.1.1.3 Date of birth as either uncertain or approximate, or both"
@@ -80,79 +85,85 @@ object PhotoID {
         // Approximate_mask is an 8 digit flag to denote the location of the mask in YYYYMMDD
         // format. 1 denotes mask.
         //
-        // NOTE “approximate mask” is not intended to be used for calculation.
+        // NOTE "approximate mask" is not intended to be used for calculation.
         //
         addMdocAttribute(
-            DocumentAttributeType.Date,   // TODO: this is a more complex type
+            type = DocumentAttributeType.Date,   identifier = // TODO: this is a more complex type
             "birth_date",
-            "Date of birth",
-            "Day, month and year on which the document holder was born. If unknown, approximate date of birth",
-            true,
-            ISO_23220_2_NAMESPACE,
-            Icon.TODAY,
-            buildCborMap {
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_ATTRIBUTE_DATE_OF_BIRTH),
+            description = getLocalizedString(GeneratedStringKeys.PHOTO_ID_DESCRIPTION_DATE_OF_BIRTH),
+            mandatory = true,
+            mdocNamespace = ISO_23220_2_NAMESPACE,
+            icon = Icon.TODAY,
+            sampleValue = buildCborMap {
                 put("birth_date", LocalDate.parse(SampleData.BIRTH_DATE).toDataItemFullDate())
             }
         )
         addMdocAttribute(
-            DocumentAttributeType.Picture,
-            "portrait",
-            "Photo of holder",
-            "A reproduction of the document holder’s portrait",
-            true,
-            ISO_23220_2_NAMESPACE,
-            Icon.ACCOUNT_BOX,
-            SampleData.PORTRAIT_BASE64URL.fromBase64Url().toDataItem()
+            type = DocumentAttributeType.Picture,
+            identifier = "portrait",
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_ATTRIBUTE_PHOTO_OF_HOLDER),
+            description = getLocalizedString(GeneratedStringKeys.PHOTO_ID_DESCRIPTION_PHOTO_OF_HOLDER),
+            mandatory = true,
+            mdocNamespace = ISO_23220_2_NAMESPACE,
+            sensitivity = DocumentAttributeSensitivity.PORTRAIT_IMAGE,
+            icon = Icon.ACCOUNT_BOX,
+            sampleValue = SampleData.PORTRAIT_BASE64URL.fromBase64Url().toDataItem()
         )
         addMdocAttribute(
-            DocumentAttributeType.Date,
-            "issue_date",
-            "Date of issue",
-            "Date when document was issued",
-            true,
-            ISO_23220_2_NAMESPACE,
-            Icon.DATE_RANGE,
-            LocalDate.parse(SampleData.ISSUE_DATE).toDataItemFullDate()
+            type = DocumentAttributeType.Date,
+            identifier = "issue_date",
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_ATTRIBUTE_DATE_OF_ISSUE),
+            description = getLocalizedString(GeneratedStringKeys.PHOTO_ID_DESCRIPTION_DATE_OF_ISSUE),
+            mandatory = true,
+            mdocNamespace = ISO_23220_2_NAMESPACE,
+            sensitivity = DocumentAttributeSensitivity.VALIDITY,
+            icon = Icon.DATE_RANGE,
+            sampleValue = LocalDate.parse(SampleData.ISSUE_DATE).toDataItemFullDate()
         )
         addMdocAttribute(
-            DocumentAttributeType.Date,
-            "expiry_date",
-            "Date of expiry",
-            "Date when document expires",
-            true,
-            ISO_23220_2_NAMESPACE,
-            Icon.CALENDAR_CLOCK,
-            LocalDate.parse(SampleData.EXPIRY_DATE).toDataItemFullDate()
+            type = DocumentAttributeType.Date,
+            identifier = "expiry_date",
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_ATTRIBUTE_DATE_OF_EXPIRY),
+            description = getLocalizedString(GeneratedStringKeys.PHOTO_ID_DESCRIPTION_DATE_OF_EXPIRY),
+            mandatory = true,
+            mdocNamespace = ISO_23220_2_NAMESPACE,
+            sensitivity = DocumentAttributeSensitivity.VALIDITY,
+            icon = Icon.CALENDAR_CLOCK,
+            sampleValue = LocalDate.parse(SampleData.EXPIRY_DATE).toDataItemFullDate()
         )
         addMdocAttribute(
-            DocumentAttributeType.String,
-            "issuing_authority_unicode",
-            "Issuing authority",
-            "Issuing authority name",
-            true,
-            ISO_23220_2_NAMESPACE,
-            Icon.ACCOUNT_BALANCE,
-            SampleData.ISSUING_AUTHORITY_PHOTO_ID.toDataItem()
+            type = DocumentAttributeType.String,
+            identifier = "issuing_authority",
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_ATTRIBUTE_ISSUING_AUTHORITY),
+            description = getLocalizedString(GeneratedStringKeys.PHOTO_ID_DESCRIPTION_ISSUING_AUTHORITY),
+            mandatory = true,
+            mdocNamespace = ISO_23220_2_NAMESPACE,
+            sensitivity = DocumentAttributeSensitivity.ISSUER,
+            icon = Icon.ACCOUNT_BALANCE,
+            sampleValue = SampleData.ISSUING_AUTHORITY_PHOTO_ID.toDataItem()
         )
         addMdocAttribute(
-            DocumentAttributeType.StringOptions(Options.COUNTRY_ISO_3166_1_ALPHA_2),
-            "issuing_country",
-            "Issuing country",
-            "Alpha-2 country code, as defined in ISO 3166-1, of the issuing authority’s country or territory",
-            true,
-            ISO_23220_2_NAMESPACE,
-            Icon.ACCOUNT_BALANCE,
-            SampleData.ISSUING_COUNTRY.toDataItem()
+            type = DocumentAttributeType.StringOptions(Options.COUNTRY_ISO_3166_1_ALPHA_2),
+            identifier = "issuing_country",
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_ATTRIBUTE_ISSUING_COUNTRY),
+            description = getLocalizedString(GeneratedStringKeys.PHOTO_ID_DESCRIPTION_ISSUING_COUNTRY),
+            mandatory = true,
+            mdocNamespace = ISO_23220_2_NAMESPACE,
+            sensitivity = DocumentAttributeSensitivity.ISSUER,
+            icon = Icon.ACCOUNT_BALANCE,
+            sampleValue = SampleData.ISSUING_COUNTRY.toDataItem()
         )
         addMdocAttribute(
-            DocumentAttributeType.Number,
-            "age_in_years",
-            "Age in years",
-            "The age of the document holder",
-            false,
-            ISO_23220_2_NAMESPACE,
-            Icon.TODAY,
-            SampleData.AGE_IN_YEARS.toDataItem()
+            type = DocumentAttributeType.Number,
+            identifier = "age_in_years",
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_ATTRIBUTE_AGE_IN_YEARS),
+            description = getLocalizedString(GeneratedStringKeys.PHOTO_ID_DESCRIPTION_AGE_IN_YEARS),
+            mandatory = false,
+            mdocNamespace = ISO_23220_2_NAMESPACE,
+            sensitivity = DocumentAttributeSensitivity.AGE_INFORMATION,
+            icon = Icon.TODAY,
+            sampleValue = SampleData.AGE_IN_YEARS.toDataItem()
         )
         // If we provision all 99 age_over_NN claims the MSO will be 3886 bytes which exceeds the Longfellow-ZK
         // MSO size limit of ~ 2200 bytes. With these 13 claims, the MSO is 764 bytes which is more manageable.
@@ -165,6 +176,7 @@ object PhotoID {
                 description = "Indication whether the document holder is as old or older than $age",
                 mandatory = (age == 18),
                 mdocNamespace = ISO_23220_2_NAMESPACE,
+                sensitivity = DocumentAttributeSensitivity.AGE_INFORMATION,
                 icon = Icon.TODAY,
                 sampleValue = if (age in ageThresholdsToProvision) {
                     (SampleData.AGE_IN_YEARS >= age).toDataItem()
@@ -174,461 +186,462 @@ object PhotoID {
             )
         }
         addMdocAttribute(
-            DocumentAttributeType.Number,
-            "age_birth_year",
-            "Year of birth",
-            "The year when the document holder was born",
-            false,
-            ISO_23220_2_NAMESPACE,
-            Icon.TODAY,
-            SampleData.AGE_BIRTH_YEAR.toDataItem()
+            type = DocumentAttributeType.Number,
+            identifier = "age_birth_year",
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_ATTRIBUTE_YEAR_OF_BIRTH),
+            description = getLocalizedString(GeneratedStringKeys.PHOTO_ID_DESCRIPTION_YEAR_OF_BIRTH),
+            mandatory = false,
+            mdocNamespace = ISO_23220_2_NAMESPACE,
+            sensitivity = DocumentAttributeSensitivity.AGE_INFORMATION,
+            icon = Icon.TODAY,
+            sampleValue = SampleData.AGE_BIRTH_YEAR.toDataItem()
         )
         addMdocAttribute(
-            DocumentAttributeType.Date,
-            "portrait_capture_date",
-            "Portrait capture date",
-            "Date when portrait was taken",
-            false,
-            ISO_23220_2_NAMESPACE,
-            Icon.TODAY,
-            LocalDate.parse(SampleData.PORTRAIT_CAPTURE_DATE).toDataItemFullDate()
+            type = DocumentAttributeType.Date,
+            identifier = "portrait_capture_date",
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_ATTRIBUTE_PORTRAIT_CAPTURE_DATE),
+            description = getLocalizedString(GeneratedStringKeys.PHOTO_ID_DESCRIPTION_PORTRAIT_CAPTURE_DATE),
+            mandatory = false,
+            mdocNamespace = ISO_23220_2_NAMESPACE,
+            icon = Icon.TODAY,
+            sampleValue = LocalDate.parse(SampleData.PORTRAIT_CAPTURE_DATE).toDataItemFullDate()
         )
         addMdocAttribute(
-            DocumentAttributeType.String,
-            "birthplace",
-            "Place of birth",
-            "Country and municipality or state/province where the document holder was born",
-            false,
-            ISO_23220_2_NAMESPACE,
-            Icon.PLACE,
-            SampleData.BIRTH_PLACE.toDataItem()
+            type = DocumentAttributeType.String,
+            identifier = "birthplace",
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_ATTRIBUTE_PLACE_OF_BIRTH),
+            description = getLocalizedString(GeneratedStringKeys.PHOTO_ID_DESCRIPTION_PLACE_OF_BIRTH),
+            mandatory = false,
+            mdocNamespace = ISO_23220_2_NAMESPACE,
+            icon = Icon.PLACE,
+            sampleValue = SampleData.BIRTH_PLACE.toDataItem()
         )
         addMdocAttribute(
-            DocumentAttributeType.String,
-            "name_at_birth",
-            "Name at birth",
-            "The name(s) which holder was born",
-            false,
-            ISO_23220_2_NAMESPACE,
-            Icon.PERSON,
-            null
+            type = DocumentAttributeType.String,
+            identifier = "name_at_birth",
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_ATTRIBUTE_NAME_AT_BIRTH),
+            description = getLocalizedString(GeneratedStringKeys.PHOTO_ID_DESCRIPTION_NAME_AT_BIRTH),
+            mandatory = false,
+            mdocNamespace = ISO_23220_2_NAMESPACE,
+            icon = Icon.PERSON,
+            sampleValue = null
         )
         addMdocAttribute(
-            DocumentAttributeType.String,
-            "resident_address",
-            "Resident address",
-            "The place where the document holder resides and/or may be contacted (street/house number, municipality etc.)",
-            false,
-            ISO_23220_2_NAMESPACE,
-            Icon.PLACE,
-            SampleData.RESIDENT_ADDRESS.toDataItem()
+            type = DocumentAttributeType.String,
+            identifier = "resident_address",
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_ATTRIBUTE_RESIDENT_ADDRESS),
+            description = getLocalizedString(GeneratedStringKeys.PHOTO_ID_DESCRIPTION_RESIDENT_ADDRESS),
+            mandatory = false,
+            mdocNamespace = ISO_23220_2_NAMESPACE,
+            icon = Icon.PLACE,
+            sampleValue = SampleData.RESIDENT_ADDRESS.toDataItem()
         )
         addMdocAttribute(
-            DocumentAttributeType.String,
-            "resident_city",
-            "Resident city",
-            "The city/municipality (or equivalent) where the holder lives",
-            false,
-            ISO_23220_2_NAMESPACE,
-            Icon.PLACE,
-            SampleData.RESIDENT_CITY.toDataItem()
+            type = DocumentAttributeType.String,
+            identifier = "resident_city",
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_ATTRIBUTE_RESIDENT_CITY),
+            description = getLocalizedString(GeneratedStringKeys.PHOTO_ID_DESCRIPTION_RESIDENT_CITY),
+            mandatory = false,
+            mdocNamespace = ISO_23220_2_NAMESPACE,
+            icon = Icon.PLACE,
+            sampleValue = SampleData.RESIDENT_CITY.toDataItem()
         )
         addMdocAttribute(
-            DocumentAttributeType.String,
-            "resident_postal_code",
-            "Resident postal code",
-            "The postal code of the document holder",
-            false,
-            ISO_23220_2_NAMESPACE,
-            Icon.PLACE,
-            SampleData.RESIDENT_POSTAL_CODE.toDataItem()
+            type = DocumentAttributeType.String,
+            identifier = "resident_postal_code",
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_ATTRIBUTE_RESIDENT_POSTAL_CODE),
+            description = getLocalizedString(GeneratedStringKeys.PHOTO_ID_DESCRIPTION_RESIDENT_POSTAL_CODE),
+            mandatory = false,
+            mdocNamespace = ISO_23220_2_NAMESPACE,
+            icon = Icon.PLACE,
+            sampleValue = SampleData.RESIDENT_POSTAL_CODE.toDataItem()
         )
         addMdocAttribute(
-            DocumentAttributeType.StringOptions(Options.COUNTRY_ISO_3166_1_ALPHA_2),
-            "resident_country",
-            "Resident country",
-            "The country where the document holder lives",
-            false,
-            ISO_23220_2_NAMESPACE,
-            Icon.PLACE,
-            SampleData.RESIDENT_COUNTRY.toDataItem()
+            type = DocumentAttributeType.StringOptions(Options.COUNTRY_ISO_3166_1_ALPHA_2),
+            identifier = "resident_country",
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_ATTRIBUTE_RESIDENT_COUNTRY),
+            description = getLocalizedString(GeneratedStringKeys.PHOTO_ID_DESCRIPTION_RESIDENT_COUNTRY),
+            mandatory = false,
+            mdocNamespace = ISO_23220_2_NAMESPACE,
+            icon = Icon.PLACE,
+            sampleValue = SampleData.RESIDENT_COUNTRY.toDataItem()
         )
         addMdocAttribute(
-            DocumentAttributeType.String,
-            "resident_city_latin1",
-            "Resident city",
-            "The city/municipality (or equivalent) where the holder lives",
-            false,
-            ISO_23220_2_NAMESPACE,
-            Icon.PLACE,
-            null
+            type = DocumentAttributeType.String,
+            identifier = "resident_city_latin1",
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_ATTRIBUTE_RESIDENT_CITY_LATIN1),
+            description = getLocalizedString(GeneratedStringKeys.PHOTO_ID_DESCRIPTION_RESIDENT_CITY_LATIN1),
+            mandatory = false,
+            mdocNamespace = ISO_23220_2_NAMESPACE,
+            icon = Icon.PLACE,
+            sampleValue = null
         )
         addMdocAttribute(
-            DocumentAttributeType.IntegerOptions(Options.SEX_ISO_IEC_5218),
-            "sex",
-            "Sex",
-            "document holder’s sex",
-            false,
-            ISO_23220_2_NAMESPACE,
-            Icon.EMERGENCY,
-            SampleData.SEX_ISO_5218.toDataItem()
+            type = DocumentAttributeType.IntegerOptions(Options.SEX_ISO_IEC_5218),
+            identifier = "sex",
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_ATTRIBUTE_SEX),
+            description = getLocalizedString(GeneratedStringKeys.PHOTO_ID_DESCRIPTION_SEX),
+            mandatory = false,
+            mdocNamespace = ISO_23220_2_NAMESPACE,
+            icon = Icon.EMERGENCY,
+            sampleValue = SampleData.SEX_ISO_5218.toDataItem()
         )
         addMdocAttribute(
-            DocumentAttributeType.StringOptions(Options.COUNTRY_ISO_3166_1_ALPHA_2),
-            "nationality",
-            "Nationality",
-            "Nationality of the document holder",
-            false,
-            ISO_23220_2_NAMESPACE,
-            Icon.LANGUAGE,
-            SampleData.NATIONALITY.toDataItem()
+            type = DocumentAttributeType.StringOptions(Options.COUNTRY_ISO_3166_1_ALPHA_2),
+            identifier = "nationality",
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_ATTRIBUTE_NATIONALITY),
+            description = getLocalizedString(GeneratedStringKeys.PHOTO_ID_DESCRIPTION_NATIONALITY),
+            mandatory = false,
+            mdocNamespace = ISO_23220_2_NAMESPACE,
+            icon = Icon.LANGUAGE,
+            sampleValue = SampleData.NATIONALITY.toDataItem()
         )
         addMdocAttribute(
-            DocumentAttributeType.String,
-            "document_number",
-            "Document number",
-            "The number assigned or calculated by the issuing authority",
-            false,
-            ISO_23220_2_NAMESPACE,
-            Icon.NUMBERS,
-            SampleData.DOCUMENT_NUMBER.toDataItem()
+            type = DocumentAttributeType.String,
+            identifier = "document_number",
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_ATTRIBUTE_DOCUMENT_NUMBER),
+            description = getLocalizedString(GeneratedStringKeys.PHOTO_ID_DESCRIPTION_DOCUMENT_NUMBER),
+            mandatory = false,
+            mdocNamespace = ISO_23220_2_NAMESPACE,
+            icon = Icon.NUMBERS,
+            sampleValue = SampleData.DOCUMENT_NUMBER.toDataItem()
         )
         addMdocAttribute(
-            DocumentAttributeType.String,
-            "issuing_subdivision",
-            "Issuing subdivision",
-            "Subdivision code as defined in ISO 3166-2, which issued " +
-                    "the mobile eID document or within which the issuing " +
-                    "authority is located",
-            false,
-            ISO_23220_2_NAMESPACE,
-            Icon.ACCOUNT_BALANCE,
-            SampleData.ISSUING_JURISDICTION.toDataItem()
+            type = DocumentAttributeType.String,
+            identifier = "issuing_subdivision",
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_ATTRIBUTE_ISSUING_SUBDIVISION),
+            description = getLocalizedString(GeneratedStringKeys.PHOTO_ID_DESCRIPTION_ISSUING_SUBDIVISION),
+            mandatory = false,
+            mdocNamespace = ISO_23220_2_NAMESPACE,
+            sensitivity = DocumentAttributeSensitivity.ISSUER,
+            icon = Icon.ACCOUNT_BALANCE,
+            sampleValue = SampleData.ISSUING_JURISDICTION.toDataItem()
         )
         addMdocAttribute(
-            DocumentAttributeType.String,
-            "family_name_latin1",
-            "Family name",
-            "Last name, surname, or primary identifier, of the document holder",
-            false,
-            ISO_23220_2_NAMESPACE,
-            Icon.PERSON,
-            null
+            type = DocumentAttributeType.String,
+            identifier = "family_name_latin1",
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_ATTRIBUTE_FAMILY_NAME_LATIN1),
+            description = getLocalizedString(GeneratedStringKeys.PHOTO_ID_DESCRIPTION_FAMILY_NAME_LATIN1),
+            mandatory = false,
+            mdocNamespace = ISO_23220_2_NAMESPACE,
+            icon = Icon.PERSON,
+            sampleValue = null
         )
         addMdocAttribute(
-            DocumentAttributeType.String,
-            "given_name_latin1",
-            "Given names",
-            "First name(s), other name(s), or secondary identifier, of the document holder",
-            false,
-            ISO_23220_2_NAMESPACE,
-            Icon.PERSON,
-            null
+            type = DocumentAttributeType.String,
+            identifier = "given_name_latin1",
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_ATTRIBUTE_GIVEN_NAMES_LATIN1),
+            description = getLocalizedString(GeneratedStringKeys.PHOTO_ID_DESCRIPTION_GIVEN_NAMES_LATIN1),
+            mandatory = false,
+            mdocNamespace = ISO_23220_2_NAMESPACE,
+            icon = Icon.PERSON,
+            sampleValue = null
         )
 
         // Data elements from ISO/IEC 23220-4 Table C.2 — Data elements specifically defined for PhotoID
         //
         addMdocAttribute(
-            DocumentAttributeType.String,
-            "person_id",
-            "Person ID",
-            "Person identifier of the Photo ID holder",
-            false,
-            PHOTO_ID_NAMESPACE,
-            Icon.NUMBERS,
-            SampleData.PERSON_ID.toDataItem()
+            type = DocumentAttributeType.String,
+            identifier = "person_id",
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_ATTRIBUTE_PERSON_ID),
+            description = getLocalizedString(GeneratedStringKeys.PHOTO_ID_DESCRIPTION_PERSON_ID),
+            mandatory = false,
+            mdocNamespace = PHOTO_ID_NAMESPACE,
+            icon = Icon.NUMBERS,
+            sampleValue = SampleData.PERSON_ID.toDataItem()
         )
         addMdocAttribute(
-            DocumentAttributeType.StringOptions(Options.COUNTRY_ISO_3166_1_ALPHA_2),
-            "birth_country",
-            "Birth country",
-            "The country where the Photo ID holder was born, as an Alpha-2 country code as specified in ISO 3166-1",
-            false,
-            PHOTO_ID_NAMESPACE,
-            Icon.PLACE,
-            null
+            type = DocumentAttributeType.StringOptions(Options.COUNTRY_ISO_3166_1_ALPHA_2),
+            identifier = "birth_country",
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_ATTRIBUTE_BIRTH_COUNTRY),
+            description = getLocalizedString(GeneratedStringKeys.PHOTO_ID_DESCRIPTION_BIRTH_COUNTRY),
+            mandatory = false,
+            mdocNamespace = PHOTO_ID_NAMESPACE,
+            icon = Icon.PLACE,
+            sampleValue = null
         )
         addMdocAttribute(
-            DocumentAttributeType.String,
-            "birth_state",
-            "Birth state",
-            "The state, province, district, or local area where the Photo ID holder was born",
-            false,
-            PHOTO_ID_NAMESPACE,
-            Icon.PLACE,
-            null
+            type = DocumentAttributeType.String,
+            identifier = "birth_state",
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_ATTRIBUTE_BIRTH_STATE),
+            description = getLocalizedString(GeneratedStringKeys.PHOTO_ID_DESCRIPTION_BIRTH_STATE),
+            mandatory = false,
+            mdocNamespace = PHOTO_ID_NAMESPACE,
+            icon = Icon.PLACE,
+            sampleValue = null
         )
         addMdocAttribute(
-            DocumentAttributeType.String,
-            "birth_city",
-            "Birth city",
-            "The municipality, city, town, or village where the Photo ID holder was born",
-            false,
-            PHOTO_ID_NAMESPACE,
-            Icon.PLACE,
-            null
+            type = DocumentAttributeType.String,
+            identifier = "birth_city",
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_ATTRIBUTE_BIRTH_CITY),
+            description = getLocalizedString(GeneratedStringKeys.PHOTO_ID_DESCRIPTION_BIRTH_CITY),
+            mandatory = false,
+            mdocNamespace = PHOTO_ID_NAMESPACE,
+            icon = Icon.PLACE,
+            sampleValue = null
         )
         addMdocAttribute(
-            DocumentAttributeType.String,
-            "administrative_number",
-            "Administrative number",
-            "A number assigned by the Photo ID issuer for audit control or other purposes",
-            false,
-            PHOTO_ID_NAMESPACE,
-            Icon.NUMBERS,
-            SampleData.ADMINISTRATIVE_NUMBER.toDataItem()
+            type = DocumentAttributeType.String,
+            identifier = "administrative_number",
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_ATTRIBUTE_ADMINISTRATIVE_NUMBER),
+            description = getLocalizedString(GeneratedStringKeys.PHOTO_ID_DESCRIPTION_ADMINISTRATIVE_NUMBER),
+            mandatory = false,
+            mdocNamespace = PHOTO_ID_NAMESPACE,
+            icon = Icon.NUMBERS,
+            sampleValue = SampleData.ADMINISTRATIVE_NUMBER.toDataItem()
         )
         addMdocAttribute(
-            DocumentAttributeType.String,
-            "resident_street",
-            "Resident street",
-            "The name of the street where the Photo ID holder currently resides",
-            false,
-            PHOTO_ID_NAMESPACE,
-            Icon.PLACE,
-            SampleData.RESIDENT_STREET.toDataItem()
+            type = DocumentAttributeType.String,
+            identifier = "resident_street",
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_ATTRIBUTE_RESIDENT_STREET),
+            description = getLocalizedString(GeneratedStringKeys.PHOTO_ID_DESCRIPTION_RESIDENT_STREET),
+            mandatory = false,
+            mdocNamespace = PHOTO_ID_NAMESPACE,
+            icon = Icon.PLACE,
+            sampleValue = SampleData.RESIDENT_STREET.toDataItem()
         )
         addMdocAttribute(
-            DocumentAttributeType.String,
-            "resident_house_number",
-            "Resident house number",
-            "The house number where the Photo ID holder currently resides, including any affix or suffix",
-            false,
-            PHOTO_ID_NAMESPACE,
-            Icon.PLACE,
-            SampleData.RESIDENT_HOUSE_NUMBER.toDataItem()
+            type = DocumentAttributeType.String,
+            identifier = "resident_house_number",
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_ATTRIBUTE_RESIDENT_HOUSE_NUMBER),
+            description = getLocalizedString(GeneratedStringKeys.PHOTO_ID_DESCRIPTION_RESIDENT_HOUSE_NUMBER),
+            mandatory = false,
+            mdocNamespace = PHOTO_ID_NAMESPACE,
+            icon = Icon.PLACE,
+            sampleValue = SampleData.RESIDENT_HOUSE_NUMBER.toDataItem()
         )
         addMdocAttribute(
-            DocumentAttributeType.String,
-            "travel_document_type",
-            "Travel document type",
-            "Identifier of the type of source document, (if associated to or derived from a travel document)",
-            false,
-            PHOTO_ID_NAMESPACE,
-            Icon.NUMBERS,
-            null
+            type = DocumentAttributeType.String,
+            identifier = "travel_document_type",
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_ATTRIBUTE_TRAVEL_DOCUMENT_TYPE),
+            description = getLocalizedString(GeneratedStringKeys.PHOTO_ID_DESCRIPTION_TRAVEL_DOCUMENT_TYPE),
+            mandatory = false,
+            mdocNamespace = PHOTO_ID_NAMESPACE,
+            icon = Icon.NUMBERS,
+            sampleValue = null
         )
         addMdocAttribute(
-            DocumentAttributeType.String,
-            "travel_document_number",
-            "Travel document number",
-            "The number of the travel document to which the Photo ID is associated (if associated to or " +
-                    "derived from a travel document)",
-            false,
-            PHOTO_ID_NAMESPACE,
-            Icon.NUMBERS,
-            null
+            type = DocumentAttributeType.String,
+            identifier = "travel_document_number",
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_ATTRIBUTE_TRAVEL_DOCUMENT_NUMBER),
+            description = getLocalizedString(GeneratedStringKeys.PHOTO_ID_DESCRIPTION_TRAVEL_DOCUMENT_NUMBER),
+            mandatory = false,
+            mdocNamespace = PHOTO_ID_NAMESPACE,
+            icon = Icon.NUMBERS,
+            sampleValue = null
         )
         addMdocAttribute(
-            DocumentAttributeType.String,
-            "travel_document_mrz",
-            "Travel document MRZ",
-            "Machine readable zone as the text printed on the physical document",
-            false,
-            PHOTO_ID_NAMESPACE,
-            Icon.NUMBERS,
-            null
+            type = DocumentAttributeType.String,
+            identifier = "travel_document_mrz",
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_ATTRIBUTE_TRAVEL_DOCUMENT_MRZ),
+            description = getLocalizedString(GeneratedStringKeys.PHOTO_ID_DESCRIPTION_TRAVEL_DOCUMENT_MRZ),
+            mandatory = false,
+            mdocNamespace = PHOTO_ID_NAMESPACE,
+            icon = Icon.NUMBERS,
+            sampleValue = null
         )
         addMdocAttribute(
-            DocumentAttributeType.String,
-            "resident_state",
-            "Resident state",
-            "The state/province/district where the Photo ID holder lives",
-            false,
-            PHOTO_ID_NAMESPACE,
-            Icon.PLACE,
-            SampleData.RESIDENT_STATE.toDataItem()
+            type = DocumentAttributeType.String,
+            identifier = "resident_state",
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_ATTRIBUTE_RESIDENT_STATE),
+            description = getLocalizedString(GeneratedStringKeys.PHOTO_ID_DESCRIPTION_RESIDENT_STATE),
+            mandatory = false,
+            mdocNamespace = PHOTO_ID_NAMESPACE,
+            icon = Icon.PLACE,
+            sampleValue = SampleData.RESIDENT_STATE.toDataItem()
         )
 
 
         // Data elements from ISO/IEC 23220-4 Table C.3 — Data elements defined by ICAO 9303 part 10
         //
+        // TODO: replace sampleValue with real data from the sample docs used in test event
+        //
         addMdocAttribute(
-            DocumentAttributeType.String,
-            "version",
-            "DTC-VC version",
-            "Version of the DTC-VC definition",
-            false,
-            DTC_NAMESPACE,
-            Icon.NUMBERS,
-            null
+            type = DocumentAttributeType.String,
+            identifier = "version",
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_ATTRIBUTE_DTC_VC_VERSION),
+            description = getLocalizedString(GeneratedStringKeys.PHOTO_ID_DESCRIPTION_DTC_VC_VERSION),
+            mandatory = false,
+            mdocNamespace = DATAGROUPS_NAMESPACE,
+            icon = Icon.NUMBERS,
+            sampleValue = null
         )
         addMdocAttribute(
-            DocumentAttributeType.Blob,
-            "sod",
-            "eMRTD SOD",
-            "Binary data of the eMRTD Document Security Object",
-            false,
-            DTC_NAMESPACE,
-            Icon.NUMBERS,
-            null
+            type = DocumentAttributeType.Blob,
+            identifier = "sod",
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_ATTRIBUTE_EMRTD_SOD),
+            description = getLocalizedString(GeneratedStringKeys.PHOTO_ID_DESCRIPTION_EMRTD_SOD),
+            mandatory = false,
+            mdocNamespace = DATAGROUPS_NAMESPACE,
+            icon = Icon.NUMBERS,
+            sampleValue = byteArrayOf(1, 2, 3).toDataItem()
         )
         addMdocAttribute(
-            DocumentAttributeType.Blob,
-            "dg1",
-            "eMRTD DG1",
-            "Data Group 1: biographic data (data recorded in MRZ) C",
-            false,
-            DTC_NAMESPACE,
-            Icon.NUMBERS,
-            null
+            type = DocumentAttributeType.Blob,
+            identifier = "dg1",
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_ATTRIBUTE_EMRTD_DG1),
+            description = getLocalizedString(GeneratedStringKeys.PHOTO_ID_DESCRIPTION_EMRTD_DG1),
+            mandatory = false,
+            mdocNamespace = DATAGROUPS_NAMESPACE,
+            icon = Icon.NUMBERS,
+            sampleValue = byteArrayOf(1, 2, 3).toDataItem()
         )
         addMdocAttribute(
-            DocumentAttributeType.Blob,
-            "dg2",
-            "eMRTD DG2",
-            "Data Group 2: reference portrait (encoded face)",
-            false,
-            DTC_NAMESPACE,
-            Icon.NUMBERS,
-            null
+            type = DocumentAttributeType.Blob,
+            identifier = "dg2",
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_ATTRIBUTE_EMRTD_DG2),
+            description = getLocalizedString(GeneratedStringKeys.PHOTO_ID_DESCRIPTION_EMRTD_DG2),
+            mandatory = false,
+            mdocNamespace = DATAGROUPS_NAMESPACE,
+            icon = Icon.NUMBERS,
+            sampleValue = byteArrayOf(1, 2, 3).toDataItem()
         )
         addMdocAttribute(
-            DocumentAttributeType.Blob,
-            "dg3",
-            "eMRTD DG3",
-            "Data Group 3: encoded fingers",
-            false,
-            DTC_NAMESPACE,
-            Icon.NUMBERS,
-            null
+            type = DocumentAttributeType.Blob,
+            identifier = "dg3",
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_ATTRIBUTE_EMRTD_DG3),
+            description = getLocalizedString(GeneratedStringKeys.PHOTO_ID_DESCRIPTION_EMRTD_DG3),
+            mandatory = false,
+            mdocNamespace = DATAGROUPS_NAMESPACE,
+            icon = Icon.NUMBERS,
+            sampleValue = byteArrayOf(1, 2, 3).toDataItem()
         )
         addMdocAttribute(
-            DocumentAttributeType.Blob,
-            "dg4",
-            "eMRTD DG4",
-            "Data Group 4: encoded eye(s)",
-            false,
-            DTC_NAMESPACE,
-            Icon.NUMBERS,
-            null
+            type = DocumentAttributeType.Blob,
+            identifier = "dg4",
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_ATTRIBUTE_EMRTD_DG4),
+            description = getLocalizedString(GeneratedStringKeys.PHOTO_ID_DESCRIPTION_EMRTD_DG4),
+            mandatory = false,
+            mdocNamespace = DATAGROUPS_NAMESPACE,
+            icon = Icon.NUMBERS,
+            sampleValue = null
         )
         addMdocAttribute(
-            DocumentAttributeType.Blob,
-            "dg5",
-            "eMRTD DG5",
-            "Data Group 5: displayed portrait",
-            false,
-            DTC_NAMESPACE,
-            Icon.NUMBERS,
-            null
+            type = DocumentAttributeType.Blob,
+            identifier = "dg5",
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_ATTRIBUTE_EMRTD_DG5),
+            description = getLocalizedString(GeneratedStringKeys.PHOTO_ID_DESCRIPTION_EMRTD_DG5),
+            mandatory = false,
+            mdocNamespace = DATAGROUPS_NAMESPACE,
+            icon = Icon.NUMBERS,
+            sampleValue = null
         )
         addMdocAttribute(
-            DocumentAttributeType.Blob,
-            "dg6",
-            "eMRTD DG6",
-            "Data Group 6: Reserved for future use",
-            false,
-            DTC_NAMESPACE,
-            Icon.NUMBERS,
-            null
+            type = DocumentAttributeType.Blob,
+            identifier = "dg6",
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_ATTRIBUTE_EMRTD_DG6),
+            description = getLocalizedString(GeneratedStringKeys.PHOTO_ID_DESCRIPTION_EMRTD_DG6),
+            mandatory = false,
+            mdocNamespace = DATAGROUPS_NAMESPACE,
+            icon = Icon.NUMBERS,
+            sampleValue = null
         )
         addMdocAttribute(
-            DocumentAttributeType.Blob,
-            "dg7",
-            "eMRTD DG7",
-            "Data Group 7: Displayed signature or usual mark",
-            false,
-            DTC_NAMESPACE,
-            Icon.NUMBERS,
-            null
+            type = DocumentAttributeType.Blob,
+            identifier = "dg7",
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_ATTRIBUTE_EMRTD_DG7),
+            description = getLocalizedString(GeneratedStringKeys.PHOTO_ID_DESCRIPTION_EMRTD_DG7),
+            mandatory = false,
+            mdocNamespace = DATAGROUPS_NAMESPACE,
+            icon = Icon.NUMBERS,
+            sampleValue = null
         )
         addMdocAttribute(
-            DocumentAttributeType.Blob,
-            "dg8",
-            "eMRTD DG8",
-            "Data Group 8: data feature(s)",
-            false,
-            DTC_NAMESPACE,
-            Icon.NUMBERS,
-            null
+            type = DocumentAttributeType.Blob,
+            identifier = "dg8",
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_ATTRIBUTE_EMRTD_DG8),
+            description = getLocalizedString(GeneratedStringKeys.PHOTO_ID_DESCRIPTION_EMRTD_DG8),
+            mandatory = false,
+            mdocNamespace = DATAGROUPS_NAMESPACE,
+            icon = Icon.NUMBERS,
+            sampleValue = null
         )
         addMdocAttribute(
-            DocumentAttributeType.Blob,
-            "dg9",
-            "eMRTD DG9",
-            "Data Group 9: Structure feature(s) ",
-            false,
-            DTC_NAMESPACE,
-            Icon.NUMBERS,
-            null
+            type = DocumentAttributeType.Blob,
+            identifier = "dg9",
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_ATTRIBUTE_EMRTD_DG9),
+            description = getLocalizedString(GeneratedStringKeys.PHOTO_ID_DESCRIPTION_EMRTD_DG9),
+            mandatory = false,
+            mdocNamespace = DATAGROUPS_NAMESPACE,
+            icon = Icon.NUMBERS,
+            sampleValue = null
         )
         addMdocAttribute(
-            DocumentAttributeType.Blob,
-            "dg10",
-            "eMRTD DG10",
-            "Data Group 10: Substance feature(s)",
-            false,
-            DTC_NAMESPACE,
-            Icon.NUMBERS,
-            null
+            type = DocumentAttributeType.Blob,
+            identifier = "dg10",
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_ATTRIBUTE_EMRTD_DG10),
+            description = getLocalizedString(GeneratedStringKeys.PHOTO_ID_DESCRIPTION_EMRTD_DG10),
+            mandatory = false,
+            mdocNamespace = DATAGROUPS_NAMESPACE,
+            icon = Icon.NUMBERS,
+            sampleValue = null
         )
         addMdocAttribute(
-            DocumentAttributeType.Blob,
-            "dg11",
-            "eMRTD DG11",
-            "Data Group 11: additional personal detail(s)",
-            false,
-            DTC_NAMESPACE,
-            Icon.NUMBERS,
-            null
+            type = DocumentAttributeType.Blob,
+            identifier = "dg11",
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_ATTRIBUTE_EMRTD_DG11),
+            description = getLocalizedString(GeneratedStringKeys.PHOTO_ID_DESCRIPTION_EMRTD_DG11),
+            mandatory = false,
+            mdocNamespace = DATAGROUPS_NAMESPACE,
+            icon = Icon.NUMBERS,
+            sampleValue = null
         )
         addMdocAttribute(
-            DocumentAttributeType.Blob,
-            "dg12",
-            "eMRTD DG12",
-            "Data Group 12: additional document detail(s)",
-            false,
-            DTC_NAMESPACE,
-            Icon.NUMBERS,
-            null
+            type = DocumentAttributeType.Blob,
+            identifier = "dg12",
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_ATTRIBUTE_EMRTD_DG12),
+            description = getLocalizedString(GeneratedStringKeys.PHOTO_ID_DESCRIPTION_EMRTD_DG12),
+            mandatory = false,
+            mdocNamespace = DATAGROUPS_NAMESPACE,
+            icon = Icon.NUMBERS,
+            sampleValue = null
         )
         addMdocAttribute(
-            DocumentAttributeType.Blob,
-            "dg13",
-            "eMRTD DG13",
-            "Data Group 13: optional detail(s) ",
-            false,
-            DTC_NAMESPACE,
-            Icon.NUMBERS,
-            null
+            type = DocumentAttributeType.Blob,
+            identifier = "dg13",
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_ATTRIBUTE_EMRTD_DG13),
+            description = getLocalizedString(GeneratedStringKeys.PHOTO_ID_DESCRIPTION_EMRTD_DG13),
+            mandatory = false,
+            mdocNamespace = DATAGROUPS_NAMESPACE,
+            icon = Icon.NUMBERS,
+            sampleValue = null
         )
         addMdocAttribute(
-            DocumentAttributeType.Blob,
-            "dg14",
-            "eMRTD DG14",
-            "Data Group 14: security options",
-            false,
-            DTC_NAMESPACE,
-            Icon.NUMBERS,
-            null
+            type = DocumentAttributeType.Blob,
+            identifier = "dg14",
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_ATTRIBUTE_EMRTD_DG14),
+            description = getLocalizedString(GeneratedStringKeys.PHOTO_ID_DESCRIPTION_EMRTD_DG14),
+            mandatory = false,
+            mdocNamespace = DATAGROUPS_NAMESPACE,
+            icon = Icon.NUMBERS,
+            sampleValue = null
         )
         addMdocAttribute(
-            DocumentAttributeType.Blob,
-            "dg15",
-            "eMRTD DG15",
-            "Data Group 15: active authentication public key info",
-            false,
-            DTC_NAMESPACE,
-            Icon.NUMBERS,
-            null
+            type = DocumentAttributeType.Blob,
+            identifier = "dg15",
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_ATTRIBUTE_EMRTD_DG15),
+            description = getLocalizedString(GeneratedStringKeys.PHOTO_ID_DESCRIPTION_EMRTD_DG15),
+            mandatory = false,
+            mdocNamespace = DATAGROUPS_NAMESPACE,
+            icon = Icon.NUMBERS,
+            sampleValue = null
         )
         addMdocAttribute(
-            DocumentAttributeType.Blob,
-            "dg16",
-            "eMRTD DG16",
-            "Data Group 16: person(s) to notify",
-            false,
-            DTC_NAMESPACE,
-            Icon.NUMBERS,
-            null
+            type = DocumentAttributeType.Blob,
+            identifier = "dg16",
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_ATTRIBUTE_EMRTD_DG16),
+            description = getLocalizedString(GeneratedStringKeys.PHOTO_ID_DESCRIPTION_EMRTD_DG16),
+            mandatory = false,
+            mdocNamespace = DATAGROUPS_NAMESPACE,
+            icon = Icon.NUMBERS,
+            sampleValue = null
         )
 
         // Finally for the sample requests.
         //
         addSampleRequest(
             id = "age_over_18",
-            displayName = "Age over 18",
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_REQUEST_AGE_OVER_18),
             mdocDataElements = mapOf(
                 ISO_23220_2_NAMESPACE to mapOf(
                     "age_over_18" to false,
@@ -637,7 +650,7 @@ object PhotoID {
         )
         addSampleRequest(
             id = "age_over_18_zkp",
-            displayName = "Age over 18 (ZKP)",
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_REQUEST_AGE_OVER_18_ZKP),
             mdocDataElements = mapOf(
                 ISO_23220_2_NAMESPACE to mapOf(
                     "age_over_18" to false,
@@ -647,7 +660,7 @@ object PhotoID {
         )
         addSampleRequest(
             id = "age_over_18_and_portrait",
-            displayName = "Age over 18 + portrait",
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_REQUEST_AGE_OVER_18_AND_PORTRAIT),
             mdocDataElements = mapOf(
                 ISO_23220_2_NAMESPACE to mapOf(
                     "age_over_18" to false,
@@ -657,7 +670,7 @@ object PhotoID {
         )
         addSampleRequest(
             id = "mandatory",
-            displayName = "Mandatory data elements",
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_REQUEST_MANDATORY_DATA_ELEMENTS),
             mdocDataElements = mapOf(
                 ISO_23220_2_NAMESPACE to mapOf(
                     "family_name" to false,
@@ -666,7 +679,7 @@ object PhotoID {
                     "portrait" to false,
                     "issue_date" to false,
                     "expiry_date" to false,
-                    "issuing_authority_unicode" to false,
+                    "issuing_authority" to false,
                     "issuing_country" to false,
                     "age_over_18" to false,
                 )
@@ -674,12 +687,13 @@ object PhotoID {
         )
         addSampleRequest(
             id = "full",
-            displayName = "All data elements",
+            displayName = getLocalizedString(GeneratedStringKeys.PHOTO_ID_REQUEST_ALL_DATA_ELEMENTS),
             mdocDataElements = mapOf(
                 ISO_23220_2_NAMESPACE to mapOf(),
                 PHOTO_ID_NAMESPACE to mapOf(),
-                DTC_NAMESPACE to mapOf()
+                DATAGROUPS_NAMESPACE to mapOf()
             )
         )
-    }.build()
+        }.build()
+    }
 }

@@ -7,28 +7,28 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.multipaz.compose.prompt.PresentmentActivity
 import org.multipaz.document.Document
-import org.multipaz.presentment.CredentialPresentmentData
-import org.multipaz.presentment.CredentialPresentmentSelection
+import org.multipaz.presentment.CredentialSelection
 import org.multipaz.presentment.PresentmentModel
 import org.multipaz.presentment.PresentmentCanceledException
 import org.multipaz.presentment.PresentmentSource
+import org.multipaz.presentment.ConsentData
+import org.multipaz.prompt.AndroidPromptModel
 import org.multipaz.prompt.promptModelRequestConsent
 import org.multipaz.prompt.showBiometricPrompt
+import org.multipaz.prompt.Reason
 import org.multipaz.request.Requester
-import org.multipaz.securearea.UserAuthenticationType
+import org.multipaz.securearea.UserAuthenticationType as PromptUserAuthenticationType
 import org.multipaz.trustmanagement.TrustMetadata
-
-private const val TAG = "ConsentPromptScreen"
 
 actual suspend fun launchAndroidPresentmentActivity(
     source: PresentmentSource,
     paData: AndroidPresentmentActivityData,
     requester: Requester,
     trustMetadata: TrustMetadata?,
-    credentialPresentmentData: CredentialPresentmentData,
+    consentData: ConsentData,
     preselectedDocuments: List<Document>,
     onDocumentsInFocus: (documents: List<Document>) -> Unit
-): CredentialPresentmentSelection? {
+): CredentialSelection? {
     PresentmentActivity.presentmentModel.reset(
         source = source,
         preselectedDocuments = paData.preselectedDocuments
@@ -45,7 +45,7 @@ actual suspend fun launchAndroidPresentmentActivity(
                 val selection = promptModelRequestConsent(
                     requester = requester,
                     trustMetadata = trustMetadata,
-                    credentialPresentmentData = credentialPresentmentData,
+                    consentData = consentData,
                     preselectedDocuments = paData.preselectedDocuments,
                     onDocumentsInFocus = { documents ->
                         PresentmentActivity.presentmentModel.setDocumentsSelected(selectedDocuments = documents)
@@ -56,16 +56,22 @@ actual suspend fun launchAndroidPresentmentActivity(
                 }
             } else {
                 PresentmentActivity.presentmentModel.setDocumentsSelected(
-                    selectedDocuments = credentialPresentmentData.select(emptyList())
+                    selectedDocuments = consentData.credentialQueryResult.select(emptyList())
                         .matches.map { it.credential.document }
                 )
             }
             if (paData.requireAuth) {
-                if (!PresentmentActivity.promptModel.showBiometricPrompt(
+                if (!(PresentmentActivity.promptModel as AndroidPromptModel).showBiometricPrompt(
                     cryptoObject = null,
-                    title = "Verify it's you",
-                    subtitle = "Authenticate to present credentials",
-                    userAuthenticationTypes = setOf(UserAuthenticationType.BIOMETRIC, UserAuthenticationType.LSKF),
+                    reason = Reason.HumanReadable(
+                        title = "Verify it's you",
+                        subtitle = "Authenticate to present credentials",
+                        requireConfirmation = paData.authRequireConfirmation
+                    ),
+                    userAuthenticationTypes = setOf(
+                        PromptUserAuthenticationType.BIOMETRIC,
+                        PromptUserAuthenticationType.LSKF
+                    ),
                     requireConfirmation = paData.authRequireConfirmation
                 )) {
                     throw PresentmentCanceledException("Presentment cancelled because user dismissed biometric prompt")
@@ -77,11 +83,7 @@ actual suspend fun launchAndroidPresentmentActivity(
             PresentmentActivity.presentmentModel.setCompleted(null)
         } catch (e: Exception) {
             if (e is CancellationException) throw e
-            if (e is CancellationException) {
-                PresentmentActivity.presentmentModel.setCompleted(PresentmentCanceledException("Presentment was cancelled"))
-            } else {
-                PresentmentActivity.presentmentModel.setCompleted(e)
-            }
+            PresentmentActivity.presentmentModel.setCompleted(e)
         }
     }
 
@@ -96,5 +98,5 @@ actual suspend fun launchAndroidPresentmentActivity(
     consentAndAuthJob.join()
     listenForCancellationFromUiJob.cancel()
 
-    return credentialPresentmentData.select(emptyList())
+    return consentData.credentialQueryResult.select(emptyList())
 }

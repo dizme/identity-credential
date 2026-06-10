@@ -7,7 +7,8 @@
     <title>OWF Multipaz Verifier</title>
     <script src="verify_credentials.js"></script>
     <script src="light.js"></script>
-    <link rel="stylesheet" href="light.css">
+    <script src="render_content.js"></script>
+    <link rel="stylesheet" href="render_content.css">
 </head>
 <body>
 <div>
@@ -31,6 +32,14 @@
 </label>
 </div>
 <div>
+<div>
+    <input type="checkbox" id="sign-request" checked="checked"/>
+    <label for="sign-request">Sign Request</label>
+</div>
+<div>
+    <input type="checkbox" id="encrypt-response" checked="checked"/>
+    <label for="encrypt-response">Encrypt Response</label>
+</div>
 DC API Protocols:
 <br/>
 <label><input id="protocol_iso" type="checkbox" checked="checked"/>ISO 18013-7 Annex C</label>

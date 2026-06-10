@@ -1,11 +1,14 @@
 @file:OptIn(ExperimentalWasmDsl::class)
 
 import org.jetbrains.kotlin.gradle.ExperimentalWasmDsl
+import org.multipaz.lokalize.util.OutputFormat
 
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
+    alias(libs.plugins.androidLibrary)
     id("maven-publish")
     id("org.jetbrains.dokka") version "2.1.0"
+    id("org.multipaz.lokalize.convention")
 }
 
 val projectVersionCode: Int by rootProject.extra
@@ -18,7 +21,10 @@ kotlin {
 
     compilerOptions {
         optIn.add("kotlin.time.ExperimentalTime")
+        freeCompilerArgs.add("-Xexpect-actual-classes")
     }
+
+    androidTarget()
 
     jvm()
 
@@ -58,6 +64,9 @@ kotlin {
         }
     }
 
+    // Apply default hierarchy template to automatically create webMain source set
+    applyDefaultHierarchyTemplate()
+
     sourceSets {
         val commonMain by getting {
             dependencies {
@@ -88,6 +97,12 @@ kotlin {
         }
 
         if (!disableWebTargets) {
+            val webMain by getting {
+                dependencies {
+                    implementation(libs.kotlinx.browser)
+                }
+            }
+
             val jsTest by getting {
                 dependencies {
                     implementation(libs.kotlin.wrappers.web)
@@ -98,6 +113,22 @@ kotlin {
 }
 
 group = "org.multipaz"
+
+android {
+    namespace = "org.multipaz.doctypes"
+    compileSdk = libs.versions.android.compileSdk.get().toInt()
+
+    defaultConfig {
+        minSdk = 26
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+}
+
 version = projectVersionName
 
 publishing {
@@ -132,5 +163,17 @@ publishing {
             }
         }
     }
+}
+
+// Source strings live under src/commonMain/lokalize/ rather than src/commonMain/resources/
+// because KMP would auto-bundle the latter into the JVM JAR as Java resources at the
+// root (values-*/strings.json), which collides with any sibling module that does the
+// same — most notably multipaz-utopia — during Android's mergeJavaResource step in
+// downstream consumers (issue #1714). Nothing reads these JSONs at runtime: they're
+// build-time inputs to the lokalize plugin only; runtime translations are baked into
+// GeneratedTranslations as Kotlin constants.
+lokalize {
+    outputFormat.set(OutputFormat.JSON)
+    resourcesDir.set("src/commonMain/lokalize")
 }
 

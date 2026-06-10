@@ -1,13 +1,13 @@
 package org.multipaz.verifier.server
 
-import kotlinx.io.bytestring.ByteString
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.buildJsonObject
+import org.multipaz.documenttype.DocumentTypeRepository
+import org.multipaz.mdoc.zkp.ZkSystemRepository
+import org.multipaz.mdoc.zkp.longfellow.LongfellowZkSystem
 import org.multipaz.server.common.runServer
-import org.multipaz.util.Logger
+import org.multipaz.trustmanagement.TrustManagerInterface
 import org.multipaz.verifier.customization.VerifierAssistant
-import org.multipaz.verifier.customization.VerifierRequest
-import org.multipaz.verifier.customization.VerifierResponse
+import org.multipaz.verifier.request.documentTypeRepo
+import org.multipaz.verifier.request.getIssuerTrustManager
 
 /**
  * Main entry point to launch the server.
@@ -15,26 +15,24 @@ import org.multipaz.verifier.customization.VerifierResponse
  * Build and start the server using
  *
  * ```./gradlew multipaz-verifier-server:run```
+ *
+ * Build and start with local records server:
+ *
+ * ```./gradlew multipaz-verifier-server:run --args="-param enrollment_server_url=http://localhost:8004"```
  */
 class Main {
     companion object {
         @JvmStatic
         fun main(args: Array<String>) {
             runServer(args, environmentInitializer = {
-                add(VerifierAssistant::class, object: VerifierAssistant {
-                    override suspend fun checkRequest(request: VerifierRequest) {
-                        // accept all transactions for testing
-                    }
-
-                    override suspend fun processResponse(
-                        request: VerifierRequest,
-                        response: VerifierResponse
-                    ): JsonObject? {
-                        // no actual processing, just print
-                        Logger.i("VerifierAssistant", "Result: ${response.response}")
-                        return null
-                    }
-                })
+                add(DocumentTypeRepository::class, documentTypeRepo)
+                add(TrustManagerInterface::class, getIssuerTrustManager())
+                add(VerifierAssistant::class, VerifierAssistantImpl)
+                val repo = ZkSystemRepository()
+                val longfellowSystem = LongfellowZkSystem()
+                longfellowSystem.addDefaultCircuits()
+                repo.add(longfellowSystem)
+                add(ZkSystemRepository::class, repo)
             }) { environment ->
                 configureRouting(environment)
             }

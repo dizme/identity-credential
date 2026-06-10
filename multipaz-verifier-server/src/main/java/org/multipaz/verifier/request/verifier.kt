@@ -1,46 +1,16 @@
 package org.multipaz.verifier.request
 
-import kotlinx.coroutines.CancellationException
-import org.multipaz.cbor.Cbor
-import org.multipaz.cbor.DiagnosticOption
-import org.multipaz.cbor.Simple
-import org.multipaz.cbor.Tstr
-import org.multipaz.cbor.annotation.CborSerializable
-import org.multipaz.crypto.Algorithm
-import org.multipaz.crypto.Crypto
-import org.multipaz.crypto.EcCurve
-import org.multipaz.crypto.EcPrivateKey
-import org.multipaz.crypto.EcPublicKey
-import org.multipaz.crypto.EcPublicKeyDoubleCoordinate
-import org.multipaz.crypto.JsonWebEncryption
-import org.multipaz.documenttype.DocumentTypeRepository
-import org.multipaz.documenttype.knowntypes.Aadhaar
-import org.multipaz.documenttype.knowntypes.DigitalPaymentCredential
-import org.multipaz.documenttype.knowntypes.DrivingLicense
-import org.multipaz.documenttype.knowntypes.EUCertificateOfResidence
-import org.multipaz.documenttype.knowntypes.EUPersonalID
-import org.multipaz.documenttype.knowntypes.GermanPersonalID
-import org.multipaz.documenttype.knowntypes.PhotoID
-import org.multipaz.documenttype.knowntypes.UtopiaMovieTicket
-import org.multipaz.documenttype.knowntypes.UtopiaNaturalization
-import org.multipaz.rpc.backend.Configuration
-import org.multipaz.rpc.backend.BackendEnvironment
-import org.multipaz.rpc.backend.getTable
-import org.multipaz.storage.StorageTableSpec
-import org.multipaz.util.Logger
-import org.multipaz.util.fromBase64Url
-import org.multipaz.util.toBase64Url
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCall
 import io.ktor.server.request.receive
 import io.ktor.server.response.respondBytes
 import io.ktor.server.response.respondText
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlin.time.Clock
 import kotlinx.io.bytestring.ByteString
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
@@ -61,20 +31,31 @@ import kotlinx.serialization.json.putJsonObject
 import net.minidev.json.JSONObject
 import net.minidev.json.JSONStyle
 import org.multipaz.cbor.Bstr
+import org.multipaz.cbor.Cbor
 import org.multipaz.cbor.DataItem
+import org.multipaz.cbor.DiagnosticOption
+import org.multipaz.cbor.Simple
 import org.multipaz.cbor.Tagged
+import org.multipaz.cbor.Tstr
 import org.multipaz.cbor.addCborArray
 import org.multipaz.cbor.addCborMap
+import org.multipaz.cbor.annotation.CborSerializable
 import org.multipaz.cbor.buildCborArray
 import org.multipaz.cbor.buildCborMap
 import org.multipaz.cbor.putCborMap
-import org.multipaz.crypto.Hpke
+import org.multipaz.crypto.Algorithm
 import org.multipaz.crypto.AsymmetricKey
+import org.multipaz.crypto.Crypto
+import org.multipaz.crypto.EcCurve
+import org.multipaz.crypto.EcPrivateKey
+import org.multipaz.crypto.EcPublicKey
+import org.multipaz.crypto.EcPublicKeyDoubleCoordinate
+import org.multipaz.crypto.Hpke
+import org.multipaz.crypto.JsonWebEncryption
 import org.multipaz.crypto.X509Cert
+import org.multipaz.documenttype.DocumentTypeRepository
 import org.multipaz.documenttype.SingleDocumentCannedRequest
-import org.multipaz.documenttype.knowntypes.AgeVerification
-import org.multipaz.documenttype.knowntypes.IDPass
-import org.multipaz.documenttype.knowntypes.Loyalty
+import org.multipaz.documenttype.knowntypes.addKnownTypes
 import org.multipaz.documenttype.knowntypes.wellKnownMultipleDocumentRequests
 import org.multipaz.mdoc.connectionmethod.MdocConnectionMethodHttp
 import org.multipaz.mdoc.engagement.DeviceEngagement
@@ -93,7 +74,9 @@ import org.multipaz.mdoc.zkp.longfellow.LongfellowZkSystem
 import org.multipaz.openid.OpenID4VP
 import org.multipaz.request.JsonRequestedClaim
 import org.multipaz.request.MdocRequestedClaim
-import org.multipaz.rpc.backend.Resources
+import org.multipaz.rpc.backend.BackendEnvironment
+import org.multipaz.rpc.backend.Configuration
+import org.multipaz.rpc.backend.getTable
 import org.multipaz.rpc.handler.InvalidRequestException
 import org.multipaz.sdjwt.SdJwt
 import org.multipaz.sdjwt.SdJwtKb
@@ -101,20 +84,24 @@ import org.multipaz.server.common.baseUrl
 import org.multipaz.server.common.getBaseUrl
 import org.multipaz.server.enrollment.ServerIdentity
 import org.multipaz.server.enrollment.getServerIdentity
+import org.multipaz.storage.StorageTableSpec
 import org.multipaz.storage.ephemeral.EphemeralStorage
-import org.multipaz.transactiontype.knowntypes.PingTransaction
-import org.multipaz.trustmanagement.TrustManagerInterface
 import org.multipaz.trustmanagement.TrustManager
+import org.multipaz.trustmanagement.TrustManagerInterface
 import org.multipaz.trustmanagement.TrustMetadata
 import org.multipaz.util.Constants
+import org.multipaz.util.Logger
 import org.multipaz.util.UUID
+import org.multipaz.util.fromBase64Url
 import org.multipaz.util.fromHexByteString
+import org.multipaz.util.toBase64Url
+import org.multipaz.util.zlibInflate
+import org.multipaz.utopia.knowntypes.addUtopiaTypes
 import org.multipaz.verification.VerificationUtil
 import java.net.URLEncoder
-import kotlin.IllegalArgumentException
-import kotlin.IllegalStateException
 import kotlin.io.encoding.ExperimentalEncodingApi
 import kotlin.random.Random
+import kotlin.time.Clock
 import kotlin.time.Duration.Companion.days
 import kotlin.time.Duration.Companion.seconds
 
@@ -337,19 +324,8 @@ private val verifierSessionTableSpec = StorageTableSpec(
 
 val documentTypeRepo: DocumentTypeRepository by lazy {
     val repo =  DocumentTypeRepository()
-    repo.addDocumentType(DrivingLicense.getDocumentType())
-    repo.addDocumentType(EUPersonalID.getDocumentType())
-    repo.addDocumentType(GermanPersonalID.getDocumentType())
-    repo.addDocumentType(PhotoID.getDocumentType())
-    repo.addDocumentType(EUCertificateOfResidence.getDocumentType())
-    repo.addDocumentType(UtopiaNaturalization.getDocumentType())
-    repo.addDocumentType(UtopiaMovieTicket.getDocumentType())
-    repo.addDocumentType(IDPass.getDocumentType())
-    repo.addDocumentType(AgeVerification.getDocumentType())
-    repo.addDocumentType(Loyalty.getDocumentType())
-    repo.addDocumentType(Aadhaar.getDocumentType())
-    repo.addDocumentType(DigitalPaymentCredential.getDocumentType())
-    repo.addTransactionType(PingTransaction)
+    repo.addKnownTypes()
+    repo.addUtopiaTypes()
     repo
 }
 
@@ -361,19 +337,8 @@ private suspend fun getZkSystemRepository(): ZkSystemRepository {
         return zkRepo!!
     }
     val repo = ZkSystemRepository()
-    val circuitsToAdd = listOf(
-        "longfellow-libzk-v1/6_1_4096_2945_137e5a75ce72735a37c8a72da1a8a0a5df8d13365c2ae3d2c2bd6a0e7197c7c6",
-        "longfellow-libzk-v1/6_2_4025_2945_b4bb6f01b7043f4f51d8302a30b36e3d4d2d0efc3c24557ab9212ad524a9764e",
-        "longfellow-libzk-v1/6_3_4121_2945_b2211223b954b34a1081e3fbf71b8ea2de28efc888b4be510f532d6ba76c2010",
-        "longfellow-libzk-v1/6_4_4283_2945_c70b5f44a1365c53847eb8948ad5b4fdc224251a2bc02d958c84c862823c49d6",
-    )
     val longfellowSystem = LongfellowZkSystem()
-    val resources = BackendEnvironment.getInterface(Resources::class)!!
-    for (circuit in circuitsToAdd) {
-        val circuitBytes = resources.getRawResource(circuit)!!
-        val pathParts = circuit.split("/")
-        longfellowSystem.addCircuit(pathParts[pathParts.size - 1], circuitBytes)
-    }
+    longfellowSystem.addDefaultCircuits()
     repo.add(longfellowSystem)
     zkRepo = repo
     return zkRepo!!
@@ -405,6 +370,10 @@ private suspend fun handleGetAvailableRequests(
             var dtSupportsMdoc = false
             var dtSupportsVc = false
             for (sr in dt.cannedRequests) {
+                if (sr.transactionData.isNotEmpty()) {
+                    // Not supported
+                    continue
+                }
                 sampleRequests.add(SampleRequest(
                     sr.id,
                     sr.displayName,
@@ -1433,7 +1402,7 @@ private suspend fun handleGetReaderRootCert(
 private val issuerTrustManagerLock = Mutex()
 private var issuerTrustManager: TrustManagerInterface? = null
 
-private suspend fun getIssuerTrustManager(): TrustManagerInterface {
+suspend fun getIssuerTrustManager(): TrustManagerInterface {
     issuerTrustManagerLock.withLock {
         issuerTrustManager?.let { return it }
         val trustManager = TrustManager(EphemeralStorage())
@@ -1658,6 +1627,17 @@ private suspend fun handleGetDataMdoc(
                 )
             }
         }
+        for (otherDocument in deviceResponse.otherDocuments) {
+            lines.add(ResultLine("OtherDocument", otherDocument.docFormat))
+            if (otherDocument.docFormat == "sd-jwt+kb") {
+                val compactSerialization = otherDocument.data.toByteArray().zlibInflate().decodeToString()
+                handleGetDataAppendSdJwt(
+                    compactSerialization = compactSerialization,
+                    lines = lines
+                )
+            }
+        }
+        // TODO: handle encryptedDocuments too
         pages.add(ResultPage(lines))
     }
     return pages
@@ -1669,7 +1649,6 @@ private suspend fun handleGetDataSdJwt(
     clientIdToUse: String,
 ): List<ResultPage> {
     val pages = mutableListOf<ResultPage>()
-    val trustManager = getIssuerTrustManager()
 
     for (presentationString in session.verifiablePresentations) {
         val lines = mutableListOf<ResultLine>()
@@ -1678,74 +1657,85 @@ private suspend fun handleGetDataSdJwt(
             lines.add(ResultLine("W3C DC Protocol", dcProtocol))
         }
 
-        Logger.d(TAG, "Handling SD-JWT: $presentationString")
-        val (sdJwt, sdJwtKb) = if (presentationString.endsWith("~")) {
-            Pair(SdJwt.fromCompactSerialization(presentationString), null)
-        } else {
-            val sdJwtKb = SdJwtKb.fromCompactSerialization(presentationString)
-            Pair(sdJwtKb.sdJwt, sdJwtKb)
-        }
-        val issuerCert = sdJwt.x5c?.certificates?.first()
-        if (issuerCert == null) {
-            lines.add(ResultLine("Error", "Issuer-signed key not in `x5c` in header"))
-        } else {
-            val trustResult = trustManager.verify(sdJwt.x5c!!.certificates)
-            if (trustResult.isTrusted) {
-                val tp = trustResult.trustPoints[0]
-                val name = tp.metadata.displayName ?: tp.certificate.subject.name
-                lines.add(ResultLine("Issuer", "In trust list ($name)"))
-            } else {
-                val name = issuerCert.subject.name
-                lines.add(ResultLine("Issuer", "Not in trust list ($name)"))
-            }
-        }
-        if (sdJwtKb == null && sdJwt.jwtBody["cnf"] != null) {
-            lines.add(
-                ResultLine(
-                    "Error",
-                    "`cnf` claim present but we got a SD-JWT, not a SD-JWT+KB"
-                )
-            )
-        }
-
-        if (sdJwtKb != null && issuerCert != null) {
-            // TODO: actually check nonce, audience, and creationTime
-            try {
-                var receivedAudience = ""
-                val processedJwt = sdJwtKb.verify(
-                    issuerKey = issuerCert.ecPublicKey,
-                    checkNonce = { nonce -> true },
-                    checkAudience = { audience -> receivedAudience = audience; true },
-                    checkCreationTime = { creationTime -> true },
-                    transactionData = listOf()
-                )
-                lines.add(ResultLine("Key Binding", "Verified"))
-                lines.add(ResultLine("Audience", receivedAudience))
-
-                for ((claimName, claimValue) in processedJwt) {
-                    val claimValueStr = prettyJson.encodeToString(claimValue)
-                    lines.add(ResultLine(claimName, claimValueStr))
-                }
-            } catch (e: Exception) {
-                if (e is CancellationException) throw e
-                lines.add(ResultLine("Key Binding", "Error validating: $e"))
-            }
-        } else if (issuerCert != null) {
-            try {
-                val processedJwt = sdJwt.verify(issuerCert.ecPublicKey)
-                for ((claimName, claimValue) in processedJwt) {
-                    val claimValueStr = prettyJson.encodeToString(claimValue)
-                    lines.add(ResultLine(claimName, claimValueStr))
-                }
-            } catch (e: Exception) {
-                if (e is CancellationException) throw e
-                lines.add(ResultLine("Error", "Error validating signature: $e"))
-            }
-        }
-
+        handleGetDataAppendSdJwt(
+            compactSerialization = presentationString,
+            lines = lines
+        )
         pages.add(ResultPage(lines))
     }
     return pages
+}
+
+private suspend fun handleGetDataAppendSdJwt(
+   compactSerialization: String,
+   lines: MutableList<ResultLine>,
+) {
+    val trustManager = getIssuerTrustManager()
+
+    Logger.d(TAG, "Handling SD-JWT: $compactSerialization")
+    val (sdJwt, sdJwtKb) = if (compactSerialization.endsWith("~")) {
+        Pair(SdJwt.fromCompactSerialization(compactSerialization), null)
+    } else {
+        val sdJwtKb = SdJwtKb.fromCompactSerialization(compactSerialization)
+        Pair(sdJwtKb.sdJwt, sdJwtKb)
+    }
+    val issuerCert = sdJwt.x5c?.certificates?.first()
+    if (issuerCert == null) {
+        lines.add(ResultLine("Error", "Issuer-signed key not in `x5c` in header"))
+    } else {
+        val trustResult = trustManager.verify(sdJwt.x5c!!.certificates)
+        if (trustResult.isTrusted) {
+            val tp = trustResult.trustPoints[0]
+            val name = tp.metadata.displayName ?: tp.certificate.subject.name
+            lines.add(ResultLine("Issuer", "In trust list ($name)"))
+        } else {
+            val name = issuerCert.subject.name
+            lines.add(ResultLine("Issuer", "Not in trust list ($name)"))
+        }
+    }
+    if (sdJwtKb == null && sdJwt.jwtBody["cnf"] != null) {
+        lines.add(
+            ResultLine(
+                "Error",
+                "`cnf` claim present but we got a SD-JWT, not a SD-JWT+KB"
+            )
+        )
+    }
+
+    if (sdJwtKb != null && issuerCert != null) {
+        // TODO: actually check nonce, audience, and creationTime
+        try {
+            var receivedAudience = ""
+            val processedJwt = sdJwtKb.verify(
+                issuerKey = issuerCert.ecPublicKey,
+                checkNonce = { nonce -> true },
+                checkAudience = { audience -> receivedAudience = audience; true },
+                checkCreationTime = { creationTime -> true },
+                transactionData = listOf()
+            )
+            lines.add(ResultLine("Key Binding", "Verified"))
+            lines.add(ResultLine("Audience", receivedAudience))
+
+            for ((claimName, claimValue) in processedJwt) {
+                val claimValueStr = prettyJson.encodeToString(claimValue)
+                lines.add(ResultLine(claimName, claimValueStr))
+            }
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            lines.add(ResultLine("Key Binding", "Error validating: $e"))
+        }
+    } else if (issuerCert != null) {
+        try {
+            val processedJwt = sdJwt.verify(issuerCert.ecPublicKey)
+            for ((claimName, claimValue) in processedJwt) {
+                val claimValueStr = prettyJson.encodeToString(claimValue)
+                lines.add(ResultLine(claimName, claimValueStr))
+            }
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            lines.add(ResultLine("Error", "Error validating signature: $e"))
+        }
+    }
 }
 
 // defined in ISO 18013-7 Annex B
@@ -2123,6 +2113,7 @@ private suspend fun calcDcRequestNew(
             zkSystemSpecs = zkSystemSpecs
         )
     }
+    Logger.iJson(TAG, "request", request)
 
     val dcRequestProtocol = request["requests"]!!.jsonArray[0].jsonObject["protocol"]!!.jsonPrimitive.content
     val dcRequestString = Json.encodeToString(request["requests"]!!.jsonArray[0].jsonObject["data"]!!.jsonObject)
@@ -2168,7 +2159,7 @@ private suspend fun calcDcRequestStringOpenID4VPforDCQL(
         },
         responseMode = responseMode,
         responseUri = responseUri,
-        dclqQuery = dcql
+        dcqlQuery = dcql
     ).toString()
 }
 
@@ -2370,41 +2361,69 @@ private suspend fun AnnexACalcRequest(
     if (requestId.isNotEmpty()) {
         val request = lookupWellknownRequest(requestFormat, requestDocType, requestId)
 
-        val zkSystemSpecs: List<ZkSystemSpec> = if (request.mdocRequest!!.useZkp) {
-            getZkSystemRepository().getAllZkSystemSpecs()
-        } else {
-            emptyList()
-        }
-
-        val itemsToRequest = mutableMapOf<String, MutableMap<String, Boolean>>()
-        for (ns in request.mdocRequest!!.namespacesToRequest) {
-            for ((de, intentToRetain) in ns.dataElementsToRequest) {
-                itemsToRequest.getOrPut(ns.namespace) { mutableMapOf() }
-                    .put(de.attribute.identifier, intentToRetain)
+        if (requestFormat == "mdoc") {
+            val zkSystemSpecs: List<ZkSystemSpec> = if (request.mdocRequest!!.useZkp) {
+                getZkSystemRepository().getAllZkSystemSpecs()
+            } else {
+                emptyList()
             }
-        }
-
-        val zkRequest = if (request.mdocRequest!!.useZkp) {
-            ZkRequest(
-                systemSpecs = zkSystemSpecs,
-                zkRequired = false
-            )
+            val itemsToRequest = mutableMapOf<String, MutableMap<String, Boolean>>()
+            for (ns in request.mdocRequest!!.namespacesToRequest) {
+                for ((de, intentToRetain) in ns.dataElementsToRequest) {
+                    itemsToRequest.getOrPut(ns.namespace) { mutableMapOf() }
+                        .put(de.attribute.identifier, intentToRetain)
+                }
+            }
+            val zkRequest = if (request.mdocRequest!!.useZkp) {
+                ZkRequest(
+                    systemSpecs = zkSystemSpecs,
+                    zkRequired = false
+                )
+            } else {
+                null
+            }
+            return buildDeviceRequest(
+                sessionTranscript = sessionTranscript
+            ) {
+                addDocRequest(
+                    docType = request.mdocRequest!!.docType,
+                    nameSpaces = itemsToRequest,
+                    docRequestInfo = DocRequestInfo(
+                        zkRequest = zkRequest
+                    ),
+                    readerKey = readerAuthKey
+                )
+                addReaderAuthAll(readerKey = readerAuthKey)
+            }
         } else {
-            null
-        }
-
-        return buildDeviceRequest(
-            sessionTranscript = sessionTranscript
-        ) {
-            addDocRequest(
-                docType = request.mdocRequest!!.docType,
-                nameSpaces = itemsToRequest,
-                docRequestInfo = DocRequestInfo(
-                    zkRequest = zkRequest
-                ),
-                readerKey = readerAuthKey
-            )
-            addReaderAuthAll(readerKey = readerAuthKey)
+            check(requestFormat == "vc") { "unexpected request format $requestFormat" }
+            val claimsToRequest = mutableMapOf<String, Boolean>()
+            val mapping = mutableMapOf<String, JsonArray>()
+            request.jsonRequest!!.claimsToRequest.forEach { documentAttribute ->
+                val path = mutableListOf<JsonElement>()
+                documentAttribute.parentAttribute?.let {
+                    path.add(JsonPrimitive(it.identifier))
+                }
+                path.add(JsonPrimitive(documentAttribute.identifier))
+                val flattenedPath = path.joinToString(separator = "_") { it.jsonPrimitive.content }
+                val dataElementName = "sdjwtvc_$flattenedPath"
+                claimsToRequest[dataElementName] = false
+                mapping[dataElementName] = JsonArray(path)
+            }
+            return buildDeviceRequest(
+                sessionTranscript = sessionTranscript
+            ) {
+                addDocRequest(
+                    docType = request.jsonRequest!!.vct,
+                    nameSpaces = mapOf("_" to claimsToRequest),
+                    docRequestInfo = DocRequestInfo(
+                        docFormat = "sd-jwt+kb",
+                        dataElementIdentifierMapping = mapping
+                    ),
+                    readerKey = readerAuthKey
+                )
+                addReaderAuthAll(readerKey = readerAuthKey)
+            }
         }
     } else {
         val dcql = if (multiDocumentRequestId.isNotEmpty()) {

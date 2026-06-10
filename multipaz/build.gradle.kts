@@ -139,6 +139,7 @@ kotlin {
                 implementation(libs.kotlinx.coroutines.test)
                 implementation(libs.ktor.client.mock)
                 implementation(project(":multipaz-doctypes"))
+                implementation(project(":multipaz-utopia"))
             }
         }
 
@@ -219,8 +220,16 @@ kotlin {
             val webMain by getting {
                 dependencies {
                     implementation(libs.kotlin.wrappers.web)
+                    implementation(libs.kotlin.wrappers.browser)
                     implementation(libs.kotlinx.browser)
                 }
+            }
+            val jsMain by getting {
+                dependencies {
+                    implementation(libs.kotlin.wrappers.browser)
+                }
+            }
+            val wasmJsMain by getting {
             }
         }
     }

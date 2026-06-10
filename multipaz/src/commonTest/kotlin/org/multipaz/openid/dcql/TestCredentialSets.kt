@@ -6,6 +6,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import org.multipaz.presentment.DocumentStoreTestHarness
+import org.multipaz.presentment.ConsentData
 import org.multipaz.presentment.prettyPrint
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -184,6 +185,10 @@ class TestCredentialSets {
         addCredPidReduced1(harness)
         addCredPidReduced2(harness)
         addCredCompanyRewards(harness)
+
+        val queryResult = complexQuery().execute(
+            presentmentSource = harness.presentmentSource
+        )
         assertEquals(
             """
                 credentialSets:
@@ -285,8 +290,282 @@ class TestCredentialSets {
                                       displayName: rewards_number
                                       value: 24601
             """.trimIndent().trim(),
-            complexQuery().execute(
-                presentmentSource = harness.presentmentSource
+            queryResult.prettyPrint().trim()
+        )
+
+        // Also check that getAllSelections() returns all possible selections
+        assertEquals(
+            """
+                selections:
+                  matches:
+                    match:
+                      credential:
+                        type: KeyBoundSdJwtVcCredential
+                        docId: my-pid
+                        claims:
+                          claim:
+                            path: ["given_name"]
+                            displayName: given_name
+                            value: Erika
+                          claim:
+                            path: ["family_name"]
+                            displayName: family_name
+                            value: Mustermann
+                          claim:
+                            path: ["address","street_address"]
+                            displayName: address.street_address
+                            value: Sample Street 123
+                  matches:
+                    match:
+                      credential:
+                        type: KeyBoundSdJwtVcCredential
+                        docId: my-pid
+                        claims:
+                          claim:
+                            path: ["given_name"]
+                            displayName: given_name
+                            value: Erika
+                          claim:
+                            path: ["family_name"]
+                            displayName: family_name
+                            value: Mustermann
+                          claim:
+                            path: ["address","street_address"]
+                            displayName: address.street_address
+                            value: Sample Street 123
+                    match:
+                      credential:
+                        type: KeyBoundSdJwtVcCredential
+                        docId: my-reward-card
+                        claims:
+                          claim:
+                            path: ["rewards_number"]
+                            displayName: rewards_number
+                            value: 24601
+                  matches:
+                    match:
+                      credential:
+                        type: KeyBoundSdJwtVcCredential
+                        docId: my-other-pid
+                        claims:
+                          claim:
+                            path: ["given_name"]
+                            displayName: given_name
+                            value: Erika
+                          claim:
+                            path: ["family_name"]
+                            displayName: family_name
+                            value: Mustermann
+                          claim:
+                            path: ["address","street_address"]
+                            displayName: address.street_address
+                            value: Sample Street 123
+                  matches:
+                    match:
+                      credential:
+                        type: KeyBoundSdJwtVcCredential
+                        docId: my-other-pid
+                        claims:
+                          claim:
+                            path: ["given_name"]
+                            displayName: given_name
+                            value: Erika
+                          claim:
+                            path: ["family_name"]
+                            displayName: family_name
+                            value: Mustermann
+                          claim:
+                            path: ["address","street_address"]
+                            displayName: address.street_address
+                            value: Sample Street 123
+                    match:
+                      credential:
+                        type: KeyBoundSdJwtVcCredential
+                        docId: my-reward-card
+                        claims:
+                          claim:
+                            path: ["rewards_number"]
+                            displayName: rewards_number
+                            value: 24601
+                  matches:
+                    match:
+                      credential:
+                        type: KeyBoundSdJwtVcCredential
+                        docId: my-pid-reduced1
+                        claims:
+                          claim:
+                            path: ["family_name"]
+                            displayName: family_name
+                            value: Mustermann
+                          claim:
+                            path: ["given_name"]
+                            displayName: given_name
+                            value: Erika
+                    match:
+                      credential:
+                        type: KeyBoundSdJwtVcCredential
+                        docId: my-pid-reduced2
+                        claims:
+                          claim:
+                            path: ["postal_code"]
+                            displayName: postal_code
+                            value: 90210
+                          claim:
+                            path: ["locality"]
+                            displayName: locality
+                            value: Beverly Hills
+                          claim:
+                            path: ["region"]
+                            displayName: region
+                            value: Los Angeles Basin
+                  matches:
+                    match:
+                      credential:
+                        type: KeyBoundSdJwtVcCredential
+                        docId: my-pid-reduced1
+                        claims:
+                          claim:
+                            path: ["family_name"]
+                            displayName: family_name
+                            value: Mustermann
+                          claim:
+                            path: ["given_name"]
+                            displayName: given_name
+                            value: Erika
+                    match:
+                      credential:
+                        type: KeyBoundSdJwtVcCredential
+                        docId: my-pid-reduced2
+                        claims:
+                          claim:
+                            path: ["postal_code"]
+                            displayName: postal_code
+                            value: 90210
+                          claim:
+                            path: ["locality"]
+                            displayName: locality
+                            value: Beverly Hills
+                          claim:
+                            path: ["region"]
+                            displayName: region
+                            value: Los Angeles Basin
+                    match:
+                      credential:
+                        type: KeyBoundSdJwtVcCredential
+                        docId: my-reward-card
+                        claims:
+                          claim:
+                            path: ["rewards_number"]
+                            displayName: rewards_number
+                            value: 24601
+            """.trimIndent().trim(),
+            queryResult.getAllSelections().prettyPrint().trim()
+        )
+
+        // Check this is mapped properly to the UI
+        assertEquals(
+            """
+                useCases:
+                  useCase:
+                    optional: false
+                      solution:
+                        credential:
+                          encryptionRequested: false
+                          encryptionTargetTrustMetadata: null
+                          match:
+                            credential:
+                              type: KeyBoundSdJwtVcCredential
+                              docId: my-pid
+                              claims:
+                                claim:
+                                  path: ["given_name"]
+                                  displayName: given_name
+                                  value: Erika
+                                claim:
+                                  path: ["family_name"]
+                                  displayName: family_name
+                                  value: Mustermann
+                                claim:
+                                  path: ["address","street_address"]
+                                  displayName: address.street_address
+                                  value: Sample Street 123
+                      solution:
+                        credential:
+                          encryptionRequested: false
+                          encryptionTargetTrustMetadata: null
+                          match:
+                            credential:
+                              type: KeyBoundSdJwtVcCredential
+                              docId: my-other-pid
+                              claims:
+                                claim:
+                                  path: ["given_name"]
+                                  displayName: given_name
+                                  value: Erika
+                                claim:
+                                  path: ["family_name"]
+                                  displayName: family_name
+                                  value: Mustermann
+                                claim:
+                                  path: ["address","street_address"]
+                                  displayName: address.street_address
+                                  value: Sample Street 123
+                      solution:
+                        credential:
+                          encryptionRequested: false
+                          encryptionTargetTrustMetadata: null
+                          match:
+                            credential:
+                              type: KeyBoundSdJwtVcCredential
+                              docId: my-pid-reduced1
+                              claims:
+                                claim:
+                                  path: ["family_name"]
+                                  displayName: family_name
+                                  value: Mustermann
+                                claim:
+                                  path: ["given_name"]
+                                  displayName: given_name
+                                  value: Erika
+                        credential:
+                          encryptionRequested: false
+                          encryptionTargetTrustMetadata: null
+                          match:
+                            credential:
+                              type: KeyBoundSdJwtVcCredential
+                              docId: my-pid-reduced2
+                              claims:
+                                claim:
+                                  path: ["postal_code"]
+                                  displayName: postal_code
+                                  value: 90210
+                                claim:
+                                  path: ["locality"]
+                                  displayName: locality
+                                  value: Beverly Hills
+                                claim:
+                                  path: ["region"]
+                                  displayName: region
+                                  value: Los Angeles Basin
+                  useCase:
+                    optional: true
+                      solution:
+                        credential:
+                          encryptionRequested: false
+                          encryptionTargetTrustMetadata: null
+                          match:
+                            credential:
+                              type: KeyBoundSdJwtVcCredential
+                              docId: my-reward-card
+                              claims:
+                                claim:
+                                  path: ["rewards_number"]
+                                  displayName: rewards_number
+                                  value: 24601
+            """.trimIndent().trim(),
+            ConsentData.fromCredentialQueryResult(
+                queryResult,
+                harness.presentmentSource
             ).prettyPrint().trim()
         )
     }
@@ -304,6 +583,10 @@ class TestCredentialSets {
         addCredPidReduced1(harness)
         addCredPidReduced2(harness)
         addCredCompanyRewards(harness)
+
+        val queryResult = complexQuery().execute(
+            presentmentSource = harness.presentmentSource
+        )
         assertEquals(
             """
                 credentialSets:
@@ -422,8 +705,348 @@ class TestCredentialSets {
                                       displayName: rewards_number
                                       value: 24601
             """.trimIndent().trim(),
-            complexQuery().execute(
-                presentmentSource = harness.presentmentSource
+            queryResult.prettyPrint().trim()
+        )
+
+        // Also check that getAllSelections() returns all possible selections
+        assertEquals(
+            """
+                selections:
+                  matches:
+                    match:
+                      credential:
+                        type: KeyBoundSdJwtVcCredential
+                        docId: my-pid
+                        claims:
+                          claim:
+                            path: ["given_name"]
+                            displayName: given_name
+                            value: Erika
+                          claim:
+                            path: ["family_name"]
+                            displayName: family_name
+                            value: Mustermann
+                          claim:
+                            path: ["address","street_address"]
+                            displayName: address.street_address
+                            value: Sample Street 123
+                  matches:
+                    match:
+                      credential:
+                        type: KeyBoundSdJwtVcCredential
+                        docId: my-pid
+                        claims:
+                          claim:
+                            path: ["given_name"]
+                            displayName: given_name
+                            value: Erika
+                          claim:
+                            path: ["family_name"]
+                            displayName: family_name
+                            value: Mustermann
+                          claim:
+                            path: ["address","street_address"]
+                            displayName: address.street_address
+                            value: Sample Street 123
+                    match:
+                      credential:
+                        type: KeyBoundSdJwtVcCredential
+                        docId: my-reward-card
+                        claims:
+                          claim:
+                            path: ["rewards_number"]
+                            displayName: rewards_number
+                            value: 24601
+                  matches:
+                    match:
+                      credential:
+                        type: KeyBoundSdJwtVcCredential
+                        docId: my-pid-max
+                        claims:
+                          claim:
+                            path: ["given_name"]
+                            displayName: given_name
+                            value: Max
+                          claim:
+                            path: ["family_name"]
+                            displayName: family_name
+                            value: Mustermann
+                          claim:
+                            path: ["address","street_address"]
+                            displayName: address.street_address
+                            value: Sample Street 456
+                  matches:
+                    match:
+                      credential:
+                        type: KeyBoundSdJwtVcCredential
+                        docId: my-pid-max
+                        claims:
+                          claim:
+                            path: ["given_name"]
+                            displayName: given_name
+                            value: Max
+                          claim:
+                            path: ["family_name"]
+                            displayName: family_name
+                            value: Mustermann
+                          claim:
+                            path: ["address","street_address"]
+                            displayName: address.street_address
+                            value: Sample Street 456
+                    match:
+                      credential:
+                        type: KeyBoundSdJwtVcCredential
+                        docId: my-reward-card
+                        claims:
+                          claim:
+                            path: ["rewards_number"]
+                            displayName: rewards_number
+                            value: 24601
+                  matches:
+                    match:
+                      credential:
+                        type: KeyBoundSdJwtVcCredential
+                        docId: my-other-pid
+                        claims:
+                          claim:
+                            path: ["given_name"]
+                            displayName: given_name
+                            value: Erika
+                          claim:
+                            path: ["family_name"]
+                            displayName: family_name
+                            value: Mustermann
+                          claim:
+                            path: ["address","street_address"]
+                            displayName: address.street_address
+                            value: Sample Street 123
+                  matches:
+                    match:
+                      credential:
+                        type: KeyBoundSdJwtVcCredential
+                        docId: my-other-pid
+                        claims:
+                          claim:
+                            path: ["given_name"]
+                            displayName: given_name
+                            value: Erika
+                          claim:
+                            path: ["family_name"]
+                            displayName: family_name
+                            value: Mustermann
+                          claim:
+                            path: ["address","street_address"]
+                            displayName: address.street_address
+                            value: Sample Street 123
+                    match:
+                      credential:
+                        type: KeyBoundSdJwtVcCredential
+                        docId: my-reward-card
+                        claims:
+                          claim:
+                            path: ["rewards_number"]
+                            displayName: rewards_number
+                            value: 24601
+                  matches:
+                    match:
+                      credential:
+                        type: KeyBoundSdJwtVcCredential
+                        docId: my-pid-reduced1
+                        claims:
+                          claim:
+                            path: ["family_name"]
+                            displayName: family_name
+                            value: Mustermann
+                          claim:
+                            path: ["given_name"]
+                            displayName: given_name
+                            value: Erika
+                    match:
+                      credential:
+                        type: KeyBoundSdJwtVcCredential
+                        docId: my-pid-reduced2
+                        claims:
+                          claim:
+                            path: ["postal_code"]
+                            displayName: postal_code
+                            value: 90210
+                          claim:
+                            path: ["locality"]
+                            displayName: locality
+                            value: Beverly Hills
+                          claim:
+                            path: ["region"]
+                            displayName: region
+                            value: Los Angeles Basin
+                  matches:
+                    match:
+                      credential:
+                        type: KeyBoundSdJwtVcCredential
+                        docId: my-pid-reduced1
+                        claims:
+                          claim:
+                            path: ["family_name"]
+                            displayName: family_name
+                            value: Mustermann
+                          claim:
+                            path: ["given_name"]
+                            displayName: given_name
+                            value: Erika
+                    match:
+                      credential:
+                        type: KeyBoundSdJwtVcCredential
+                        docId: my-pid-reduced2
+                        claims:
+                          claim:
+                            path: ["postal_code"]
+                            displayName: postal_code
+                            value: 90210
+                          claim:
+                            path: ["locality"]
+                            displayName: locality
+                            value: Beverly Hills
+                          claim:
+                            path: ["region"]
+                            displayName: region
+                            value: Los Angeles Basin
+                    match:
+                      credential:
+                        type: KeyBoundSdJwtVcCredential
+                        docId: my-reward-card
+                        claims:
+                          claim:
+                            path: ["rewards_number"]
+                            displayName: rewards_number
+                            value: 24601
+            """.trimIndent().trim(),
+            queryResult.getAllSelections().prettyPrint().trim()
+        )
+
+        // Check this is mapped properly to the UI
+        assertEquals(
+            """
+                useCases:
+                  useCase:
+                    optional: false
+                      solution:
+                        credential:
+                          encryptionRequested: false
+                          encryptionTargetTrustMetadata: null
+                          match:
+                            credential:
+                              type: KeyBoundSdJwtVcCredential
+                              docId: my-pid
+                              claims:
+                                claim:
+                                  path: ["given_name"]
+                                  displayName: given_name
+                                  value: Erika
+                                claim:
+                                  path: ["family_name"]
+                                  displayName: family_name
+                                  value: Mustermann
+                                claim:
+                                  path: ["address","street_address"]
+                                  displayName: address.street_address
+                                  value: Sample Street 123
+                      solution:
+                        credential:
+                          encryptionRequested: false
+                          encryptionTargetTrustMetadata: null
+                          match:
+                            credential:
+                              type: KeyBoundSdJwtVcCredential
+                              docId: my-pid-max
+                              claims:
+                                claim:
+                                  path: ["given_name"]
+                                  displayName: given_name
+                                  value: Max
+                                claim:
+                                  path: ["family_name"]
+                                  displayName: family_name
+                                  value: Mustermann
+                                claim:
+                                  path: ["address","street_address"]
+                                  displayName: address.street_address
+                                  value: Sample Street 456
+                      solution:
+                        credential:
+                          encryptionRequested: false
+                          encryptionTargetTrustMetadata: null
+                          match:
+                            credential:
+                              type: KeyBoundSdJwtVcCredential
+                              docId: my-other-pid
+                              claims:
+                                claim:
+                                  path: ["given_name"]
+                                  displayName: given_name
+                                  value: Erika
+                                claim:
+                                  path: ["family_name"]
+                                  displayName: family_name
+                                  value: Mustermann
+                                claim:
+                                  path: ["address","street_address"]
+                                  displayName: address.street_address
+                                  value: Sample Street 123
+                      solution:
+                        credential:
+                          encryptionRequested: false
+                          encryptionTargetTrustMetadata: null
+                          match:
+                            credential:
+                              type: KeyBoundSdJwtVcCredential
+                              docId: my-pid-reduced1
+                              claims:
+                                claim:
+                                  path: ["family_name"]
+                                  displayName: family_name
+                                  value: Mustermann
+                                claim:
+                                  path: ["given_name"]
+                                  displayName: given_name
+                                  value: Erika
+                        credential:
+                          encryptionRequested: false
+                          encryptionTargetTrustMetadata: null
+                          match:
+                            credential:
+                              type: KeyBoundSdJwtVcCredential
+                              docId: my-pid-reduced2
+                              claims:
+                                claim:
+                                  path: ["postal_code"]
+                                  displayName: postal_code
+                                  value: 90210
+                                claim:
+                                  path: ["locality"]
+                                  displayName: locality
+                                  value: Beverly Hills
+                                claim:
+                                  path: ["region"]
+                                  displayName: region
+                                  value: Los Angeles Basin
+                  useCase:
+                    optional: true
+                      solution:
+                        credential:
+                          encryptionRequested: false
+                          encryptionTargetTrustMetadata: null
+                          match:
+                            credential:
+                              type: KeyBoundSdJwtVcCredential
+                              docId: my-reward-card
+                              claims:
+                                claim:
+                                  path: ["rewards_number"]
+                                  displayName: rewards_number
+                                  value: 24601
+            """.trimIndent().trim(),
+            ConsentData.fromCredentialQueryResult(
+                queryResult,
+                harness.presentmentSource
             ).prettyPrint().trim()
         )
     }
@@ -437,6 +1060,10 @@ class TestCredentialSets {
         addCredPidReduced1(harness)
         addCredPidReduced2(harness)
         // Reward card is optional
+
+        val queryResult = complexQuery().execute(
+            presentmentSource = harness.presentmentSource
+        )
         assertEquals(
             """
                 credentialSets:
@@ -522,8 +1149,98 @@ class TestCredentialSets {
                                       displayName: region
                                       value: Los Angeles Basin
             """.trimIndent().trim(),
-            complexQuery().execute(
-                presentmentSource = harness.presentmentSource
+            queryResult.prettyPrint().trim()
+        )
+
+        // Check this is mapped properly to the UI
+        assertEquals(
+            """
+                useCases:
+                  useCase:
+                    optional: false
+                      solution:
+                        credential:
+                          encryptionRequested: false
+                          encryptionTargetTrustMetadata: null
+                          match:
+                            credential:
+                              type: KeyBoundSdJwtVcCredential
+                              docId: my-pid
+                              claims:
+                                claim:
+                                  path: ["given_name"]
+                                  displayName: given_name
+                                  value: Erika
+                                claim:
+                                  path: ["family_name"]
+                                  displayName: family_name
+                                  value: Mustermann
+                                claim:
+                                  path: ["address","street_address"]
+                                  displayName: address.street_address
+                                  value: Sample Street 123
+                      solution:
+                        credential:
+                          encryptionRequested: false
+                          encryptionTargetTrustMetadata: null
+                          match:
+                            credential:
+                              type: KeyBoundSdJwtVcCredential
+                              docId: my-other-pid
+                              claims:
+                                claim:
+                                  path: ["given_name"]
+                                  displayName: given_name
+                                  value: Erika
+                                claim:
+                                  path: ["family_name"]
+                                  displayName: family_name
+                                  value: Mustermann
+                                claim:
+                                  path: ["address","street_address"]
+                                  displayName: address.street_address
+                                  value: Sample Street 123
+                      solution:
+                        credential:
+                          encryptionRequested: false
+                          encryptionTargetTrustMetadata: null
+                          match:
+                            credential:
+                              type: KeyBoundSdJwtVcCredential
+                              docId: my-pid-reduced1
+                              claims:
+                                claim:
+                                  path: ["family_name"]
+                                  displayName: family_name
+                                  value: Mustermann
+                                claim:
+                                  path: ["given_name"]
+                                  displayName: given_name
+                                  value: Erika
+                        credential:
+                          encryptionRequested: false
+                          encryptionTargetTrustMetadata: null
+                          match:
+                            credential:
+                              type: KeyBoundSdJwtVcCredential
+                              docId: my-pid-reduced2
+                              claims:
+                                claim:
+                                  path: ["postal_code"]
+                                  displayName: postal_code
+                                  value: 90210
+                                claim:
+                                  path: ["locality"]
+                                  displayName: locality
+                                  value: Beverly Hills
+                                claim:
+                                  path: ["region"]
+                                  displayName: region
+                                  value: Los Angeles Basin
+            """.trimIndent().trim(),
+            ConsentData.fromCredentialQueryResult(
+                queryResult,
+                harness.presentmentSource
             ).prettyPrint().trim()
         )
     }
@@ -533,6 +1250,10 @@ class TestCredentialSets {
         val harness = DocumentStoreTestHarness()
         harness.initialize()
         addCredPid(harness)
+
+        val queryResult = complexQuery().execute(
+            presentmentSource = harness.presentmentSource
+        )
         assertEquals(
             """
                 credentialSets:
@@ -565,6 +1286,40 @@ class TestCredentialSets {
                 presentmentSource = harness.presentmentSource
             ).prettyPrint().trim()
         )
+
+        // Check this is mapped properly to the UI
+        assertEquals(
+            """
+                useCases:
+                  useCase:
+                    optional: false
+                      solution:
+                        credential:
+                          encryptionRequested: false
+                          encryptionTargetTrustMetadata: null
+                          match:
+                            credential:
+                              type: KeyBoundSdJwtVcCredential
+                              docId: my-pid
+                              claims:
+                                claim:
+                                  path: ["given_name"]
+                                  displayName: given_name
+                                  value: Erika
+                                claim:
+                                  path: ["family_name"]
+                                  displayName: family_name
+                                  value: Mustermann
+                                claim:
+                                  path: ["address","street_address"]
+                                  displayName: address.street_address
+                                  value: Sample Street 123
+            """.trimIndent().trim(),
+            ConsentData.fromCredentialQueryResult(
+                queryResult,
+                harness.presentmentSource
+            ).prettyPrint().trim()
+        )
     }
 
     @Test
@@ -572,6 +1327,10 @@ class TestCredentialSets {
         val harness = DocumentStoreTestHarness()
         harness.initialize()
         addCredOtherPid(harness)
+
+        val queryResult = complexQuery().execute(
+            presentmentSource = harness.presentmentSource
+        )
         assertEquals(
             """
                 credentialSets:
@@ -600,8 +1359,40 @@ class TestCredentialSets {
                                       displayName: address.street_address
                                       value: Sample Street 123
             """.trimIndent().trim(),
-            complexQuery().execute(
-                presentmentSource = harness.presentmentSource
+            queryResult.prettyPrint().trim()
+        )
+
+        // Check this is mapped properly to the UI
+        assertEquals(
+            """
+                useCases:
+                  useCase:
+                    optional: false
+                      solution:
+                        credential:
+                          encryptionRequested: false
+                          encryptionTargetTrustMetadata: null
+                          match:
+                            credential:
+                              type: KeyBoundSdJwtVcCredential
+                              docId: my-other-pid
+                              claims:
+                                claim:
+                                  path: ["given_name"]
+                                  displayName: given_name
+                                  value: Erika
+                                claim:
+                                  path: ["family_name"]
+                                  displayName: family_name
+                                  value: Mustermann
+                                claim:
+                                  path: ["address","street_address"]
+                                  displayName: address.street_address
+                                  value: Sample Street 123
+            """.trimIndent().trim(),
+            ConsentData.fromCredentialQueryResult(
+                queryResult,
+                harness.presentmentSource
             ).prettyPrint().trim()
         )
     }
@@ -612,6 +1403,10 @@ class TestCredentialSets {
         harness.initialize()
         addCredPidReduced1(harness)
         addCredPidReduced2(harness)
+
+        val queryResult = complexQuery().execute(
+            presentmentSource = harness.presentmentSource
+        )
         assertEquals(
             """
                 credentialSets:
@@ -655,8 +1450,56 @@ class TestCredentialSets {
                                       displayName: region
                                       value: Los Angeles Basin
             """.trimIndent().trim(),
-            complexQuery().execute(
-                presentmentSource = harness.presentmentSource
+            queryResult.prettyPrint().trim()
+        )
+
+        // Check this is mapped properly to the UI
+        assertEquals(
+            """
+                useCases:
+                  useCase:
+                    optional: false
+                      solution:
+                        credential:
+                          encryptionRequested: false
+                          encryptionTargetTrustMetadata: null
+                          match:
+                            credential:
+                              type: KeyBoundSdJwtVcCredential
+                              docId: my-pid-reduced1
+                              claims:
+                                claim:
+                                  path: ["family_name"]
+                                  displayName: family_name
+                                  value: Mustermann
+                                claim:
+                                  path: ["given_name"]
+                                  displayName: given_name
+                                  value: Erika
+                        credential:
+                          encryptionRequested: false
+                          encryptionTargetTrustMetadata: null
+                          match:
+                            credential:
+                              type: KeyBoundSdJwtVcCredential
+                              docId: my-pid-reduced2
+                              claims:
+                                claim:
+                                  path: ["postal_code"]
+                                  displayName: postal_code
+                                  value: 90210
+                                claim:
+                                  path: ["locality"]
+                                  displayName: locality
+                                  value: Beverly Hills
+                                claim:
+                                  path: ["region"]
+                                  displayName: region
+                                  value: Los Angeles Basin
+            """.trimIndent().trim(),
+            ConsentData.fromCredentialQueryResult(
+                queryResult,
+                harness.presentmentSource
             ).prettyPrint().trim()
         )
     }
@@ -668,6 +1511,10 @@ class TestCredentialSets {
         addCredPidReduced1(harness)
         addCredPidReduced2(harness)
         addCredCompanyRewards(harness)
+
+        val queryResult = complexQuery().execute(
+            presentmentSource = harness.presentmentSource
+        )
         assertEquals(
             """
                 credentialSets:
@@ -727,8 +1574,71 @@ class TestCredentialSets {
                                       displayName: rewards_number
                                       value: 24601
             """.trimIndent().trim(),
-            complexQuery().execute(
-                presentmentSource = harness.presentmentSource
+            queryResult.prettyPrint().trim()
+        )
+
+        // Check this is mapped properly to the UI
+        assertEquals(
+            """
+                useCases:
+                  useCase:
+                    optional: false
+                      solution:
+                        credential:
+                          encryptionRequested: false
+                          encryptionTargetTrustMetadata: null
+                          match:
+                            credential:
+                              type: KeyBoundSdJwtVcCredential
+                              docId: my-pid-reduced1
+                              claims:
+                                claim:
+                                  path: ["family_name"]
+                                  displayName: family_name
+                                  value: Mustermann
+                                claim:
+                                  path: ["given_name"]
+                                  displayName: given_name
+                                  value: Erika
+                        credential:
+                          encryptionRequested: false
+                          encryptionTargetTrustMetadata: null
+                          match:
+                            credential:
+                              type: KeyBoundSdJwtVcCredential
+                              docId: my-pid-reduced2
+                              claims:
+                                claim:
+                                  path: ["postal_code"]
+                                  displayName: postal_code
+                                  value: 90210
+                                claim:
+                                  path: ["locality"]
+                                  displayName: locality
+                                  value: Beverly Hills
+                                claim:
+                                  path: ["region"]
+                                  displayName: region
+                                  value: Los Angeles Basin
+                  useCase:
+                    optional: true
+                      solution:
+                        credential:
+                          encryptionRequested: false
+                          encryptionTargetTrustMetadata: null
+                          match:
+                            credential:
+                              type: KeyBoundSdJwtVcCredential
+                              docId: my-reward-card
+                              claims:
+                                claim:
+                                  path: ["rewards_number"]
+                                  displayName: rewards_number
+                                  value: 24601
+            """.trimIndent().trim(),
+            ConsentData.fromCredentialQueryResult(
+                queryResult,
+                harness.presentmentSource
             ).prettyPrint().trim()
         )
     }

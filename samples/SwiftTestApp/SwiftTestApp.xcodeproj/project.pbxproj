@@ -10,6 +10,70 @@
 		512DAED62F2A31B30061F72B /* IdentityDocumentProviderExtension.appex in Embed ExtensionKit Extensions */ = {isa = PBXBuildFile; fileRef = 512DAECF2F2A31B30061F72B /* IdentityDocumentProviderExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		51BD5C5E2F22604F0082DE19 /* AdditionalConfig.xcconfig in Resources */ = {isa = PBXBuildFile; fileRef = 51BD5C5C2F22604F0082DE19 /* AdditionalConfig.xcconfig */; };
 		51BD5C5F2F22604F0082DE19 /* DeveloperConfig.xcconfig in Resources */ = {isa = PBXBuildFile; fileRef = 51BD5C5D2F22604F0082DE19 /* DeveloperConfig.xcconfig */; };
+		7B04AE7A2FCDDD1700DAEA40 /* FloatingItemHeadingAndDate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE662FCDDD1700DAEA40 /* FloatingItemHeadingAndDate.swift */; };
+		7B04AE7B2FCDDD1700DAEA40 /* Extensions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE622FCDDD1700DAEA40 /* Extensions.swift */; };
+		7B04AE7C2FCDDD1700DAEA40 /* CardBadge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE592FCDDD1700DAEA40 /* CardBadge.swift */; };
+		7B04AE7D2FCDDD1700DAEA40 /* RequestAuthorizationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE732FCDDD1700DAEA40 /* RequestAuthorizationView.swift */; };
+		7B04AE7E2FCDDD1700DAEA40 /* DefaultToHumanReadable.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE5E2FCDDD1700DAEA40 /* DefaultToHumanReadable.swift */; };
+		7B04AE7F2FCDDD1700DAEA40 /* DocumentModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE612FCDDD1700DAEA40 /* DocumentModel.swift */; };
+		7B04AE802FCDDD1700DAEA40 /* SmartSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE752FCDDD1700DAEA40 /* SmartSheet.swift */; };
+		7B04AE812FCDDD1700DAEA40 /* FloatingItemList.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE692FCDDD1700DAEA40 /* FloatingItemList.swift */; };
+		7B04AE822FCDDD1700DAEA40 /* CardCarousel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE5A2FCDDD1700DAEA40 /* CardCarousel.swift */; };
+		7B04AE832FCDDD1700DAEA40 /* MdocProximityQrSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE6C2FCDDD1700DAEA40 /* MdocProximityQrSettings.swift */; };
+		7B04AE842FCDDD1700DAEA40 /* CardInfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE5B2FCDDD1700DAEA40 /* CardInfo.swift */; };
+		7B04AE852FCDDD1700DAEA40 /* VerticalCardList.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE772FCDDD1700DAEA40 /* VerticalCardList.swift */; };
+		7B04AE862FCDDD1700DAEA40 /* FloatingItemHeadingAndText.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE682FCDDD1700DAEA40 /* FloatingItemHeadingAndText.swift */; };
+		7B04AE872FCDDD1700DAEA40 /* MdocProximityQrPresentment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE6B2FCDDD1700DAEA40 /* MdocProximityQrPresentment.swift */; };
+		7B04AE882FCDDD1700DAEA40 /* PromptModelExt.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE702FCDDD1700DAEA40 /* PromptModelExt.swift */; };
+		7B04AE892FCDDD1700DAEA40 /* FloatingItemText.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE6A2FCDDD1700DAEA40 /* FloatingItemText.swift */; };
+		7B04AE8A2FCDDD1700DAEA40 /* FloatingItemContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE642FCDDD1700DAEA40 /* FloatingItemContainer.swift */; };
+		7B04AE8B2FCDDD1700DAEA40 /* X509CertViewer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE782FCDDD1700DAEA40 /* X509CertViewer.swift */; };
+		7B04AE8C2FCDDD1700DAEA40 /* PassphrasePromptDialog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE6E2FCDDD1700DAEA40 /* PassphrasePromptDialog.swift */; };
+		7B04AE8D2FCDDD1700DAEA40 /* SimplePresentmentSourceExt.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE742FCDDD1700DAEA40 /* SimplePresentmentSourceExt.swift */; };
+		7B04AE8E2FCDDD1700DAEA40 /* QrCode.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE722FCDDD1700DAEA40 /* QrCode.swift */; };
+		7B04AE8F2FCDDD1700DAEA40 /* FloatingItemHeadingAndDateTime.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE672FCDDD1700DAEA40 /* FloatingItemHeadingAndDateTime.swift */; };
+		7B04AE902FCDDD1700DAEA40 /* Consent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE5C2FCDDD1700DAEA40 /* Consent.swift */; };
+		7B04AE912FCDDD1700DAEA40 /* PassphraseInputView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE6D2FCDDD1700DAEA40 /* PassphraseInputView.swift */; };
+		7B04AE922FCDDD1700DAEA40 /* FloatingItemHeadingAndContent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE652FCDDD1700DAEA40 /* FloatingItemHeadingAndContent.swift */; };
+		7B04AE932FCDDD1700DAEA40 /* ConsentPromptDialog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE5D2FCDDD1700DAEA40 /* ConsentPromptDialog.swift */; };
+		7B04AE942FCDDD1700DAEA40 /* ProvisioningView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE712FCDDD1700DAEA40 /* ProvisioningView.swift */; };
+		7B04AE952FCDDD1700DAEA40 /* PromptDialogs.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE6F2FCDDD1700DAEA40 /* PromptDialogs.swift */; };
+		7B04AE962FCDDD1700DAEA40 /* DocumentExtCardart.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE602FCDDD1700DAEA40 /* DocumentExtCardart.swift */; };
+		7B04AE972FCDDD1700DAEA40 /* TagsExt.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE762FCDDD1700DAEA40 /* TagsExt.swift */; };
+		7B04AE982FCDDD1700DAEA40 /* DocumentExt.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE5F2FCDDD1700DAEA40 /* DocumentExt.swift */; };
+		7B04AE992FCDDD1700DAEA40 /* FloatingItemCenteredText.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE632FCDDD1700DAEA40 /* FloatingItemCenteredText.swift */; };
+		7B04AE9A2FCDDD1700DAEA40 /* FloatingItemHeadingAndDate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE662FCDDD1700DAEA40 /* FloatingItemHeadingAndDate.swift */; };
+		7B04AE9B2FCDDD1700DAEA40 /* Extensions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE622FCDDD1700DAEA40 /* Extensions.swift */; };
+		7B04AE9C2FCDDD1700DAEA40 /* CardBadge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE592FCDDD1700DAEA40 /* CardBadge.swift */; };
+		7B04AE9D2FCDDD1700DAEA40 /* RequestAuthorizationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE732FCDDD1700DAEA40 /* RequestAuthorizationView.swift */; };
+		7B04AE9E2FCDDD1700DAEA40 /* DefaultToHumanReadable.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE5E2FCDDD1700DAEA40 /* DefaultToHumanReadable.swift */; };
+		7B04AE9F2FCDDD1700DAEA40 /* DocumentModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE612FCDDD1700DAEA40 /* DocumentModel.swift */; };
+		7B04AEA02FCDDD1700DAEA40 /* SmartSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE752FCDDD1700DAEA40 /* SmartSheet.swift */; };
+		7B04AEA12FCDDD1700DAEA40 /* FloatingItemList.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE692FCDDD1700DAEA40 /* FloatingItemList.swift */; };
+		7B04AEA22FCDDD1700DAEA40 /* CardCarousel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE5A2FCDDD1700DAEA40 /* CardCarousel.swift */; };
+		7B04AEA32FCDDD1700DAEA40 /* MdocProximityQrSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE6C2FCDDD1700DAEA40 /* MdocProximityQrSettings.swift */; };
+		7B04AEA42FCDDD1700DAEA40 /* CardInfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE5B2FCDDD1700DAEA40 /* CardInfo.swift */; };
+		7B04AEA52FCDDD1700DAEA40 /* VerticalCardList.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE772FCDDD1700DAEA40 /* VerticalCardList.swift */; };
+		7B04AEA62FCDDD1700DAEA40 /* FloatingItemHeadingAndText.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE682FCDDD1700DAEA40 /* FloatingItemHeadingAndText.swift */; };
+		7B04AEA72FCDDD1700DAEA40 /* MdocProximityQrPresentment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE6B2FCDDD1700DAEA40 /* MdocProximityQrPresentment.swift */; };
+		7B04AEA82FCDDD1700DAEA40 /* PromptModelExt.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE702FCDDD1700DAEA40 /* PromptModelExt.swift */; };
+		7B04AEA92FCDDD1700DAEA40 /* FloatingItemText.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE6A2FCDDD1700DAEA40 /* FloatingItemText.swift */; };
+		7B04AEAA2FCDDD1700DAEA40 /* FloatingItemContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE642FCDDD1700DAEA40 /* FloatingItemContainer.swift */; };
+		7B04AEAB2FCDDD1700DAEA40 /* X509CertViewer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE782FCDDD1700DAEA40 /* X509CertViewer.swift */; };
+		7B04AEAC2FCDDD1700DAEA40 /* PassphrasePromptDialog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE6E2FCDDD1700DAEA40 /* PassphrasePromptDialog.swift */; };
+		7B04AEAD2FCDDD1700DAEA40 /* SimplePresentmentSourceExt.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE742FCDDD1700DAEA40 /* SimplePresentmentSourceExt.swift */; };
+		7B04AEAE2FCDDD1700DAEA40 /* QrCode.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE722FCDDD1700DAEA40 /* QrCode.swift */; };
+		7B04AEAF2FCDDD1700DAEA40 /* FloatingItemHeadingAndDateTime.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE672FCDDD1700DAEA40 /* FloatingItemHeadingAndDateTime.swift */; };
+		7B04AEB02FCDDD1700DAEA40 /* Consent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE5C2FCDDD1700DAEA40 /* Consent.swift */; };
+		7B04AEB12FCDDD1700DAEA40 /* PassphraseInputView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE6D2FCDDD1700DAEA40 /* PassphraseInputView.swift */; };
+		7B04AEB22FCDDD1700DAEA40 /* FloatingItemHeadingAndContent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE652FCDDD1700DAEA40 /* FloatingItemHeadingAndContent.swift */; };
+		7B04AEB32FCDDD1700DAEA40 /* ConsentPromptDialog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE5D2FCDDD1700DAEA40 /* ConsentPromptDialog.swift */; };
+		7B04AEB42FCDDD1700DAEA40 /* ProvisioningView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE712FCDDD1700DAEA40 /* ProvisioningView.swift */; };
+		7B04AEB52FCDDD1700DAEA40 /* PromptDialogs.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE6F2FCDDD1700DAEA40 /* PromptDialogs.swift */; };
+		7B04AEB62FCDDD1700DAEA40 /* DocumentExtCardart.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE602FCDDD1700DAEA40 /* DocumentExtCardart.swift */; };
+		7B04AEB72FCDDD1700DAEA40 /* TagsExt.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE762FCDDD1700DAEA40 /* TagsExt.swift */; };
+		7B04AEB82FCDDD1700DAEA40 /* DocumentExt.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE5F2FCDDD1700DAEA40 /* DocumentExt.swift */; };
+		7B04AEB92FCDDD1700DAEA40 /* FloatingItemCenteredText.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B04AE632FCDDD1700DAEA40 /* FloatingItemCenteredText.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -41,6 +105,38 @@
 		512DAECF2F2A31B30061F72B /* IdentityDocumentProviderExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.extensionkit-extension"; includeInIndex = 0; path = IdentityDocumentProviderExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		51BD5C5C2F22604F0082DE19 /* AdditionalConfig.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = AdditionalConfig.xcconfig; path = ../testapp/iosApp/AdditionalConfig.xcconfig; sourceTree = SOURCE_ROOT; };
 		51BD5C5D2F22604F0082DE19 /* DeveloperConfig.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = DeveloperConfig.xcconfig; path = ../testapp/iosApp/DeveloperConfig.xcconfig; sourceTree = SOURCE_ROOT; };
+		7B04AE592FCDDD1700DAEA40 /* CardBadge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CardBadge.swift; sourceTree = "<group>"; };
+		7B04AE5A2FCDDD1700DAEA40 /* CardCarousel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CardCarousel.swift; sourceTree = "<group>"; };
+		7B04AE5B2FCDDD1700DAEA40 /* CardInfo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CardInfo.swift; sourceTree = "<group>"; };
+		7B04AE5C2FCDDD1700DAEA40 /* Consent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Consent.swift; sourceTree = "<group>"; };
+		7B04AE5D2FCDDD1700DAEA40 /* ConsentPromptDialog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConsentPromptDialog.swift; sourceTree = "<group>"; };
+		7B04AE5E2FCDDD1700DAEA40 /* DefaultToHumanReadable.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DefaultToHumanReadable.swift; sourceTree = "<group>"; };
+		7B04AE5F2FCDDD1700DAEA40 /* DocumentExt.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentExt.swift; sourceTree = "<group>"; };
+		7B04AE602FCDDD1700DAEA40 /* DocumentExtCardart.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentExtCardart.swift; sourceTree = "<group>"; };
+		7B04AE612FCDDD1700DAEA40 /* DocumentModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentModel.swift; sourceTree = "<group>"; };
+		7B04AE622FCDDD1700DAEA40 /* Extensions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Extensions.swift; sourceTree = "<group>"; };
+		7B04AE632FCDDD1700DAEA40 /* FloatingItemCenteredText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloatingItemCenteredText.swift; sourceTree = "<group>"; };
+		7B04AE642FCDDD1700DAEA40 /* FloatingItemContainer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloatingItemContainer.swift; sourceTree = "<group>"; };
+		7B04AE652FCDDD1700DAEA40 /* FloatingItemHeadingAndContent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloatingItemHeadingAndContent.swift; sourceTree = "<group>"; };
+		7B04AE662FCDDD1700DAEA40 /* FloatingItemHeadingAndDate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloatingItemHeadingAndDate.swift; sourceTree = "<group>"; };
+		7B04AE672FCDDD1700DAEA40 /* FloatingItemHeadingAndDateTime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloatingItemHeadingAndDateTime.swift; sourceTree = "<group>"; };
+		7B04AE682FCDDD1700DAEA40 /* FloatingItemHeadingAndText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloatingItemHeadingAndText.swift; sourceTree = "<group>"; };
+		7B04AE692FCDDD1700DAEA40 /* FloatingItemList.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloatingItemList.swift; sourceTree = "<group>"; };
+		7B04AE6A2FCDDD1700DAEA40 /* FloatingItemText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloatingItemText.swift; sourceTree = "<group>"; };
+		7B04AE6B2FCDDD1700DAEA40 /* MdocProximityQrPresentment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MdocProximityQrPresentment.swift; sourceTree = "<group>"; };
+		7B04AE6C2FCDDD1700DAEA40 /* MdocProximityQrSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MdocProximityQrSettings.swift; sourceTree = "<group>"; };
+		7B04AE6D2FCDDD1700DAEA40 /* PassphraseInputView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PassphraseInputView.swift; sourceTree = "<group>"; };
+		7B04AE6E2FCDDD1700DAEA40 /* PassphrasePromptDialog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PassphrasePromptDialog.swift; sourceTree = "<group>"; };
+		7B04AE6F2FCDDD1700DAEA40 /* PromptDialogs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PromptDialogs.swift; sourceTree = "<group>"; };
+		7B04AE702FCDDD1700DAEA40 /* PromptModelExt.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PromptModelExt.swift; sourceTree = "<group>"; };
+		7B04AE712FCDDD1700DAEA40 /* ProvisioningView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProvisioningView.swift; sourceTree = "<group>"; };
+		7B04AE722FCDDD1700DAEA40 /* QrCode.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QrCode.swift; sourceTree = "<group>"; };
+		7B04AE732FCDDD1700DAEA40 /* RequestAuthorizationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RequestAuthorizationView.swift; sourceTree = "<group>"; };
+		7B04AE742FCDDD1700DAEA40 /* SimplePresentmentSourceExt.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimplePresentmentSourceExt.swift; sourceTree = "<group>"; };
+		7B04AE752FCDDD1700DAEA40 /* SmartSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmartSheet.swift; sourceTree = "<group>"; };
+		7B04AE762FCDDD1700DAEA40 /* TagsExt.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TagsExt.swift; sourceTree = "<group>"; };
+		7B04AE772FCDDD1700DAEA40 /* VerticalCardList.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VerticalCardList.swift; sourceTree = "<group>"; };
+		7B04AE782FCDDD1700DAEA40 /* X509CertViewer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = X509CertViewer.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -77,12 +173,6 @@
 			path = IdentityDocumentProviderExtension;
 			sourceTree = "<group>";
 		};
-		7B10E6842F76CB4900B05767 /* swift */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			name = swift;
-			path = "/Users/zeuthen/StudioProjects/multipaz/multipaz-swiftui/src/iosMain/swift";
-			sourceTree = "<absolute>";
-		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -106,7 +196,7 @@
 		51100E5E2F21D4A5006B2ADD = {
 			isa = PBXGroup;
 			children = (
-				7B10E6842F76CB4900B05767 /* swift */,
+				7B04AE792FCDDD1700DAEA40 /* swift */,
 				51BD5C5C2F22604F0082DE19 /* AdditionalConfig.xcconfig */,
 				51BD5C5D2F22604F0082DE19 /* DeveloperConfig.xcconfig */,
 				51100E692F21D4A5006B2ADD /* SwiftTestApp */,
@@ -132,6 +222,46 @@
 			name = Frameworks;
 			sourceTree = "<group>";
 		};
+		7B04AE792FCDDD1700DAEA40 /* swift */ = {
+			isa = PBXGroup;
+			children = (
+				7B04AE592FCDDD1700DAEA40 /* CardBadge.swift */,
+				7B04AE5A2FCDDD1700DAEA40 /* CardCarousel.swift */,
+				7B04AE5B2FCDDD1700DAEA40 /* CardInfo.swift */,
+				7B04AE5C2FCDDD1700DAEA40 /* Consent.swift */,
+				7B04AE5D2FCDDD1700DAEA40 /* ConsentPromptDialog.swift */,
+				7B04AE5E2FCDDD1700DAEA40 /* DefaultToHumanReadable.swift */,
+				7B04AE5F2FCDDD1700DAEA40 /* DocumentExt.swift */,
+				7B04AE602FCDDD1700DAEA40 /* DocumentExtCardart.swift */,
+				7B04AE612FCDDD1700DAEA40 /* DocumentModel.swift */,
+				7B04AE622FCDDD1700DAEA40 /* Extensions.swift */,
+				7B04AE632FCDDD1700DAEA40 /* FloatingItemCenteredText.swift */,
+				7B04AE642FCDDD1700DAEA40 /* FloatingItemContainer.swift */,
+				7B04AE652FCDDD1700DAEA40 /* FloatingItemHeadingAndContent.swift */,
+				7B04AE662FCDDD1700DAEA40 /* FloatingItemHeadingAndDate.swift */,
+				7B04AE672FCDDD1700DAEA40 /* FloatingItemHeadingAndDateTime.swift */,
+				7B04AE682FCDDD1700DAEA40 /* FloatingItemHeadingAndText.swift */,
+				7B04AE692FCDDD1700DAEA40 /* FloatingItemList.swift */,
+				7B04AE6A2FCDDD1700DAEA40 /* FloatingItemText.swift */,
+				7B04AE6B2FCDDD1700DAEA40 /* MdocProximityQrPresentment.swift */,
+				7B04AE6C2FCDDD1700DAEA40 /* MdocProximityQrSettings.swift */,
+				7B04AE6D2FCDDD1700DAEA40 /* PassphraseInputView.swift */,
+				7B04AE6E2FCDDD1700DAEA40 /* PassphrasePromptDialog.swift */,
+				7B04AE6F2FCDDD1700DAEA40 /* PromptDialogs.swift */,
+				7B04AE702FCDDD1700DAEA40 /* PromptModelExt.swift */,
+				7B04AE712FCDDD1700DAEA40 /* ProvisioningView.swift */,
+				7B04AE722FCDDD1700DAEA40 /* QrCode.swift */,
+				7B04AE732FCDDD1700DAEA40 /* RequestAuthorizationView.swift */,
+				7B04AE742FCDDD1700DAEA40 /* SimplePresentmentSourceExt.swift */,
+				7B04AE752FCDDD1700DAEA40 /* SmartSheet.swift */,
+				7B04AE762FCDDD1700DAEA40 /* TagsExt.swift */,
+				7B04AE772FCDDD1700DAEA40 /* VerticalCardList.swift */,
+				7B04AE782FCDDD1700DAEA40 /* X509CertViewer.swift */,
+			);
+			name = swift;
+			path = "/Users/zeuthen/StudioProjects/multipaz/multipaz-swiftui/src/iosMain/swift";
+			sourceTree = "<absolute>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -152,7 +282,6 @@
 			);
 			fileSystemSynchronizedGroups = (
 				51100E692F21D4A5006B2ADD /* SwiftTestApp */,
-				7B10E6842F76CB4900B05767 /* swift */,
 			);
 			name = SwiftTestApp;
 			packageProductDependencies = (
@@ -176,7 +305,6 @@
 			);
 			fileSystemSynchronizedGroups = (
 				512DAED02F2A31B30061F72B /* IdentityDocumentProviderExtension */,
-				7B10E6842F76CB4900B05767 /* swift */,
 			);
 			name = IdentityDocumentProviderExtension;
 			packageProductDependencies = (
@@ -290,6 +418,38 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				7B04AE9A2FCDDD1700DAEA40 /* FloatingItemHeadingAndDate.swift in Sources */,
+				7B04AE9B2FCDDD1700DAEA40 /* Extensions.swift in Sources */,
+				7B04AE9C2FCDDD1700DAEA40 /* CardBadge.swift in Sources */,
+				7B04AE9D2FCDDD1700DAEA40 /* RequestAuthorizationView.swift in Sources */,
+				7B04AE9E2FCDDD1700DAEA40 /* DefaultToHumanReadable.swift in Sources */,
+				7B04AE9F2FCDDD1700DAEA40 /* DocumentModel.swift in Sources */,
+				7B04AEA02FCDDD1700DAEA40 /* SmartSheet.swift in Sources */,
+				7B04AEA12FCDDD1700DAEA40 /* FloatingItemList.swift in Sources */,
+				7B04AEA22FCDDD1700DAEA40 /* CardCarousel.swift in Sources */,
+				7B04AEA32FCDDD1700DAEA40 /* MdocProximityQrSettings.swift in Sources */,
+				7B04AEA42FCDDD1700DAEA40 /* CardInfo.swift in Sources */,
+				7B04AEA52FCDDD1700DAEA40 /* VerticalCardList.swift in Sources */,
+				7B04AEA62FCDDD1700DAEA40 /* FloatingItemHeadingAndText.swift in Sources */,
+				7B04AEA72FCDDD1700DAEA40 /* MdocProximityQrPresentment.swift in Sources */,
+				7B04AEA82FCDDD1700DAEA40 /* PromptModelExt.swift in Sources */,
+				7B04AEA92FCDDD1700DAEA40 /* FloatingItemText.swift in Sources */,
+				7B04AEAA2FCDDD1700DAEA40 /* FloatingItemContainer.swift in Sources */,
+				7B04AEAB2FCDDD1700DAEA40 /* X509CertViewer.swift in Sources */,
+				7B04AEAC2FCDDD1700DAEA40 /* PassphrasePromptDialog.swift in Sources */,
+				7B04AEAD2FCDDD1700DAEA40 /* SimplePresentmentSourceExt.swift in Sources */,
+				7B04AEAE2FCDDD1700DAEA40 /* QrCode.swift in Sources */,
+				7B04AEAF2FCDDD1700DAEA40 /* FloatingItemHeadingAndDateTime.swift in Sources */,
+				7B04AEB02FCDDD1700DAEA40 /* Consent.swift in Sources */,
+				7B04AEB12FCDDD1700DAEA40 /* PassphraseInputView.swift in Sources */,
+				7B04AEB22FCDDD1700DAEA40 /* FloatingItemHeadingAndContent.swift in Sources */,
+				7B04AEB32FCDDD1700DAEA40 /* ConsentPromptDialog.swift in Sources */,
+				7B04AEB42FCDDD1700DAEA40 /* ProvisioningView.swift in Sources */,
+				7B04AEB52FCDDD1700DAEA40 /* PromptDialogs.swift in Sources */,
+				7B04AEB62FCDDD1700DAEA40 /* DocumentExtCardart.swift in Sources */,
+				7B04AEB72FCDDD1700DAEA40 /* TagsExt.swift in Sources */,
+				7B04AEB82FCDDD1700DAEA40 /* DocumentExt.swift in Sources */,
+				7B04AEB92FCDDD1700DAEA40 /* FloatingItemCenteredText.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -297,6 +457,38 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				7B04AE7A2FCDDD1700DAEA40 /* FloatingItemHeadingAndDate.swift in Sources */,
+				7B04AE7B2FCDDD1700DAEA40 /* Extensions.swift in Sources */,
+				7B04AE7C2FCDDD1700DAEA40 /* CardBadge.swift in Sources */,
+				7B04AE7D2FCDDD1700DAEA40 /* RequestAuthorizationView.swift in Sources */,
+				7B04AE7E2FCDDD1700DAEA40 /* DefaultToHumanReadable.swift in Sources */,
+				7B04AE7F2FCDDD1700DAEA40 /* DocumentModel.swift in Sources */,
+				7B04AE802FCDDD1700DAEA40 /* SmartSheet.swift in Sources */,
+				7B04AE812FCDDD1700DAEA40 /* FloatingItemList.swift in Sources */,
+				7B04AE822FCDDD1700DAEA40 /* CardCarousel.swift in Sources */,
+				7B04AE832FCDDD1700DAEA40 /* MdocProximityQrSettings.swift in Sources */,
+				7B04AE842FCDDD1700DAEA40 /* CardInfo.swift in Sources */,
+				7B04AE852FCDDD1700DAEA40 /* VerticalCardList.swift in Sources */,
+				7B04AE862FCDDD1700DAEA40 /* FloatingItemHeadingAndText.swift in Sources */,
+				7B04AE872FCDDD1700DAEA40 /* MdocProximityQrPresentment.swift in Sources */,
+				7B04AE882FCDDD1700DAEA40 /* PromptModelExt.swift in Sources */,
+				7B04AE892FCDDD1700DAEA40 /* FloatingItemText.swift in Sources */,
+				7B04AE8A2FCDDD1700DAEA40 /* FloatingItemContainer.swift in Sources */,
+				7B04AE8B2FCDDD1700DAEA40 /* X509CertViewer.swift in Sources */,
+				7B04AE8C2FCDDD1700DAEA40 /* PassphrasePromptDialog.swift in Sources */,
+				7B04AE8D2FCDDD1700DAEA40 /* SimplePresentmentSourceExt.swift in Sources */,
+				7B04AE8E2FCDDD1700DAEA40 /* QrCode.swift in Sources */,
+				7B04AE8F2FCDDD1700DAEA40 /* FloatingItemHeadingAndDateTime.swift in Sources */,
+				7B04AE902FCDDD1700DAEA40 /* Consent.swift in Sources */,
+				7B04AE912FCDDD1700DAEA40 /* PassphraseInputView.swift in Sources */,
+				7B04AE922FCDDD1700DAEA40 /* FloatingItemHeadingAndContent.swift in Sources */,
+				7B04AE932FCDDD1700DAEA40 /* ConsentPromptDialog.swift in Sources */,
+				7B04AE942FCDDD1700DAEA40 /* ProvisioningView.swift in Sources */,
+				7B04AE952FCDDD1700DAEA40 /* PromptDialogs.swift in Sources */,
+				7B04AE962FCDDD1700DAEA40 /* DocumentExtCardart.swift in Sources */,
+				7B04AE972FCDDD1700DAEA40 /* TagsExt.swift in Sources */,
+				7B04AE982FCDDD1700DAEA40 /* DocumentExt.swift in Sources */,
+				7B04AE992FCDDD1700DAEA40 /* FloatingItemCenteredText.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

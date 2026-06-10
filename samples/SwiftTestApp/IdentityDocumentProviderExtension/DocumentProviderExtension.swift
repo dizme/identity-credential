@@ -26,10 +26,8 @@ func getPresentmentSource() async -> PresentmentSource {
         .add(secureArea: softwareSecureArea)
         .build()
     let documentTypeRepository = DocumentTypeRepository()
-    documentTypeRepository.addDocumentType(documentType: DrivingLicense.shared.getDocumentType())
-    documentTypeRepository.addDocumentType(documentType: PhotoID.shared.getDocumentType())
-    documentTypeRepository.addDocumentType(documentType: AgeVerification.shared.getDocumentType())
-    documentTypeRepository.addDocumentType(documentType: EUPersonalID.shared.getDocumentType())
+    documentTypeRepository.addKnownTypes(locale: LocalizedStrings.shared.getCurrentLocale())
+    documentTypeRepository.addUtopiaTypes(locale: LocalizedStrings.shared.getCurrentLocale())
     let documentStore = DocumentStore.Builder(
         storage: storage,
         secureAreaRepository: secureAreaRepository
@@ -38,31 +36,13 @@ func getPresentmentSource() async -> PresentmentSource {
     let readerTrustManager = TrustManager(storage: storage, identifier: "default", partitionId: "default_default")
     
     let zkSystemRepository = ZkSystemRepository()
-    // TODO: the RAM limit for IdentityDocumentProvider is 120 MB and Longfellow uses
-    //   just under 500MB. So we need to disable it for now. One possible work-around
-    //   is for Apple to increase the limit, another is to move the proof generation
-    //   to another process and do IPC.
-    /*
+    // Note: the RAM limit for IdentityDocumentProvider is 120 MB as of iOS 26 and
+    //   Longfellow v0.9 uses around ~200MB. So until Apple increases the RAM limit
+    //   for this extension ZKP will likely not work.
+    //
     let longfellow = LongfellowZkSystem()
-    let circuitFilenames = [
-        "6_1_4096_2945_137e5a75ce72735a37c8a72da1a8a0a5df8d13365c2ae3d2c2bd6a0e7197c7c6",
-        "6_2_4025_2945_b4bb6f01b7043f4f51d8302a30b36e3d4d2d0efc3c24557ab9212ad524a9764e",
-        "6_3_4121_2945_b2211223b954b34a1081e3fbf71b8ea2de28efc888b4be510f532d6ba76c2010",
-        "6_4_4283_2945_c70b5f44a1365c53847eb8948ad5b4fdc224251a2bc02d958c84c862823c49d6"
-    ]
-    for filename in circuitFilenames {
-        let url = Bundle.main.url(
-            forResource: filename,
-            withExtension: ""
-        )
-        let data = try! Data(contentsOf: url!)
-        longfellow.addCircuit(
-            circuitFilename: filename,
-            circuitBytes: ByteString(bytes: data.toByteArray())
-        )
-    }
+    longfellow.addDefaultCircuits()
     zkSystemRepository.add(zkSystem: longfellow)
-     */
     return SimplePresentmentSource.companion.create(
         documentStore: documentStore,
         documentTypeRepository: documentTypeRepository,
@@ -79,17 +59,20 @@ func getPresentmentSource() async -> PresentmentSource {
             }
             return nil
         },
-        showConsentPromptFn: { requester, trustMetadata, credentialPresentmentData, preselectedDocuments, onDocumentsInFocus in
+        showConsentPromptFn: { requester, trustMetadata, consentData, preselectedDocuments, onDocumentsInFocus in
             try! await promptModelSilentConsent(
                 requester: requester,
                 trustMetadata: trustMetadata,
-                credentialPresentmentData: credentialPresentmentData,
+                consentData: consentData,
                 preselectedDocuments: preselectedDocuments,
                 onDocumentsInFocus: { documents in onDocumentsInFocus(documents) }
             )
         },
         preferSignatureToKeyAgreement: false,
-        domainsMdocSignature: ["mdoc"]
+        domainsMdocSignature: ["mdoc_user_auth", "mdoc_no_user_auth"],
+        domainsMdocKeyAgreement: [],
+        domainsKeylessSdJwt: ["sdjwt_keyless"],
+        domainsKeyBoundSdJwt: ["sdjwt_user_auth", "sdjwt_no_user_auth"]
     )
 }
 

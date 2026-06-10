@@ -28,13 +28,38 @@ abstract class LokalizeExtension @Inject constructor(objects: ObjectFactory) {
     val llModel: Property<LLmModel> = objects.property(LLmModel::class.java)
 
     /**
-     * Base directory for string resources.
-     * Default: "src/commonMain/composeResources"
-     *
-     * Example values:
-     * - "src/commonMain/composeResources" (KMP Compose)
-     * - "src/main/res" (Android only)
-     * - "src/commonMain/resources" (Custom path)
-     */
-    val resourcesDir: Property<String> = objects.property(String::class.java)
+ * Base directory for string resources.
+ * Default: "src/commonMain/composeResources"
+ *
+ * Example values:
+ * - "src/commonMain/composeResources" (KMP Compose)
+ * - "src/main/res" (Android only)
+ * - "src/commonMain/resources" (Custom path)
+ */
+val resourcesDir: Property<String> = objects.property(String::class.java)
+
+/**
+ * Output format for generated resource files.
+ * - XML: Android strings.xml format (default)
+ * - JSON: JSON format with nested key support
+ *
+ * Default: XML
+ */
+val outputFormat: Property<OutputFormat> = objects.property(OutputFormat::class.java)
+.apply { set(OutputFormat.XML) }
+
+/**
+ * Package name used for the generated translations access object
+ * (`GeneratedTranslations.kt` and per-language `Strings_*.kt` files).
+ *
+ * Default: `org.multipaz.doctypes.generated`
+ */
+val generatedTranslationsPackageName: Property<String> = objects.property(String::class.java)
+
+/**
+ * Package name used for the generated `GeneratedStringKeys` object.
+ *
+ * Default: `org.multipaz.doctypes.localization`
+ */
+val stringKeysPackageName: Property<String> = objects.property(String::class.java)
 }

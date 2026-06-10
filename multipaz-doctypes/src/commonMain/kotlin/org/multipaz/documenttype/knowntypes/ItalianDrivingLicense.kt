@@ -38,8 +38,8 @@ object ItalianDrivingLicense {
                 "First name(s), other name(s), or secondary identifier, of the mDL holder",
                 true,
                 MDL_NAMESPACE,
-                Icon.PERSON,
-                SampleData.GIVEN_NAME.toDataItem()
+                icon = Icon.PERSON,
+                sampleValue = SampleData.GIVEN_NAME.toDataItem()
             )
             .addMdocAttribute(
                 DocumentAttributeType.String,
@@ -48,8 +48,8 @@ object ItalianDrivingLicense {
                 "Last name, surname, or primary identifier, of the mDL holder.",
                 true,
                 MDL_NAMESPACE,
-                Icon.PERSON,
-                SampleData.FAMILY_NAME.toDataItem()
+                icon = Icon.PERSON,
+                sampleValue = SampleData.FAMILY_NAME.toDataItem()
             )
             .addMdocAttribute(
                 DocumentAttributeType.Date,
@@ -58,8 +58,8 @@ object ItalianDrivingLicense {
                 "Day, month and year on which the mDL holder was born. If unknown, approximate date of birth",
                 true,
                 MDL_NAMESPACE,
-                Icon.TODAY,
-                LocalDate.parse(SampleData.BIRTH_DATE).toDataItemFullDate()
+                icon = Icon.TODAY,
+                sampleValue = LocalDate.parse(SampleData.BIRTH_DATE).toDataItemFullDate()
             )
             .addMdocAttribute(
                 DocumentAttributeType.String,
@@ -68,8 +68,8 @@ object ItalianDrivingLicense {
                 "Country and municipality or state/province where the mDL holder was born",
                 false,
                 MDL_NAMESPACE,
-                Icon.PLACE,
-                SampleData.BIRTH_PLACE.toDataItem()
+                icon = Icon.PLACE,
+                sampleValue = SampleData.BIRTH_PLACE.toDataItem()
             )
             .addMdocAttribute(
                 DocumentAttributeType.Date,
@@ -78,8 +78,8 @@ object ItalianDrivingLicense {
                 "Date when mDL was issued",
                 true,
                 MDL_NAMESPACE,
-                Icon.DATE_RANGE,
-                LocalDate.parse(SampleData.ISSUE_DATE).toDataItemFullDate()
+                icon = Icon.DATE_RANGE,
+                sampleValue = LocalDate.parse(SampleData.ISSUE_DATE).toDataItemFullDate()
             )
             .addMdocAttribute(
                 DocumentAttributeType.StringOptions(Options.COUNTRY_ISO_3166_1_ALPHA_2),
@@ -88,8 +88,8 @@ object ItalianDrivingLicense {
                 "Alpha-2 country code, as defined in ISO 3166-1, of the issuing authority’s country or territory",
                 true,
                 MDL_NAMESPACE,
-                Icon.ACCOUNT_BALANCE,
-                SampleData.ISSUING_COUNTRY.toDataItem()
+                icon = Icon.ACCOUNT_BALANCE,
+                sampleValue = SampleData.ISSUING_COUNTRY.toDataItem()
             )
             .addMdocAttribute(
                 DocumentAttributeType.String,
@@ -98,8 +98,8 @@ object ItalianDrivingLicense {
                 "Issuing authority name.",
                 true,
                 MDL_NAMESPACE,
-                Icon.ACCOUNT_BALANCE,
-                SampleData.ISSUING_AUTHORITY_MDL.toDataItem()
+                icon = Icon.ACCOUNT_BALANCE,
+                sampleValue = SampleData.ISSUING_AUTHORITY_MDL.toDataItem()
             )
             .addMdocAttribute(
                 DocumentAttributeType.Date,
@@ -108,8 +108,8 @@ object ItalianDrivingLicense {
                 "Date when mDL expires",
                 true,
                 MDL_NAMESPACE,
-                Icon.CALENDAR_CLOCK,
-                LocalDate.parse(SampleData.EXPIRY_DATE).toDataItemFullDate()
+                icon = Icon.CALENDAR_CLOCK,
+                sampleValue = LocalDate.parse(SampleData.EXPIRY_DATE).toDataItemFullDate()
             )
             .addMdocAttribute(
                 DocumentAttributeType.String,
@@ -118,8 +118,8 @@ object ItalianDrivingLicense {
                 "The number assigned or calculated by the issuing authority.",
                 true,
                 MDL_NAMESPACE,
-                Icon.NUMBERS,
-                SampleData.DOCUMENT_NUMBER.toDataItem()
+                icon = Icon.NUMBERS,
+                sampleValue = SampleData.DOCUMENT_NUMBER.toDataItem()
             )
             .addMdocAttribute(
                 DocumentAttributeType.Picture,
@@ -128,8 +128,8 @@ object ItalianDrivingLicense {
                 "A reproduction of the mDL holder’s portrait.",
                 true,
                 MDL_NAMESPACE,
-                Icon.ACCOUNT_BOX,
-                SampleData.PORTRAIT_BASE64URL.fromBase64Url().toDataItem()
+                icon = Icon.ACCOUNT_BOX,
+                sampleValue = SampleData.PORTRAIT_BASE64URL.fromBase64Url().toDataItem()
             )
             .addMdocAttribute(
                 DocumentAttributeType.ComplexType,
@@ -138,8 +138,8 @@ object ItalianDrivingLicense {
                 "Driving privileges of the mDL holder",
                 true,
                 MDL_NAMESPACE,
-                Icon.DIRECTIONS_CAR,
-                buildCborArray {
+                icon = Icon.DIRECTIONS_CAR,
+                sampleValue = buildCborArray {
                     addCborMap {
                         put("vehicle_category_code", "A")
                         put("issue_date", Tagged(1004, Tstr("2018-08-09")))
@@ -159,8 +159,8 @@ object ItalianDrivingLicense {
                 "Distinguishing sign of the issuing country",
                 true,
                 MDL_NAMESPACE,
-                Icon.LANGUAGE,
-                SampleData.UN_DISTINGUISHING_SIGN.toDataItem()
+                icon = Icon.LANGUAGE,
+                sampleValue = SampleData.UN_DISTINGUISHING_SIGN.toDataItem()
             )
             .addMdocAttribute(
                 DocumentAttributeType.String,
@@ -169,8 +169,8 @@ object ItalianDrivingLicense {
                 "The place where the mDL holder resides and/or may be contacted (street/house number, municipality etc.)",
                 false,
                 MDL_NAMESPACE,
-                Icon.PLACE,
-                SampleData.RESIDENT_ADDRESS.toDataItem()
+                icon = Icon.PLACE,
+                sampleValue = SampleData.RESIDENT_ADDRESS.toDataItem()
             )
             .addMdocAttribute(
                 DocumentAttributeType.Date,
@@ -179,8 +179,8 @@ object ItalianDrivingLicense {
                 "Date when portrait was taken",
                 false,
                 MDL_NAMESPACE,
-                Icon.TODAY,
-                LocalDate.parse(SampleData.PORTRAIT_CAPTURE_DATE).toDataItemFullDate()
+                icon = Icon.TODAY,
+                sampleValue = LocalDate.parse(SampleData.PORTRAIT_CAPTURE_DATE).toDataItemFullDate()
             )
             .addMdocAttribute(
                 DocumentAttributeType.Number,
@@ -189,8 +189,8 @@ object ItalianDrivingLicense {
                 "The age of the mDL holder",
                 false,
                 MDL_NAMESPACE,
-                Icon.TODAY,
-                SampleData.AGE_IN_YEARS.toDataItem()
+                icon = Icon.TODAY,
+                sampleValue = SampleData.AGE_IN_YEARS.toDataItem()
             )
             .addMdocAttribute(
                 DocumentAttributeType.Number,
@@ -199,8 +199,8 @@ object ItalianDrivingLicense {
                 "The year when the mDL holder was born",
                 false,
                 MDL_NAMESPACE,
-                Icon.TODAY,
-                SampleData.AGE_BIRTH_YEAR.toDataItem()
+                icon = Icon.TODAY,
+                sampleValue = SampleData.AGE_BIRTH_YEAR.toDataItem()
             )
             .addMdocAttribute(
                 DocumentAttributeType.Boolean,
@@ -209,8 +209,8 @@ object ItalianDrivingLicense {
                 "Indication whether the mDL holder is as old or older than 13",
                 false,
                 MDL_NAMESPACE,
-                Icon.TODAY,
-                SampleData.AGE_OVER_13.toDataItem()
+                icon = Icon.TODAY,
+                sampleValue = SampleData.AGE_OVER_13.toDataItem()
             )
             .addMdocAttribute(
                 DocumentAttributeType.Boolean,
@@ -219,8 +219,8 @@ object ItalianDrivingLicense {
                 "Indication whether the mDL holder is as old or older than 16",
                 false,
                 MDL_NAMESPACE,
-                Icon.TODAY,
-                SampleData.AGE_OVER_16.toDataItem()
+                icon = Icon.TODAY,
+                sampleValue = SampleData.AGE_OVER_16.toDataItem()
             )
             .addMdocAttribute(
                 DocumentAttributeType.Boolean,
@@ -229,8 +229,8 @@ object ItalianDrivingLicense {
                 "Indication whether the mDL holder is as old or older than 18",
                 false,
                 MDL_NAMESPACE,
-                Icon.TODAY,
-                SampleData.AGE_OVER_18.toDataItem()
+                icon = Icon.TODAY,
+                sampleValue = SampleData.AGE_OVER_18.toDataItem()
             )
             .addMdocAttribute(
                 DocumentAttributeType.Boolean,
@@ -239,8 +239,8 @@ object ItalianDrivingLicense {
                 "Indication whether the mDL holder is as old or older than 21",
                 false,
                 MDL_NAMESPACE,
-                Icon.TODAY,
-                SampleData.AGE_OVER_21.toDataItem()
+                icon = Icon.TODAY,
+                sampleValue = SampleData.AGE_OVER_21.toDataItem()
             )
             .addMdocAttribute(
                 DocumentAttributeType.Boolean,
@@ -249,8 +249,8 @@ object ItalianDrivingLicense {
                 "Indication whether the mDL holder is as old or older than 25",
                 false,
                 MDL_NAMESPACE,
-                Icon.TODAY,
-                SampleData.AGE_OVER_25.toDataItem()
+                icon = Icon.TODAY,
+                sampleValue = SampleData.AGE_OVER_25.toDataItem()
             )
             .addMdocAttribute(
                 DocumentAttributeType.Boolean,
@@ -259,8 +259,8 @@ object ItalianDrivingLicense {
                 "Indication whether the mDL holder is as old or older than 60",
                 false,
                 MDL_NAMESPACE,
-                Icon.TODAY,
-                SampleData.AGE_OVER_60.toDataItem()
+                icon = Icon.TODAY,
+                sampleValue = SampleData.AGE_OVER_60.toDataItem()
             )
             .addMdocAttribute(
                 DocumentAttributeType.Boolean,
@@ -269,8 +269,8 @@ object ItalianDrivingLicense {
                 "Indication whether the mDL holder is as old or older than 62",
                 false,
                 MDL_NAMESPACE,
-                Icon.TODAY,
-                SampleData.AGE_OVER_62.toDataItem()
+                icon = Icon.TODAY,
+                sampleValue = SampleData.AGE_OVER_62.toDataItem()
             )
             .addMdocAttribute(
                 DocumentAttributeType.Boolean,
@@ -279,8 +279,8 @@ object ItalianDrivingLicense {
                 "Indication whether the mDL holder is as old or older than 65",
                 false,
                 MDL_NAMESPACE,
-                Icon.TODAY,
-                SampleData.AGE_OVER_65.toDataItem()
+                icon = Icon.TODAY,
+                sampleValue = SampleData.AGE_OVER_65.toDataItem()
             )
             .addMdocAttribute(
                 DocumentAttributeType.Boolean,
@@ -289,8 +289,8 @@ object ItalianDrivingLicense {
                 "Indication whether the mDL holder is as old or older than 68",
                 false,
                 MDL_NAMESPACE,
-                Icon.TODAY,
-                SampleData.AGE_OVER_68.toDataItem()
+                icon = Icon.TODAY,
+                sampleValue = SampleData.AGE_OVER_68.toDataItem()
             )
             .addMdocAttribute(
                 DocumentAttributeType.String,
@@ -299,8 +299,8 @@ object ItalianDrivingLicense {
                 "Country subdivision code of the jurisdiction that issued the mDL",
                 false,
                 MDL_NAMESPACE,
-                Icon.ACCOUNT_BALANCE,
-                SampleData.ISSUING_JURISDICTION.toDataItem()
+                icon = Icon.ACCOUNT_BALANCE,
+                sampleValue = SampleData.ISSUING_JURISDICTION.toDataItem()
             )
             .addMdocAttribute(
                 DocumentAttributeType.StringOptions(Options.COUNTRY_ISO_3166_1_ALPHA_2),
@@ -309,8 +309,8 @@ object ItalianDrivingLicense {
                 "Nationality of the mDL holder",
                 false,
                 MDL_NAMESPACE,
-                Icon.LANGUAGE,
-                SampleData.NATIONALITY.toDataItem()
+                icon = Icon.LANGUAGE,
+                sampleValue = SampleData.NATIONALITY.toDataItem()
             )
             .addMdocAttribute(
                 DocumentAttributeType.String,
@@ -319,8 +319,8 @@ object ItalianDrivingLicense {
                 "The city where the mDL holder lives",
                 false,
                 MDL_NAMESPACE,
-                Icon.PLACE,
-                SampleData.RESIDENT_CITY.toDataItem()
+                icon = Icon.PLACE,
+                sampleValue = SampleData.RESIDENT_CITY.toDataItem()
             )
             .addMdocAttribute(
                 DocumentAttributeType.String,
@@ -329,8 +329,8 @@ object ItalianDrivingLicense {
                 "The state/province/district where the mDL holder lives",
                 false,
                 MDL_NAMESPACE,
-                Icon.PLACE,
-                SampleData.RESIDENT_STATE.toDataItem()
+                icon = Icon.PLACE,
+                sampleValue = SampleData.RESIDENT_STATE.toDataItem()
             )
             .addMdocAttribute(
                 DocumentAttributeType.String,
@@ -339,8 +339,8 @@ object ItalianDrivingLicense {
                 "The postal code of the mDL holder",
                 false,
                 MDL_NAMESPACE,
-                Icon.PLACE,
-                SampleData.RESIDENT_POSTAL_CODE.toDataItem()
+                icon = Icon.PLACE,
+                sampleValue = SampleData.RESIDENT_POSTAL_CODE.toDataItem()
             )
             .addMdocAttribute(
                 DocumentAttributeType.StringOptions(Options.COUNTRY_ISO_3166_1_ALPHA_2),
@@ -349,8 +349,8 @@ object ItalianDrivingLicense {
                 "The country where the mDL holder lives",
                 false,
                 MDL_NAMESPACE,
-                Icon.PLACE,
-                SampleData.RESIDENT_COUNTRY.toDataItem()
+                icon = Icon.PLACE,
+                sampleValue = SampleData.RESIDENT_COUNTRY.toDataItem()
             )
             .addMdocAttribute(
                 DocumentAttributeType.String,
@@ -359,8 +359,8 @@ object ItalianDrivingLicense {
                 "The family name of the mDL holder",
                 false,
                 MDL_NAMESPACE,
-                Icon.PERSON,
-                SampleData.FAMILY_NAME_NATIONAL_CHARACTER.toDataItem()
+                icon = Icon.PERSON,
+                sampleValue = SampleData.FAMILY_NAME_NATIONAL_CHARACTER.toDataItem()
             )
             .addMdocAttribute(
                 DocumentAttributeType.String,
@@ -369,8 +369,8 @@ object ItalianDrivingLicense {
                 "The given name of the mDL holder",
                 false,
                 MDL_NAMESPACE,
-                Icon.PERSON,
-                SampleData.GIVEN_NAMES_NATIONAL_CHARACTER.toDataItem()
+                icon = Icon.PERSON,
+                sampleValue = SampleData.GIVEN_NAMES_NATIONAL_CHARACTER.toDataItem()
             )
             .addMdocAttribute(
                 DocumentAttributeType.Picture,
@@ -379,8 +379,8 @@ object ItalianDrivingLicense {
                 "Image of the signature or usual mark of the mDL holder,",
                 false,
                 MDL_NAMESPACE,
-                Icon.SIGNATURE,
-                SampleData.SIGNATURE_OR_USUAL_MARK_BASE64URL.fromBase64Url().toDataItem()
+                icon = Icon.SIGNATURE,
+                sampleValue = SampleData.SIGNATURE_OR_USUAL_MARK_BASE64URL.fromBase64Url().toDataItem()
             )
             /*
              * Now the attributes that are specific to the Italian mDL
@@ -392,8 +392,8 @@ object ItalianDrivingLicense {
                 "Identifier of the mDL holder in the form of a UUID",
                 true,
                 IT_NAMESPACE,
-                Icon.PERSON,
-                "c4974181-3e94-4a0a-9ac2-c408560fc649".toDataItem()
+                icon = Icon.PERSON,
+                sampleValue = "c4974181-3e94-4a0a-9ac2-c408560fc649".toDataItem()
             )
             .addMdocAttribute(
                 DocumentAttributeType.ComplexType,
@@ -402,8 +402,8 @@ object ItalianDrivingLicense {
                 "User authentication and data verification information",
                 false,
                 IT_NAMESPACE,
-                Icon.PERSON,
-                buildCborArray {
+                icon = Icon.PERSON,
+                sampleValue = buildCborArray {
                     addCborMap {
                         put("trust_framework", "it_cie")
                         put("assurance_level", "high")
@@ -431,8 +431,8 @@ object ItalianDrivingLicense {
                 "Document Issuing authority name.",
                 true,
                 IT_NAMESPACE,
-                Icon.ACCOUNT_BALANCE,
-                SampleData.ISSUING_AUTHORITY_MDL.toDataItem()
+                icon = Icon.ACCOUNT_BALANCE,
+                sampleValue = SampleData.ISSUING_AUTHORITY_MDL.toDataItem()
             )
             .addMdocAttribute(
                 DocumentAttributeType.StringOptions(Options.COUNTRY_ISO_3166_1_ALPHA_2),
@@ -441,8 +441,8 @@ object ItalianDrivingLicense {
                 "Alpha-2 country code, as defined in ISO 3166-1, of the issuing authority’s country or territory",
                 true,
                 IT_NAMESPACE,
-                Icon.ACCOUNT_BALANCE,
-                SampleData.ISSUING_COUNTRY.toDataItem()
+                icon = Icon.ACCOUNT_BALANCE,
+                sampleValue = SampleData.ISSUING_COUNTRY.toDataItem()
             )
             /*
              * Now all the available requests for this document type.

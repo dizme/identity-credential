@@ -5,11 +5,20 @@ import kotlinx.datetime.LocalDate
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.atStartOfDayIn
 import kotlinx.io.bytestring.ByteString
+import kotlinx.io.bytestring.decodeToString
+import kotlinx.serialization.ExperimentalSerializationApi
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.jsonPrimitive
 import org.multipaz.asn1.ASN1Integer
+import org.multipaz.cbor.Bstr
 import org.multipaz.cbor.Cbor
 import org.multipaz.cbor.DataItem
 import org.multipaz.cbor.DiagnosticOption
 import org.multipaz.cbor.Simple
+import org.multipaz.cbor.Tagged
 import org.multipaz.cbor.buildCborArray
 import org.multipaz.cbor.toDataItem
 import org.multipaz.cose.Cose
@@ -25,6 +34,7 @@ import org.multipaz.crypto.X509CertChain
 import org.multipaz.document.Document
 import org.multipaz.document.buildDocumentStore
 import org.multipaz.documenttype.knowntypes.DrivingLicense
+import org.multipaz.documenttype.knowntypes.EUPersonalID
 import org.multipaz.documenttype.knowntypes.PhotoID
 import org.multipaz.mdoc.TestVectors
 import org.multipaz.mdoc.credential.MdocCredential
@@ -34,6 +44,9 @@ import org.multipaz.mdoc.util.MdocUtil
 import org.multipaz.mdoc.zkp.ZkDocument
 import org.multipaz.mdoc.zkp.ZkDocumentData
 import org.multipaz.request.MdocRequestedClaim
+import org.multipaz.sdjwt.SdJwt
+import org.multipaz.sdjwt.SdJwtKb
+import org.multipaz.sdjwt.credential.KeyBoundSdJwtVcCredential
 import org.multipaz.securearea.CreateKeySettings
 import org.multipaz.securearea.SecureAreaRepository
 import org.multipaz.securearea.software.SoftwareSecureArea
@@ -41,13 +54,18 @@ import org.multipaz.storage.Storage
 import org.multipaz.storage.ephemeral.EphemeralStorage
 import org.multipaz.util.Logger
 import org.multipaz.util.fromHex
+import org.multipaz.util.toBase64Url
+import org.multipaz.util.zlibDeflate
+import org.multipaz.util.zlibInflate
 import kotlin.experimental.xor
 import kotlin.random.Random
 import kotlin.test.BeforeTest
 import kotlin.test.Test
+import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import kotlin.time.Clock
 import kotlin.time.Duration.Companion.days
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Instant
@@ -69,13 +87,19 @@ class DeviceResponseTest {
     private lateinit var mdlTimeValidityEnd: Instant
     private lateinit var mdlTimeExpectedUpdate: Instant
 
-
     private lateinit var photoIdDocument: Document
     private lateinit var photoIdCredential: MdocCredential
     private lateinit var photoIdTimeSigned: Instant
     private lateinit var photoIdTimeValidityBegin: Instant
     private lateinit var photoIdTimeValidityEnd: Instant
     private lateinit var photoIdTimeExpectedUpdate: Instant
+
+    private lateinit var euPidDsKey: EcPrivateKey
+    private lateinit var euPidDocument: Document
+    private lateinit var euPidCredential: KeyBoundSdJwtVcCredential
+    private lateinit var euPidTimeSigned: Instant
+    private lateinit var euPidTimeValidityBegin: Instant
+    private lateinit var euPidTimeValidityEnd: Instant
 
     @BeforeTest
     fun setup() = runTest {
@@ -178,6 +202,34 @@ class DeviceResponseTest {
             validUntil = photoIdTimeValidityEnd,
             expectedUpdate = photoIdTimeExpectedUpdate,
             domain = "mdoc_sign",
+            randomProvider = randomProvider
+        )
+
+        euPidDsKey = Crypto.createEcPrivateKey(EcCurve.P256)
+        val euPidDsValidFrom = iacaValidFrom
+        val euPidDsValidUntil = iacaValidUntil
+        val euPidDsCert = MdocUtil.generateDsCertificate(
+            iacaKey = AsymmetricKey.X509CertifiedExplicit(X509CertChain(listOf(iacaCert)), iacaKey),
+            dsKey = euPidDsKey.publicKey,
+            subject = X500Name.fromName("C=US,CN=euPid DS test key"),
+            serial = ASN1Integer.fromRandom(128, random = randomProvider),
+            validFrom = euPidDsValidFrom,
+            validUntil = euPidDsValidUntil
+        )
+        euPidTimeSigned = LocalDate.parse("2025-12-01").atStartOfDayIn(TimeZone.UTC)
+        euPidTimeValidityBegin = euPidTimeSigned
+        euPidTimeValidityEnd = euPidTimeSigned + 30.days
+
+        euPidDocument = documentStore.createDocument()
+        euPidCredential = EUPersonalID.getDocumentType().createKeyBoundSdJwtVcCredentialWithSampleData(
+            document = euPidDocument,
+            secureArea = softwareSecureArea,
+            createKeySettings = CreateKeySettings(algorithm = Algorithm.ESP256),
+            dsKey = AsymmetricKey.X509CertifiedExplicit(X509CertChain(listOf(euPidDsCert)), euPidDsKey),
+            signedAt = euPidTimeSigned,
+            validFrom = euPidTimeValidityBegin,
+            validUntil = euPidTimeValidityEnd,
+            domain = "sdjwtvc_sign",
             randomProvider = randomProvider
         )
     }
@@ -399,7 +451,7 @@ class DeviceResponseTest {
         dr[2916 + 16] = dr[2916 + 16].xor(0xff.toByte())
         val drParsed = DeviceResponse.fromDataItem(Cbor.decode(dr))
         assertEquals(
-            "Signature on MSO failed to verify",
+            "Signature verification failed",
             assertFailsWith(IllegalStateException::class) {
                 drParsed.verify(
                     sessionTranscript = sessionTranscript,
@@ -418,7 +470,7 @@ class DeviceResponseTest {
         dr[3612 + 16] = dr[3612 + 16].xor(0xff.toByte())
         val drParsed = DeviceResponse.fromDataItem(Cbor.decode(dr))
         assertEquals(
-            "Device authentication signature failed to verify",
+            "Signature verification failed",
             assertFailsWith(IllegalStateException::class) {
                 drParsed.verify(
                     sessionTranscript = sessionTranscript,
@@ -444,7 +496,7 @@ class DeviceResponseTest {
                     sessionTranscript = sessionTranscript,
                     atTime = mdlTimeValidityBegin
                 )
-            }.cause!!.message
+            }.message
         )
     }
 
@@ -465,7 +517,7 @@ class DeviceResponseTest {
                     sessionTranscript = sessionTranscript,
                     atTime = mdlTimeValidityBegin
                 )
-            }.cause!!.message
+            }.message
         )
     }
 
@@ -529,8 +581,8 @@ class DeviceResponseTest {
 
         // verify() should fail if eReaderKey isn't passed
         assertEquals(
-            "Error verifying document 0 in DeviceResponse",
-            assertFailsWith(IllegalStateException::class) {
+            "Device authentication is MAC but eReaderKey was not set",
+            assertFailsWith(IllegalArgumentException::class) {
                 drParsed.verify(
                     sessionTranscript = sessionTranscript,
                     atTime = mdlTimeValidityBegin
@@ -565,7 +617,7 @@ class DeviceResponseTest {
                     eReaderKey = AsymmetricKey.AnonymousExplicit(eReaderKey, Algorithm.ECDH_P256),
                     atTime = mdlTimeValidityBegin
                 )
-            }.cause!!.message
+            }.message
         )
     }
 
@@ -605,7 +657,7 @@ class DeviceResponseTest {
                     sessionTranscript = sessionTranscript,
                     atTime = mdlTimeValidityBegin - 10.seconds
                 )
-            }.cause!!.message
+            }.message
         )
         assertEquals(
             "MSO is not valid anymore",
@@ -614,7 +666,7 @@ class DeviceResponseTest {
                     sessionTranscript = sessionTranscript,
                     atTime = mdlTimeValidityEnd + 10.seconds
                 )
-            }.cause!!.message
+            }.message
         )
     }
 
@@ -698,13 +750,13 @@ class DeviceResponseTest {
             """
                 {
                   "org.iso.23220.1": [24(<< {
-                    "digestID": 34,
-                    "random": h'1373eb313c9cb6252f2343c1840d133d',
+                    "digestID": 35,
+                    "random": h'ff4f6a83adf75071a2666f94a5b7412b',
                     "elementIdentifier": "family_name",
                     "elementValue": "Mustermann"
                   } >>), 24(<< {
-                    "digestID": 32,
-                    "random": h'e15d2404105d7a163dbd5b2af37c3e3c',
+                    "digestID": 4,
+                    "random": h'f6c860d47511d198e9a1b4ee69d6d66e',
                     "elementIdentifier": "given_name",
                     "elementValue": "Erika"
                   } >>)]
@@ -903,7 +955,7 @@ class DeviceResponseTest {
         val sessionTranscript = buildCborArray { add(Simple.NULL); add(Simple.NULL); add(byteArrayOf(1, 2, 3)) }
 
         val encryptionKey = Crypto.createEcPrivateKey(EcCurve.P256)
-        val encryptionParameters = EncryptionParameters(
+        val encryptionParameters = EncryptionParameters.fromValues(
             recipientPublicKey = encryptionKey.publicKey,
         )
 
@@ -944,7 +996,7 @@ class DeviceResponseTest {
         assertEquals(0, drParsed.zkDocuments.size)
         assertEquals(1, drParsed.encryptedDocuments.size)
 
-        // Check that EncryptedDocuments.encrypt() verifies the decrypted documents
+        // Check that EncryptedDocuments.decrypt() verifies the decrypted documents
         assertEquals(
             "MSO is not yet valid",
             assertFailsWith(IllegalStateException::class) {
@@ -965,6 +1017,7 @@ class DeviceResponseTest {
         )
         assertEquals(1, encDocs.documents.size)
         assertEquals(0, encDocs.zkDocuments.size)
+        assertEquals(0, encDocs.otherDocuments.size)
 
         assertEquals(DrivingLicense.MDL_DOCTYPE, encDocs.documents[0].docType)
         assertEquals(
@@ -988,5 +1041,164 @@ class DeviceResponseTest {
                 setOf(DiagnosticOption.PRETTY_PRINT)
             )
         )
+    }
+
+    @OptIn(ExperimentalSerializationApi::class)
+    @Test
+    fun encryptedDocumentsWithOtherDocument() = runTest {
+        provisionDocuments()
+        val sessionTranscript = buildCborArray { add(Simple.NULL); add(Simple.NULL); add(byteArrayOf(1, 2, 3)) }
+
+        val encryptionKey = Crypto.createEcPrivateKey(EcCurve.P256)
+        val encryptionParameters = EncryptionParameters.fromValues(
+            recipientPublicKey = encryptionKey.publicKey,
+        )
+
+        val sdJwtVc = SdJwt.fromCompactSerialization(euPidCredential.issuerProvidedData.decodeToString())
+        val encSessionTranscript = buildCborArray {
+            add(sessionTranscript.asArray[0])
+            add(Tagged(
+                tagNumber = Tagged.ENCODED_CBOR,
+                taggedItem = Bstr(Cbor.encode(encryptionParameters.dataItem))
+            ))
+            add(sessionTranscript.asArray[2])
+        }
+        val encSessionTranscriptBytes = Tagged(
+            tagNumber = Tagged.ENCODED_CBOR,
+            taggedItem = Bstr(Cbor.encode(encSessionTranscript))
+        )
+        val compactSerialization = sdJwtVc
+            .filter(
+                pathsToInclude = listOf(
+                    buildJsonArray { add(JsonPrimitive("given_name")) },
+                    buildJsonArray { add(JsonPrimitive("family_name")) },
+                    buildJsonArray { add(JsonPrimitive("age_equal_or_over")); add(JsonPrimitive("18")) }
+                )
+            )
+            .present(
+            signingKey = AsymmetricKey.AnonymousSecureAreaBased(
+                alias = euPidCredential.alias,
+                secureArea = euPidCredential.secureArea,
+                keyInfo = euPidCredential.secureArea.getKeyInfo(euPidCredential.alias),
+            ),
+            nonce = Crypto.digest(Algorithm.SHA256, Cbor.encode(encSessionTranscriptBytes)).toBase64Url(),
+            audience = "none",
+            creationTime = euPidTimeSigned,
+        ).compactSerialization
+
+        val deviceResponse = buildDeviceResponse(
+            sessionTranscript = sessionTranscript,
+            status = DeviceResponse.STATUS_OK,
+        ) {
+            addEncryptedDocuments(
+                encryptionParameters = encryptionParameters,
+                docRequestId = 1
+            ) {
+                addOtherDocument(
+                    OtherDocument(
+                        docFormat = "sd-jwt+kb",
+                        data = ByteString(compactSerialization.encodeToByteArray().zlibDeflate())
+                    )
+                )
+            }
+        }
+        assertEquals("1.1", deviceResponse.version)
+        val encodedDeviceResponse = Cbor.encode(deviceResponse.toDataItem())
+        val drParsed = DeviceResponse.fromDataItem(Cbor.decode(encodedDeviceResponse))
+        assertEquals(drParsed, deviceResponse)
+
+        drParsed.verify(sessionTranscript)
+        assertEquals(0, drParsed.documents.size)
+        assertEquals(0, drParsed.zkDocuments.size)
+        assertEquals(1, drParsed.encryptedDocuments.size)
+
+        // Check that EncryptedDocuments.decrypt() verifies the decrypted documents
+        assertEquals(
+            "Failed verification of creationTime",
+            assertFailsWith(IllegalStateException::class) {
+                val encDocs = drParsed.encryptedDocuments[0].decrypt(
+                    recipientPrivateKey = AsymmetricKey.AnonymousExplicit(encryptionKey),
+                    encryptionParameters = encryptionParameters,
+                    sessionTranscript = sessionTranscript,
+                    atTime = LocalDate.parse("2021-01-01").atStartOfDayIn(TimeZone.UTC)
+                )
+            }.cause!!.message
+        )
+
+        val encDocs = drParsed.encryptedDocuments[0].decrypt(
+            recipientPrivateKey = AsymmetricKey.AnonymousExplicit(encryptionKey),
+            encryptionParameters = encryptionParameters,
+            sessionTranscript = sessionTranscript,
+            atTime = euPidTimeSigned
+        )
+        assertEquals(0, encDocs.documents.size)
+        assertEquals(0, encDocs.zkDocuments.size)
+        assertEquals(1, encDocs.otherDocuments.size)
+
+        assertEquals("sd-jwt+kb", encDocs.otherDocuments[0].docFormat)
+        val sdJwtKbCompactSerialization = encDocs.otherDocuments[0].data.toByteArray().zlibInflate().decodeToString()
+        val processedPayload = SdJwtKb.fromCompactSerialization(sdJwtKbCompactSerialization)
+            .verify(
+                issuerKey = euPidDsKey.publicKey,
+                checkNonce = { nonce -> true },
+                checkAudience = { aud -> true },
+                checkCreationTime = { creationTime -> true },
+                transactionData = emptyList()
+            )
+        val kbKeyJwk = euPidCredential.secureArea.getKeyInfo(euPidCredential.alias).publicKey.toJwk()
+        assertEquals(
+            """
+                {
+                  "iss": "https://example-issuer.com",
+                  "vct": "urn:eudi:pid:1",
+                  "iat": 1764547200,
+                  "nbf": 1764547200,
+                  "exp": 1767139200,
+                  "cnf": {
+                    "jwk": {
+                      "crv": "P-256",
+                      "kty": "EC",
+                      "x": "${kbKeyJwk["x"]!!.jsonPrimitive.content}",
+                      "y": "${kbKeyJwk["y"]!!.jsonPrimitive.content}"
+                    }
+                  },
+                  "family_name": "Mustermann",
+                  "given_name": "Erika",
+                  "age_equal_or_over": {
+                    "18": true
+                  }
+                }
+            """.trimIndent(),
+            Json {
+                prettyPrint = true
+                prettyPrintIndent = "  "
+            }.encodeToString(processedPayload)
+        )
+    }
+
+    @Test
+    fun otherDocuments() = runTest {
+        provisionDocuments()
+        val sessionTranscript = buildCborArray { add(Simple.NULL); add(Simple.NULL); add(byteArrayOf(1, 2, 3)) }
+
+        val deviceResponse = buildDeviceResponse(
+            sessionTranscript = sessionTranscript,
+            status = DeviceResponse.STATUS_OK,
+        ) {
+            addOtherDocument(
+                otherDocument = OtherDocument(
+                    docFormat = "xyz123-abc",
+                    data = ByteString(byteArrayOf(1, 2, 3).zlibDeflate())
+                )
+            )
+        }
+        assertEquals("1.1", deviceResponse.version)
+        val encodedDeviceResponse = Cbor.encode(deviceResponse.toDataItem())
+        val drParsed = DeviceResponse.fromDataItem(Cbor.decode(encodedDeviceResponse))
+        assertEquals(drParsed, deviceResponse)
+
+        assertEquals(1, drParsed.otherDocuments.size)
+        assertEquals("xyz123-abc", drParsed.otherDocuments[0].docFormat)
+        assertContentEquals(byteArrayOf(1, 2, 3), drParsed.otherDocuments[0].data.toByteArray().zlibInflate())
     }
 }

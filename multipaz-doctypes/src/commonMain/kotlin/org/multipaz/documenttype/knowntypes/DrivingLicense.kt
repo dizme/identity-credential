@@ -16,22 +16,23 @@
 
 package org.multipaz.documenttype.knowntypes
 
+import kotlinx.datetime.LocalDate
+import org.multipaz.cbor.Simple
 import org.multipaz.cbor.Tagged
 import org.multipaz.cbor.Tstr
+import org.multipaz.cbor.addCborMap
+import org.multipaz.cbor.buildCborArray
 import org.multipaz.cbor.toDataItem
 import org.multipaz.cbor.toDataItemFullDate
+import org.multipaz.doctypes.localization.LocalizedStrings
+import org.multipaz.doctypes.localization.GeneratedStringKeys
 import org.multipaz.documenttype.DocumentAttributeType
 import org.multipaz.documenttype.DocumentType
 import org.multipaz.documenttype.Icon
 import org.multipaz.documenttype.IntegerOption
 import org.multipaz.documenttype.StringOption
 import org.multipaz.util.fromBase64Url
-import kotlinx.datetime.LocalDate
-import org.multipaz.cbor.Simple
-import org.multipaz.cbor.addCborMap
-import org.multipaz.cbor.buildCborArray
-import org.multipaz.cbor.buildCborMap
-import org.multipaz.cbor.putCborMap
+import org.multipaz.documenttype.DocumentAttributeSensitivity
 
 /**
  * Object containing the metadata of the Driving License
@@ -45,111 +46,119 @@ object DrivingLicense {
     /**
      * Build the Driving License Document Type. This is ISO mdoc only.
      */
-    fun getDocumentType(): DocumentType {
-        return DocumentType.Builder("Driving license")
+    fun getDocumentType(locale: String = LocalizedStrings.getCurrentLocale()): DocumentType {
+        fun getLocalizedString(key: String) = LocalizedStrings.getString(key, locale)
+
+        return DocumentType.Builder(getLocalizedString(GeneratedStringKeys.DOCUMENT_DISPLAY_NAME_DRIVING_LICENSE))
             .addMdocDocumentType(MDL_DOCTYPE)
             /*
              * First the attributes that the mDL and VC Credential Type have in common
              */
             .addMdocAttribute(
-                DocumentAttributeType.String,
-                "family_name",
-                "Family name",
-                "Last name, surname, or primary identifier, of the mDL holder.",
-                true,
-                MDL_NAMESPACE,
-                Icon.PERSON,
-                SampleData.FAMILY_NAME.toDataItem()
+                type = DocumentAttributeType.String,
+                identifier = "family_name",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_FAMILY_NAME),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_FAMILY_NAME),
+                mandatory = true,
+                mdocNamespace = MDL_NAMESPACE,
+                icon = Icon.PERSON,
+                sampleValue = SampleData.FAMILY_NAME.toDataItem()
             )
             .addMdocAttribute(
-                DocumentAttributeType.String,
-                "given_name",
-                "Given names",
-                "First name(s), other name(s), or secondary identifier, of the mDL holder",
-                true,
-                MDL_NAMESPACE,
-                Icon.PERSON,
-                SampleData.GIVEN_NAME.toDataItem()
+                type = DocumentAttributeType.String,
+                identifier = "given_name",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_GIVEN_NAMES),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_GIVEN_NAMES),
+                mandatory = true,
+                mdocNamespace = MDL_NAMESPACE,
+                icon = Icon.PERSON,
+                sampleValue = SampleData.GIVEN_NAME.toDataItem()
             )
             .addMdocAttribute(
-                DocumentAttributeType.Date,
-                "birth_date",
-                "Date of birth",
-                "Day, month and year on which the mDL holder was born. If unknown, approximate date of birth",
-                true,
-                MDL_NAMESPACE,
-                Icon.TODAY,
-                LocalDate.parse(SampleData.BIRTH_DATE).toDataItemFullDate()
+                type = DocumentAttributeType.Date,
+                identifier = "birth_date",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_DATE_OF_BIRTH),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_DATE_OF_BIRTH),
+                mandatory = true,
+                mdocNamespace = MDL_NAMESPACE,
+                icon = Icon.TODAY,
+                sampleValue = LocalDate.parse(SampleData.BIRTH_DATE).toDataItemFullDate()
             )
             .addMdocAttribute(
-                DocumentAttributeType.Date,
-                "issue_date",
-                "Date of issue",
-                "Date when mDL was issued",
-                true,
-                MDL_NAMESPACE,
-                Icon.DATE_RANGE,
-                LocalDate.parse(SampleData.ISSUE_DATE).toDataItemFullDate()
+                type = DocumentAttributeType.Date,
+                identifier = "issue_date",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_DATE_OF_ISSUE),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_DATE_OF_ISSUE),
+                mandatory = true,
+                mdocNamespace = MDL_NAMESPACE,
+                sensitivity = DocumentAttributeSensitivity.VALIDITY,
+                icon = Icon.DATE_RANGE,
+                sampleValue = LocalDate.parse(SampleData.ISSUE_DATE).toDataItemFullDate()
             )
             .addMdocAttribute(
-                DocumentAttributeType.Date,
-                "expiry_date",
-                "Date of expiry",
-                "Date when mDL expires",
-                true,
-                MDL_NAMESPACE,
-                Icon.CALENDAR_CLOCK,
-                LocalDate.parse(SampleData.EXPIRY_DATE).toDataItemFullDate()
+                type = DocumentAttributeType.Date,
+                identifier = "expiry_date",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_DATE_OF_EXPIRY),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_DATE_OF_EXPIRY),
+                mandatory = true,
+                mdocNamespace = MDL_NAMESPACE,
+                sensitivity = DocumentAttributeSensitivity.VALIDITY,
+                icon = Icon.CALENDAR_CLOCK,
+                sampleValue = LocalDate.parse(SampleData.EXPIRY_DATE).toDataItemFullDate()
             )
             .addMdocAttribute(
-                DocumentAttributeType.StringOptions(Options.COUNTRY_ISO_3166_1_ALPHA_2),
-                "issuing_country",
-                "Issuing country",
-                "Alpha-2 country code, as defined in ISO 3166-1, of the issuing authority’s country or territory",
-                true,
-                MDL_NAMESPACE,
-                Icon.ACCOUNT_BALANCE,
-                SampleData.ISSUING_COUNTRY.toDataItem()
+                type = DocumentAttributeType.StringOptions(Options.COUNTRY_ISO_3166_1_ALPHA_2),
+                identifier = "issuing_country",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_ISSUING_COUNTRY),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_ISSUING_COUNTRY),
+                mandatory = true,
+                mdocNamespace = MDL_NAMESPACE,
+                sensitivity = DocumentAttributeSensitivity.ISSUER,
+                icon = Icon.ACCOUNT_BALANCE,
+                sampleValue = SampleData.ISSUING_COUNTRY.toDataItem()
             )
             .addMdocAttribute(
-                DocumentAttributeType.String,
-                "issuing_authority",
-                "Issuing authority",
-                "Issuing authority name.",
-                true,
-                MDL_NAMESPACE,
-                Icon.ACCOUNT_BALANCE,
-                SampleData.ISSUING_AUTHORITY_MDL.toDataItem()
+                type = DocumentAttributeType.String,
+                identifier = "issuing_authority",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_ISSUING_AUTHORITY),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_ISSUING_AUTHORITY),
+                mandatory = true,
+                mdocNamespace = MDL_NAMESPACE,
+                sensitivity = DocumentAttributeSensitivity.ISSUER,
+                icon = Icon.ACCOUNT_BALANCE,
+                sampleValue = SampleData.ISSUING_AUTHORITY_MDL.toDataItem()
             )
             .addMdocAttribute(
-                DocumentAttributeType.String,
-                "document_number",
-                "License number",
-                "The number assigned or calculated by the issuing authority.",
-                true,
-                MDL_NAMESPACE,
-                Icon.NUMBERS,
-                SampleData.DOCUMENT_NUMBER.toDataItem()
+                type = DocumentAttributeType.String,
+                identifier = "document_number",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_LICENSE_NUMBER),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_LICENSE_NUMBER),
+                mandatory = true,
+                mdocNamespace = MDL_NAMESPACE,
+                icon = Icon.NUMBERS,
+                sampleValue = SampleData.DOCUMENT_NUMBER.toDataItem()
             )
             .addMdocAttribute(
-                DocumentAttributeType.Picture,
-                "portrait",
-                "Photo of holder",
-                "A reproduction of the mDL holder’s portrait.",
-                true,
-                MDL_NAMESPACE,
-                Icon.ACCOUNT_BOX,
-                SampleData.PORTRAIT_BASE64URL.fromBase64Url().toDataItem()
+                type = DocumentAttributeType.Picture,
+                identifier = "portrait",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_PHOTO_OF_HOLDER),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_PHOTO_OF_HOLDER),
+                mandatory = true,
+                mdocNamespace = MDL_NAMESPACE,
+                sensitivity = DocumentAttributeSensitivity.PORTRAIT_IMAGE,
+                icon = Icon.ACCOUNT_BOX,
+                sampleValue = SampleData.PORTRAIT_BASE64URL.fromBase64Url().toDataItem()
             )
             .addMdocAttribute(
-                DocumentAttributeType.ComplexType,
-                "driving_privileges",
-                "Driving privileges",
-                "Driving privileges of the mDL holder",
-                true,
-                MDL_NAMESPACE,
-                Icon.DIRECTIONS_CAR,
-                buildCborArray {
+                type = DocumentAttributeType.ComplexType,
+                identifier = "driving_privileges",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_DRIVING_PRIVILEGES),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_DRIVING_PRIVILEGES),
+                mandatory = true,
+                mdocNamespace = MDL_NAMESPACE,
+                sensitivity = DocumentAttributeSensitivity.VALIDITY,
+                icon = Icon.DIRECTIONS_CAR,
+                sampleValue = buildCborArray {
                     addCborMap {
                         put("vehicle_category_code", "A")
                         put("issue_date", Tagged(Tagged.FULL_DATE_STRING, Tstr("2018-08-09")))
@@ -163,57 +172,58 @@ object DrivingLicense {
                 }
             )
             .addMdocAttribute(
-                DocumentAttributeType.StringOptions(Options.DISTINGUISHING_SIGN_ISO_IEC_18013_1_ANNEX_F),
-                "un_distinguishing_sign",
-                "UN distinguishing sign",
-                "Distinguishing sign of the issuing country",
-                true,
-                MDL_NAMESPACE,
-                Icon.LANGUAGE,
-                SampleData.UN_DISTINGUISHING_SIGN.toDataItem()
+                type = DocumentAttributeType.StringOptions(Options.DISTINGUISHING_SIGN_ISO_IEC_18013_1_ANNEX_F),
+                identifier = "un_distinguishing_sign",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_UN_DISTINGUISHING_SIGN),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_UN_DISTINGUISHING_SIGN),
+                mandatory = true,
+                mdocNamespace = MDL_NAMESPACE,
+                sensitivity = DocumentAttributeSensitivity.ISSUER,
+                icon = Icon.LANGUAGE,
+                sampleValue = SampleData.UN_DISTINGUISHING_SIGN.toDataItem()
             )
             .addMdocAttribute(
-                DocumentAttributeType.String,
-                "administrative_number",
-                "Administrative number",
-                "An audit control number assigned by the issuing authority",
-                false,
-                MDL_NAMESPACE,
-                Icon.NUMBERS,
-                SampleData.ADMINISTRATIVE_NUMBER.toDataItem()
+                type = DocumentAttributeType.String,
+                identifier = "administrative_number",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_ADMINISTRATIVE_NUMBER),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_ADMINISTRATIVE_NUMBER),
+                mandatory = false,
+                mdocNamespace = MDL_NAMESPACE,
+                icon = Icon.NUMBERS,
+                sampleValue = SampleData.ADMINISTRATIVE_NUMBER.toDataItem()
             )
             .addMdocAttribute(
-                DocumentAttributeType.IntegerOptions(Options.SEX_ISO_IEC_5218),
-                "sex",
-                "Sex",
-                "mDL holder’s sex",
-                false,
-                MDL_NAMESPACE,
-                Icon.EMERGENCY,
-                SampleData.SEX_ISO_5218.toDataItem()
+                type = DocumentAttributeType.IntegerOptions(Options.SEX_ISO_IEC_5218),
+                identifier = "sex",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_SEX),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_SEX),
+                mandatory = false,
+                mdocNamespace = MDL_NAMESPACE,
+                icon = Icon.EMERGENCY,
+                sampleValue = SampleData.SEX_ISO_5218.toDataItem()
             )
             .addMdocAttribute(
-                DocumentAttributeType.Number,
-                "height",
-                "Height",
-                "mDL holder’s height in centimetres",
-                false,
-                MDL_NAMESPACE,
-                Icon.EMERGENCY,
-                SampleData.HEIGHT_CM.toDataItem()
+                type = DocumentAttributeType.Number,
+                identifier = "height",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_HEIGHT),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_HEIGHT),
+                mandatory = false,
+                mdocNamespace = MDL_NAMESPACE,
+                icon = Icon.EMERGENCY,
+                sampleValue = SampleData.HEIGHT_CM.toDataItem()
             )
             .addMdocAttribute(
-                DocumentAttributeType.Number,
-                "weight",
-                "Weight",
-                "mDL holder’s weight in kilograms",
-                false,
-                MDL_NAMESPACE,
-                Icon.EMERGENCY,
-                SampleData.WEIGHT_KG.toDataItem()
+                type = DocumentAttributeType.Number,
+                identifier = "weight",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_WEIGHT),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_WEIGHT),
+                mandatory = false,
+                mdocNamespace = MDL_NAMESPACE,
+                icon = Icon.EMERGENCY,
+                sampleValue = SampleData.WEIGHT_KG.toDataItem()
             )
             .addMdocAttribute(
-                DocumentAttributeType.StringOptions(
+                type = DocumentAttributeType.StringOptions(
                     listOf(
                         StringOption(null, "(not set)"),
                         StringOption("black", "Black"),
@@ -228,16 +238,16 @@ object DrivingLicense {
                         StringOption("unknown", "Unknown")
                     )
                 ),
-                "eye_colour",
-                "Eye color",
-                "mDL holder’s eye color",
-                false,
-                MDL_NAMESPACE,
-                Icon.PERSON,
-                "blue".toDataItem()
+                identifier = "eye_colour",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_EYE_COLOR),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_EYE_COLOR),
+                mandatory = false,
+                mdocNamespace = MDL_NAMESPACE,
+                icon = Icon.PERSON,
+                sampleValue = "blue".toDataItem()
             )
             .addMdocAttribute(
-                DocumentAttributeType.StringOptions(
+                type = DocumentAttributeType.StringOptions(
                     listOf(
                         StringOption(null, "(not set)"),
                         StringOption("bald", "Bald"),
@@ -252,296 +262,308 @@ object DrivingLicense {
                         StringOption("unknown", "Unknown"),
                     )
                 ),
-                "hair_colour",
-                "Hair color",
-                "mDL holder’s hair color",
-                false,
-                MDL_NAMESPACE,
-                Icon.PERSON,
-                "blond".toDataItem()
+                identifier = "hair_colour",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_HAIR_COLOR),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_HAIR_COLOR),
+                mandatory = false,
+                mdocNamespace = MDL_NAMESPACE,
+                icon = Icon.PERSON,
+                sampleValue = "blond".toDataItem()
             )
             .addMdocAttribute(
-                DocumentAttributeType.String,
-                "birth_place",
-                "Place of birth",
-                "Country and municipality or state/province where the mDL holder was born",
-                false,
-                MDL_NAMESPACE,
-                Icon.PLACE,
-                SampleData.BIRTH_PLACE.toDataItem()
+                type = DocumentAttributeType.String,
+                identifier = "birth_place",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_PLACE_OF_BIRTH),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_PLACE_OF_BIRTH),
+                mandatory = false,
+                mdocNamespace = MDL_NAMESPACE,
+                icon = Icon.PLACE,
+                sampleValue = SampleData.BIRTH_PLACE.toDataItem()
             )
             .addMdocAttribute(
-                DocumentAttributeType.String,
-                "resident_address",
-                "Resident address",
-                "The place where the mDL holder resides and/or may be contacted (street/house number, municipality etc.)",
-                false,
-                MDL_NAMESPACE,
-                Icon.PLACE,
-                SampleData.RESIDENT_ADDRESS.toDataItem()
+                type = DocumentAttributeType.String,
+                identifier = "resident_address",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_RESIDENT_ADDRESS),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_RESIDENT_ADDRESS),
+                mandatory = false,
+                mdocNamespace = MDL_NAMESPACE,
+                icon = Icon.PLACE,
+                sampleValue = SampleData.RESIDENT_ADDRESS.toDataItem()
             )
             .addMdocAttribute(
-                DocumentAttributeType.Date,
-                "portrait_capture_date",
-                "Portrait image timestamp",
-                "Date when portrait was taken",
-                false,
-                MDL_NAMESPACE,
-                Icon.TODAY,
-                LocalDate.parse(SampleData.PORTRAIT_CAPTURE_DATE).toDataItemFullDate()
+                type = DocumentAttributeType.Date,
+                identifier = "portrait_capture_date",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_PORTRAIT_IMAGE_TIMESTAMP),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_PORTRAIT_IMAGE_TIMESTAMP),
+                mandatory = false,
+                mdocNamespace = MDL_NAMESPACE,
+                icon = Icon.TODAY,
+                sampleValue = LocalDate.parse(SampleData.PORTRAIT_CAPTURE_DATE).toDataItemFullDate()
             )
             .addMdocAttribute(
-                DocumentAttributeType.Number,
-                "age_in_years",
-                "Age in years",
-                "The age of the mDL holder",
-                false,
-                MDL_NAMESPACE,
-                Icon.TODAY,
-                SampleData.AGE_IN_YEARS.toDataItem()
+                type = DocumentAttributeType.Number,
+                identifier = "age_in_years",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_AGE_IN_YEARS),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_AGE_IN_YEARS),
+                mandatory = false,
+                mdocNamespace = MDL_NAMESPACE,
+                sensitivity = DocumentAttributeSensitivity.AGE_INFORMATION,
+                icon = Icon.TODAY,
+                sampleValue = SampleData.AGE_IN_YEARS.toDataItem()
             )
             .addMdocAttribute(
-                DocumentAttributeType.Number,
-                "age_birth_year",
-                "Year of birth",
-                "The year when the mDL holder was born",
-                false,
-                MDL_NAMESPACE,
-                Icon.TODAY,
-                SampleData.AGE_BIRTH_YEAR.toDataItem()
+                type = DocumentAttributeType.Number,
+                identifier = "age_birth_year",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_YEAR_OF_BIRTH),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_YEAR_OF_BIRTH),
+                mandatory = false,
+                mdocNamespace = MDL_NAMESPACE,
+                sensitivity = DocumentAttributeSensitivity.AGE_INFORMATION,
+                icon = Icon.TODAY,
+                sampleValue = SampleData.AGE_BIRTH_YEAR.toDataItem()
             )
             .addMdocAttribute(
-                DocumentAttributeType.Boolean,
-                "age_over_13",
-                "Older than 13 years",
-                "Indication whether the mDL holder is as old or older than 13",
-                false,
-                MDL_NAMESPACE,
-                Icon.TODAY,
-                SampleData.AGE_OVER_13.toDataItem()
+                type = DocumentAttributeType.Boolean,
+                identifier = "age_over_13",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_OLDER_THAN_13),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_OLDER_THAN_13),
+                mandatory = false,
+                mdocNamespace = MDL_NAMESPACE,
+                sensitivity = DocumentAttributeSensitivity.AGE_INFORMATION,
+                icon = Icon.TODAY,
+                sampleValue = SampleData.AGE_OVER_13.toDataItem()
             )
             .addMdocAttribute(
-                DocumentAttributeType.Boolean,
-                "age_over_16",
-                "Older than 16 years",
-                "Indication whether the mDL holder is as old or older than 16",
-                false,
-                MDL_NAMESPACE,
-                Icon.TODAY,
-                SampleData.AGE_OVER_16.toDataItem()
+                type = DocumentAttributeType.Boolean,
+                identifier = "age_over_16",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_OLDER_THAN_16),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_OLDER_THAN_16),
+                mandatory = false,
+                mdocNamespace = MDL_NAMESPACE,
+                sensitivity = DocumentAttributeSensitivity.AGE_INFORMATION,
+                icon = Icon.TODAY,
+                sampleValue = SampleData.AGE_OVER_16.toDataItem()
             )
             .addMdocAttribute(
-                DocumentAttributeType.Boolean,
-                "age_over_18",
-                "Older than 18 years",
-                "Indication whether the mDL holder is as old or older than 18",
-                false,
-                MDL_NAMESPACE,
-                Icon.TODAY,
-                SampleData.AGE_OVER_18.toDataItem()
+                type = DocumentAttributeType.Boolean,
+                identifier = "age_over_18",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_OLDER_THAN_18),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_OLDER_THAN_18),
+                mandatory = false,
+                mdocNamespace = MDL_NAMESPACE,
+                sensitivity = DocumentAttributeSensitivity.AGE_INFORMATION,
+                icon = Icon.TODAY,
+                sampleValue = SampleData.AGE_OVER_18.toDataItem()
             )
             .addMdocAttribute(
-                DocumentAttributeType.Boolean,
-                "age_over_21",
-                "Older than 21 years",
-                "Indication whether the mDL holder is as old or older than 21",
-                false,
-                MDL_NAMESPACE,
-                Icon.TODAY,
-                SampleData.AGE_OVER_21.toDataItem()
+                type = DocumentAttributeType.Boolean,
+                identifier = "age_over_21",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_OLDER_THAN_21),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_OLDER_THAN_21),
+                mandatory = false,
+                mdocNamespace = MDL_NAMESPACE,
+                sensitivity = DocumentAttributeSensitivity.AGE_INFORMATION,
+                icon = Icon.TODAY,
+                sampleValue = SampleData.AGE_OVER_21.toDataItem()
             )
             .addMdocAttribute(
-                DocumentAttributeType.Boolean,
-                "age_over_25",
-                "Older than 25 years",
-                "Indication whether the mDL holder is as old or older than 25",
-                false,
-                MDL_NAMESPACE,
-                Icon.TODAY,
-                SampleData.AGE_OVER_25.toDataItem()
+                type = DocumentAttributeType.Boolean,
+                identifier = "age_over_25",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_OLDER_THAN_25),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_OLDER_THAN_25),
+                mandatory = false,
+                mdocNamespace = MDL_NAMESPACE,
+                sensitivity = DocumentAttributeSensitivity.AGE_INFORMATION,
+                icon = Icon.TODAY,
+                sampleValue = SampleData.AGE_OVER_25.toDataItem()
             )
             .addMdocAttribute(
-                DocumentAttributeType.Boolean,
-                "age_over_60",
-                "Older than 60 years",
-                "Indication whether the mDL holder is as old or older than 60",
-                false,
-                MDL_NAMESPACE,
-                Icon.TODAY,
-                SampleData.AGE_OVER_60.toDataItem()
+                type = DocumentAttributeType.Boolean,
+                identifier = "age_over_60",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_OLDER_THAN_60),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_OLDER_THAN_60),
+                mandatory = false,
+                mdocNamespace = MDL_NAMESPACE,
+                sensitivity = DocumentAttributeSensitivity.AGE_INFORMATION,
+                icon = Icon.TODAY,
+                sampleValue = SampleData.AGE_OVER_60.toDataItem()
             )
             .addMdocAttribute(
-                DocumentAttributeType.Boolean,
-                "age_over_62",
-                "Older than 62 years",
-                "Indication whether the mDL holder is as old or older than 62",
-                false,
-                MDL_NAMESPACE,
-                Icon.TODAY,
-                SampleData.AGE_OVER_62.toDataItem()
+                type = DocumentAttributeType.Boolean,
+                identifier = "age_over_62",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_OLDER_THAN_62),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_OLDER_THAN_62),
+                mandatory = false,
+                mdocNamespace = MDL_NAMESPACE,
+                sensitivity = DocumentAttributeSensitivity.AGE_INFORMATION,
+                icon = Icon.TODAY,
+                sampleValue = SampleData.AGE_OVER_62.toDataItem()
             )
             .addMdocAttribute(
-                DocumentAttributeType.Boolean,
-                "age_over_65",
-                "Older than 65 years",
-                "Indication whether the mDL holder is as old or older than 65",
-                false,
-                MDL_NAMESPACE,
-                Icon.TODAY,
-                SampleData.AGE_OVER_65.toDataItem()
+                type = DocumentAttributeType.Boolean,
+                identifier = "age_over_65",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_OLDER_THAN_65),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_OLDER_THAN_65),
+                mandatory = false,
+                mdocNamespace = MDL_NAMESPACE,
+                sensitivity = DocumentAttributeSensitivity.AGE_INFORMATION,
+                icon = Icon.TODAY,
+                sampleValue = SampleData.AGE_OVER_65.toDataItem()
             )
             .addMdocAttribute(
-                DocumentAttributeType.Boolean,
-                "age_over_68",
-                "Older than 68 years",
-                "Indication whether the mDL holder is as old or older than 68",
-                false,
-                MDL_NAMESPACE,
-                Icon.TODAY,
-                SampleData.AGE_OVER_68.toDataItem()
+                type = DocumentAttributeType.Boolean,
+                identifier = "age_over_68",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_OLDER_THAN_68),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_OLDER_THAN_68),
+                mandatory = false,
+                mdocNamespace = MDL_NAMESPACE,
+                sensitivity = DocumentAttributeSensitivity.AGE_INFORMATION,
+                icon = Icon.TODAY,
+                sampleValue = SampleData.AGE_OVER_68.toDataItem()
             )
             .addMdocAttribute(
-                DocumentAttributeType.String,
-                "issuing_jurisdiction",
-                "Issuing jurisdiction",
-                "Country subdivision code of the jurisdiction that issued the mDL",
-                false,
-                MDL_NAMESPACE,
-                Icon.ACCOUNT_BALANCE,
-                SampleData.ISSUING_JURISDICTION.toDataItem()
+                type = DocumentAttributeType.String,
+                identifier = "issuing_jurisdiction",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_ISSUING_JURISDICTION),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_ISSUING_JURISDICTION),
+                mandatory = false,
+                mdocNamespace = MDL_NAMESPACE,
+                sensitivity = DocumentAttributeSensitivity.ISSUER,
+                icon = Icon.ACCOUNT_BALANCE,
+                sampleValue = SampleData.ISSUING_JURISDICTION.toDataItem()
             )
             .addMdocAttribute(
-                DocumentAttributeType.StringOptions(Options.COUNTRY_ISO_3166_1_ALPHA_2),
-                "nationality",
-                "Nationality",
-                "Nationality of the mDL holder",
-                false,
-                MDL_NAMESPACE,
-                Icon.LANGUAGE,
-                SampleData.NATIONALITY.toDataItem()
+                type = DocumentAttributeType.StringOptions(Options.COUNTRY_ISO_3166_1_ALPHA_2),
+                identifier = "nationality",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_NATIONALITY),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_NATIONALITY),
+                mandatory = false,
+                mdocNamespace = MDL_NAMESPACE,
+                icon = Icon.LANGUAGE,
+                sampleValue = SampleData.NATIONALITY.toDataItem()
             )
             .addMdocAttribute(
-                DocumentAttributeType.String,
-                "resident_city",
-                "Resident city",
-                "The city where the mDL holder lives",
-                false,
-                MDL_NAMESPACE,
-                Icon.PLACE,
-                SampleData.RESIDENT_CITY.toDataItem()
+                type = DocumentAttributeType.String,
+                identifier = "resident_city",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_RESIDENT_CITY),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_RESIDENT_CITY),
+                mandatory = false,
+                mdocNamespace = MDL_NAMESPACE,
+                icon = Icon.PLACE,
+                sampleValue = SampleData.RESIDENT_CITY.toDataItem()
             )
             .addMdocAttribute(
-                DocumentAttributeType.String,
-                "resident_state",
-                "Resident state",
-                "The state/province/district where the mDL holder lives",
-                false,
-                MDL_NAMESPACE,
-                Icon.PLACE,
-                SampleData.RESIDENT_STATE.toDataItem()
+                type = DocumentAttributeType.String,
+                identifier = "resident_state",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_RESIDENT_STATE),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_RESIDENT_STATE),
+                mandatory = false,
+                mdocNamespace = MDL_NAMESPACE,
+                icon = Icon.PLACE,
+                sampleValue = SampleData.RESIDENT_STATE.toDataItem()
             )
             .addMdocAttribute(
-                DocumentAttributeType.String,
-                "resident_postal_code",
-                "Resident postal code",
-                "The postal code of the mDL holder",
-                false,
-                MDL_NAMESPACE,
-                Icon.PLACE,
-                SampleData.RESIDENT_POSTAL_CODE.toDataItem()
+                type = DocumentAttributeType.String,
+                identifier = "resident_postal_code",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_RESIDENT_POSTAL_CODE),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_RESIDENT_POSTAL_CODE),
+                mandatory = false,
+                mdocNamespace = MDL_NAMESPACE,
+                icon = Icon.PLACE,
+                sampleValue = SampleData.RESIDENT_POSTAL_CODE.toDataItem()
             )
             .addMdocAttribute(
-                DocumentAttributeType.StringOptions(Options.COUNTRY_ISO_3166_1_ALPHA_2),
-                "resident_country",
-                "Resident country",
-                "The country where the mDL holder lives",
-                false,
-                MDL_NAMESPACE,
-                Icon.PLACE,
-                SampleData.RESIDENT_COUNTRY.toDataItem()
+                type = DocumentAttributeType.StringOptions(Options.COUNTRY_ISO_3166_1_ALPHA_2),
+                identifier = "resident_country",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_RESIDENT_COUNTRY),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_RESIDENT_COUNTRY),
+                mandatory = false,
+                mdocNamespace = MDL_NAMESPACE,
+                icon = Icon.PLACE,
+                sampleValue = SampleData.RESIDENT_COUNTRY.toDataItem()
             )
             .addMdocAttribute(
-                DocumentAttributeType.String,
-                "family_name_national_character",
-                "Family name national characters",
-                "The family name of the mDL holder",
-                false,
-                MDL_NAMESPACE,
-                Icon.PERSON,
-                SampleData.FAMILY_NAME_NATIONAL_CHARACTER.toDataItem()
+                type = DocumentAttributeType.String,
+                identifier = "family_name_national_character",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_FAMILY_NAME_NATIONAL_CHARACTERS),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_FAMILY_NAME_NATIONAL_CHARACTERS),
+                mandatory = false,
+                mdocNamespace = MDL_NAMESPACE,
+                icon = Icon.PERSON,
+                sampleValue = SampleData.FAMILY_NAME_NATIONAL_CHARACTER.toDataItem()
             )
             .addMdocAttribute(
-                DocumentAttributeType.String,
-                "given_name_national_character",
-                "Given name national characters",
-                "The given name of the mDL holder",
-                false,
-                MDL_NAMESPACE,
-                Icon.PERSON,
-                SampleData.GIVEN_NAMES_NATIONAL_CHARACTER.toDataItem()
+                type = DocumentAttributeType.String,
+                identifier = "given_name_national_character",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_GIVEN_NAME_NATIONAL_CHARACTERS),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_GIVEN_NAME_NATIONAL_CHARACTERS),
+                mandatory = false,
+                mdocNamespace = MDL_NAMESPACE,
+                icon = Icon.PERSON,
+                sampleValue = SampleData.GIVEN_NAMES_NATIONAL_CHARACTER.toDataItem()
             )
             .addMdocAttribute(
-                DocumentAttributeType.Picture,
-                "signature_usual_mark",
-                "Signature / usual mark",
-                "Image of the signature or usual mark of the mDL holder,",
-                false,
-                MDL_NAMESPACE,
-                Icon.SIGNATURE,
-                SampleData.SIGNATURE_OR_USUAL_MARK_BASE64URL.fromBase64Url().toDataItem()
+                type = DocumentAttributeType.Picture,
+                identifier = "signature_usual_mark",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_SIGNATURE_USUAL_MARK),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_SIGNATURE_USUAL_MARK),
+                mandatory = false,
+                mdocNamespace = MDL_NAMESPACE,
+                icon = Icon.SIGNATURE,
+                sampleValue = SampleData.SIGNATURE_OR_USUAL_MARK_BASE64URL.fromBase64Url().toDataItem()
             )
             .addMdocAttribute(
-                DocumentAttributeType.ComplexType,
-                "domestic_driving_privileges",
-                "Domestic driving privileges",
-                "Vehicle types the license holder is authorized to operate",
-                true,
-                AAMVA_NAMESPACE,
-                Icon.DIRECTIONS_CAR,
-                buildCborArray {}
+                type = DocumentAttributeType.ComplexType,
+                identifier = "domestic_driving_privileges",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_DOMESTIC_DRIVING_PRIVILEGES),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_DOMESTIC_DRIVING_PRIVILEGES),
+                mandatory = true,
+                mdocNamespace = AAMVA_NAMESPACE,
+                icon = Icon.DIRECTIONS_CAR,
+                sampleValue = buildCborArray {}
             )
             .addMdocAttribute(
-                DocumentAttributeType.StringOptions(Options.AAMVA_NAME_SUFFIX),
-                "name_suffix",
-                "Name suffix",
-                "Name suffix of the individual that has been issued the driver license or identification document.",
-                false,
-                AAMVA_NAMESPACE,
-                Icon.PERSON,
-                "Jr III".toDataItem()
+                type = DocumentAttributeType.StringOptions(Options.AAMVA_NAME_SUFFIX),
+                identifier = "name_suffix",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_NAME_SUFFIX),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_NAME_SUFFIX),
+                mandatory = false,
+                mdocNamespace = AAMVA_NAMESPACE,
+                icon = Icon.PERSON,
+                sampleValue = "Jr III".toDataItem()
             )
             .addMdocAttribute(
-                DocumentAttributeType.IntegerOptions(
+                type = DocumentAttributeType.IntegerOptions(
                     listOf(
                         IntegerOption(null, "(not set)"),
                         IntegerOption(1, "Donor")
                     )
                 ),
-                "organ_donor",
-                "Organ donor",
-                "An indicator that denotes whether the credential holder is an organ donor.",
-                false,
-                AAMVA_NAMESPACE,
-                Icon.EMERGENCY,
-                1.toDataItem()
+                identifier = "organ_donor",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_ORGAN_DONOR),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_ORGAN_DONOR),
+                mandatory = false,
+                mdocNamespace = AAMVA_NAMESPACE,
+                icon = Icon.EMERGENCY,
+                sampleValue = 1.toDataItem()
             )
             .addMdocAttribute(
-                DocumentAttributeType.IntegerOptions(
+                type = DocumentAttributeType.IntegerOptions(
                     listOf(
                         IntegerOption(null, "(not set)"),
                         IntegerOption(1, "Veteran")
                     )
                 ),
-                "veteran",
-                "Veteran",
-                "An indicator that denotes whether the credential holder is a veteran.",
-                false,
-                AAMVA_NAMESPACE,
-                Icon.MILITARY_TECH,
-                1.toDataItem()
+                identifier = "veteran",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_VETERAN),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_VETERAN),
+                mandatory = false,
+                mdocNamespace = AAMVA_NAMESPACE,
+                icon = Icon.MILITARY_TECH,
+                sampleValue = 1.toDataItem()
             )
             .addMdocAttribute(
-                DocumentAttributeType.StringOptions(
+                type = DocumentAttributeType.StringOptions(
                     listOf(
                         StringOption(null, "(not set)"),
                         StringOption("T", "Truncated"),
@@ -549,16 +571,16 @@ object DrivingLicense {
                         StringOption("U", "Unknown whether truncated"),
                     )
                 ),
-                "family_name_truncation",
-                "Family name truncation",
-                "A code that indicates whether the field has been truncated",
-                true,
-                AAMVA_NAMESPACE,
-                Icon.PERSON,
-                "N".toDataItem()
+                identifier = "family_name_truncation",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_FAMILY_NAME_TRUNCATION),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_FAMILY_NAME_TRUNCATION),
+                mandatory = true,
+                mdocNamespace = AAMVA_NAMESPACE,
+                icon = Icon.PERSON,
+                sampleValue = "N".toDataItem()
             )
             .addMdocAttribute(
-                DocumentAttributeType.StringOptions(
+                type = DocumentAttributeType.StringOptions(
                     listOf(
                         StringOption(null, "(not set)"),
                         StringOption("T", "Truncated"),
@@ -566,46 +588,46 @@ object DrivingLicense {
                         StringOption("U", "Unknown whether truncated"),
                     )
                 ),
-                "given_name_truncation",
-                "Given name truncation",
-                "A code that indicates whether either the first name or the middle name(s) have been truncated",
-                true,
-                AAMVA_NAMESPACE,
-                Icon.PERSON,
-                "N".toDataItem()
+                identifier = "given_name_truncation",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_GIVEN_NAME_TRUNCATION),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_GIVEN_NAME_TRUNCATION),
+                mandatory = true,
+                mdocNamespace = AAMVA_NAMESPACE,
+                icon = Icon.PERSON,
+                sampleValue = "N".toDataItem()
             )
             .addMdocAttribute(
-                DocumentAttributeType.String,
-                "aka_family_name",
-                "Alias / AKA family name",
-                "Other family name by which credential holder is known.",
-                false,
-                AAMVA_NAMESPACE,
-                Icon.PERSON,
-                "Musstermensch".toDataItem()
+                type = DocumentAttributeType.String,
+                identifier = "aka_family_name",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_ALIAS_FAMILY_NAME),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_ALIAS_FAMILY_NAME),
+                mandatory = false,
+                mdocNamespace = AAMVA_NAMESPACE,
+                icon = Icon.PERSON,
+                sampleValue = "Musstermensch".toDataItem()
             )
             .addMdocAttribute(
-                DocumentAttributeType.String,
-                "aka_given_name",
-                "Alias / AKA given name",
-                "Other given name by which credential holder is known.",
-                false,
-                AAMVA_NAMESPACE,
-                Icon.PERSON,
-                "Erica".toDataItem()
+                type = DocumentAttributeType.String,
+                identifier = "aka_given_name",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_ALIAS_GIVEN_NAME),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_ALIAS_GIVEN_NAME),
+                mandatory = false,
+                mdocNamespace = AAMVA_NAMESPACE,
+                icon = Icon.PERSON,
+                sampleValue = "Erica".toDataItem()
             )
             .addMdocAttribute(
-                DocumentAttributeType.StringOptions(Options.AAMVA_NAME_SUFFIX),
-                "aka_suffix",
-                "Alias / AKA suffix name",
-                "Other suffix by which credential holder is known.",
-                false,
-                AAMVA_NAMESPACE,
-                Icon.PERSON,
-                "Ica".toDataItem()
+                type = DocumentAttributeType.StringOptions(Options.AAMVA_NAME_SUFFIX),
+                identifier = "aka_suffix",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_ALIAS_SUFFIX),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_ALIAS_SUFFIX),
+                mandatory = false,
+                mdocNamespace = AAMVA_NAMESPACE,
+                icon = Icon.PERSON,
+                sampleValue = "Ica".toDataItem()
             )
             .addMdocAttribute(
-                DocumentAttributeType.IntegerOptions(
+                type = DocumentAttributeType.IntegerOptions(
                     listOf(
                         IntegerOption(null, "(not set)"),
                         IntegerOption(0, "Up to 31 kg (up to 70 lbs.)"),
@@ -620,16 +642,16 @@ object DrivingLicense {
                         IntegerOption(9, "146+ kg (321+ lbs.)"),
                     )
                 ),
-                "weight_range",
-                "Weight range",
-                "Indicates the approximate weight range of the cardholder",
-                false,
-                AAMVA_NAMESPACE,
-                Icon.EMERGENCY,
-                3.toDataItem()
+                identifier = "weight_range",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_WEIGHT_RANGE),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_WEIGHT_RANGE),
+                mandatory = false,
+                mdocNamespace = AAMVA_NAMESPACE,
+                icon = Icon.EMERGENCY,
+                sampleValue = 3.toDataItem()
             )
             .addMdocAttribute(
-                DocumentAttributeType.StringOptions(
+                type = DocumentAttributeType.StringOptions(
                     listOf(
                         StringOption(null, "(not set)"),
                         StringOption("AI", "Alaskan or American Indian"),
@@ -641,157 +663,162 @@ object DrivingLicense {
                         StringOption("W", "White")
                     )
                 ),
-                "race_ethnicity",
-                "Race / ethnicity",
-                "Codes for race or ethnicity of the cardholder",
-                false,
-                AAMVA_NAMESPACE,
-                Icon.EMERGENCY,
-                "W".toDataItem()
+                identifier = "race_ethnicity",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_RACE_ETHNICITY),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_RACE_ETHNICITY),
+                mandatory = false,
+                mdocNamespace = AAMVA_NAMESPACE,
+                icon = Icon.EMERGENCY,
+                sampleValue = "W".toDataItem()
             )
             .addMdocAttribute(
-                DocumentAttributeType.StringOptions(
+                type = DocumentAttributeType.StringOptions(
                     listOf(
                         StringOption(null, "(not set)"),
                         StringOption("F", "Fully compliant"),
                         StringOption("N", "Non-compliant"),
                     )
                 ),
-                "DHS_compliance",
-                "Compliance type",
-                "DHS required field that indicates compliance",
-                false,
-                AAMVA_NAMESPACE,
-                Icon.STARS,
-                "F".toDataItem()
+                identifier = "DHS_compliance",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_COMPLIANCE_TYPE),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_COMPLIANCE_TYPE),
+                mandatory = false,
+                mdocNamespace = AAMVA_NAMESPACE,
+                sensitivity = DocumentAttributeSensitivity.VALIDITY,
+                icon = Icon.STARS,
+                sampleValue = "F".toDataItem()
             )
             .addMdocAttribute(
-                DocumentAttributeType.IntegerOptions(
+                type = DocumentAttributeType.IntegerOptions(
                     listOf(
                         IntegerOption(null, "(not set)"),
                         IntegerOption(1, "Temporary lawful status")
                     )
                 ),
-                "DHS_temporary_lawful_status",
-                "Limited duration document indicator",
-                "DHS required field that denotes whether the credential holder has temporary lawful status. 1: Temporary lawful status",
-                false,
-                AAMVA_NAMESPACE,
-                Icon.STARS,
-                1.toDataItem()
+                identifier = "DHS_temporary_lawful_status",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_LIMITED_DURATION_DOCUMENT_INDICATOR),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_LIMITED_DURATION_DOCUMENT_INDICATOR),
+                mandatory = false,
+                mdocNamespace = AAMVA_NAMESPACE,
+                sensitivity = DocumentAttributeSensitivity.VALIDITY,
+                icon = Icon.STARS,
+                sampleValue = 1.toDataItem()
             )
             .addMdocAttribute(
-                DocumentAttributeType.IntegerOptions(
+                type = DocumentAttributeType.IntegerOptions(
                     listOf(
                         IntegerOption(null, "(not set)"),
                         IntegerOption(1, "Driver's license"),
                         IntegerOption(2, "Identification card")
                     )
                 ),
-                "EDL_credential",
-                "EDL indicator",
-                "Present if the credential is an EDL",
-                false,
-                AAMVA_NAMESPACE,
-                Icon.DIRECTIONS_CAR,
-                1.toDataItem()
+                identifier = "EDL_credential",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_EDL_INDICATOR),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_EDL_INDICATOR),
+                mandatory = false,
+                mdocNamespace = AAMVA_NAMESPACE,
+                icon = Icon.DIRECTIONS_CAR,
+                sampleValue = 1.toDataItem()
             )
             .addMdocAttribute(
-                DocumentAttributeType.String,
-                "resident_county",
-                "Resident county",
-                "The 3-digit county code of the county where the mDL holder lives",
-                false,
-                AAMVA_NAMESPACE,
-                Icon.PLACE,
-                "037".toDataItem()
+                type = DocumentAttributeType.String,
+                identifier = "resident_county",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_RESIDENT_COUNTY),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_RESIDENT_COUNTY),
+                mandatory = false,
+                mdocNamespace = AAMVA_NAMESPACE,
+                icon = Icon.PLACE,
+                sampleValue = "037".toDataItem()
             )
             .addMdocAttribute(
-                DocumentAttributeType.Date,
-                "hazmat_endorsement_expiration_date",
-                "HAZMAT endorsement expiration date",
-                "Date on which the hazardous material endorsement granted by the document is no longer valid.",
-                true,
-                AAMVA_NAMESPACE,
-                Icon.CALENDAR_CLOCK,
-                LocalDate.parse(SampleData.EXPIRY_DATE).toDataItemFullDate()
+                type = DocumentAttributeType.Date,
+                identifier = "hazmat_endorsement_expiration_date",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_HAZMAT_ENDORSEMENT_EXPIRATION_DATE),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_HAZMAT_ENDORSEMENT_EXPIRATION_DATE),
+                mandatory = true,
+                mdocNamespace = AAMVA_NAMESPACE,
+                sensitivity = DocumentAttributeSensitivity.VALIDITY,
+                icon = Icon.CALENDAR_CLOCK,
+                sampleValue = LocalDate.parse(SampleData.EXPIRY_DATE).toDataItemFullDate()
             )
             .addMdocAttribute(
-                DocumentAttributeType.IntegerOptions(Options.SEX_ISO_IEC_5218),
-                "sex",
-                "Sex",
-                "mDL holder’s sex",
-                true,
-                AAMVA_NAMESPACE,
-                Icon.EMERGENCY,
-                SampleData.SEX_ISO_5218.toDataItem()
+                type = DocumentAttributeType.IntegerOptions(Options.SEX_ISO_IEC_5218),
+                identifier = "sex",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_SEX),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_SEX),
+                mandatory = true,
+                mdocNamespace = AAMVA_NAMESPACE,
+                icon = Icon.EMERGENCY,
+                sampleValue = SampleData.SEX_ISO_5218.toDataItem()
             )
             /*
              * Then the attributes that exist only in the mDL Credential Type and not in the VC Credential Type
              */
             .addMdocAttribute(
-                DocumentAttributeType.Picture,
-                "biometric_template_face",
-                "Biometric template face",
-                "Facial biometric information of the mDL holder",
-                false,
-                MDL_NAMESPACE,
-                Icon.FACE,
-                Simple.NULL
+                type = DocumentAttributeType.Picture,
+                identifier = "biometric_template_face",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_BIOMETRIC_TEMPLATE_FACE),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_BIOMETRIC_TEMPLATE_FACE),
+                mandatory = false,
+                mdocNamespace = MDL_NAMESPACE,
+                icon = Icon.FACE,
+                sampleValue = Simple.NULL
             )
             .addMdocAttribute(
-                DocumentAttributeType.Picture,
-                "biometric_template_finger",
-                "Biometric template fingerprint",
-                "Fingerprint of the mDL holder",
-                false,
-                MDL_NAMESPACE,
-                Icon.FINGERPRINT,
-                Simple.NULL
+                type = DocumentAttributeType.Picture,
+                identifier = "biometric_template_finger",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_BIOMETRIC_TEMPLATE_FINGERPRINT),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_BIOMETRIC_TEMPLATE_FINGERPRINT),
+                mandatory = false,
+                mdocNamespace = MDL_NAMESPACE,
+                icon = Icon.FINGERPRINT,
+                sampleValue = Simple.NULL
             )
             .addMdocAttribute(
-                DocumentAttributeType.Picture,
-                "biometric_template_signature_sign",
-                "Biometric template signature/sign",
-                "Signature/sign of the mDL holder",
-                false,
-                MDL_NAMESPACE,
-                Icon.SIGNATURE,
-                Simple.NULL
+                type = DocumentAttributeType.Picture,
+                identifier = "biometric_template_signature_sign",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_BIOMETRIC_TEMPLATE_SIGNATURE_SIGN),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_BIOMETRIC_TEMPLATE_SIGNATURE_SIGN),
+                mandatory = false,
+                mdocNamespace = MDL_NAMESPACE,
+                icon = Icon.SIGNATURE,
+                sampleValue = Simple.NULL
             )
             .addMdocAttribute(
-                DocumentAttributeType.Picture,
-                "biometric_template_iris",
-                "Biometric template iris",
-                "Iris of the mDL holder",
-                false,
-                MDL_NAMESPACE,
-                Icon.EYE_TRACKING,
-                Simple.NULL
+                type = DocumentAttributeType.Picture,
+                identifier = "biometric_template_iris",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_BIOMETRIC_TEMPLATE_IRIS),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_BIOMETRIC_TEMPLATE_IRIS),
+                mandatory = false,
+                mdocNamespace = MDL_NAMESPACE,
+                icon = Icon.EYE_TRACKING,
+                sampleValue = Simple.NULL
             )
             .addMdocAttribute(
-                DocumentAttributeType.String,
-                "audit_information",
-                "Audit information",
-                "A string of letters and/or numbers that identifies when, where, and by whom the credential was initially provisioned.",
-                false,
-                AAMVA_NAMESPACE,
-                Icon.STARS,
-                "".toDataItem()
+                type = DocumentAttributeType.String,
+                identifier = "audit_information",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_AUDIT_INFORMATION),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_AUDIT_INFORMATION),
+                mandatory = false,
+                mdocNamespace = AAMVA_NAMESPACE,
+                sensitivity = DocumentAttributeSensitivity.ISSUER,
+                icon = Icon.STARS,
+                sampleValue = "".toDataItem()
             )
             .addMdocAttribute(
-                DocumentAttributeType.Number,
-                "aamva_version",
-                "AAMVA version number",
-                "A number identifying the version of the AAMVA mDL data element set",
-                true,
-                AAMVA_NAMESPACE,
-                Icon.NUMBERS,
-                1.toDataItem()
+                type = DocumentAttributeType.Number,
+                identifier = "aamva_version",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_ATTRIBUTE_AAMVA_VERSION_NUMBER),
+                description = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_DESCRIPTION_AAMVA_VERSION_NUMBER),
+                mandatory = true,
+                mdocNamespace = AAMVA_NAMESPACE,
+                sensitivity = DocumentAttributeSensitivity.ISSUER,
+                icon = Icon.NUMBERS,
+                sampleValue = 1.toDataItem()
             )
             .addSampleRequest(
                 id = "us-transportation",
-                displayName = "US transportation",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_REQUEST_US_TRANSPORTATION),
                 mdocDataElements = mapOf(
                     MDL_NAMESPACE to mapOf(
                         "sex" to false,
@@ -811,7 +838,7 @@ object DrivingLicense {
             )
             .addSampleRequest(
                 id = "age_over_18",
-                displayName ="Age over 18",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_REQUEST_AGE_OVER_18),
                 mdocDataElements = mapOf(
                     MDL_NAMESPACE to mapOf(
                         "age_over_18" to false,
@@ -820,7 +847,7 @@ object DrivingLicense {
             )
             .addSampleRequest(
                 id = "age_over_21",
-                displayName ="Age over 21",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_REQUEST_AGE_OVER_21),
                 mdocDataElements = mapOf(
                     MDL_NAMESPACE to mapOf(
                         "age_over_21" to false,
@@ -829,7 +856,7 @@ object DrivingLicense {
             )
             .addSampleRequest(
                 id = "age_over_18_zkp",
-                displayName ="Age over 18 (ZKP)",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_REQUEST_AGE_OVER_18_ZKP),
                 mdocDataElements = mapOf(
                     MDL_NAMESPACE to mapOf(
                         "age_over_18" to false,
@@ -839,7 +866,7 @@ object DrivingLicense {
             )
             .addSampleRequest(
                 id = "age_over_21_zkp",
-                displayName ="Age over 21 (ZKP)",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_REQUEST_AGE_OVER_21_ZKP),
                 mdocDataElements = mapOf(
                     MDL_NAMESPACE to mapOf(
                         "age_over_21" to false,
@@ -849,7 +876,7 @@ object DrivingLicense {
             )
             .addSampleRequest(
                 id = "age_over_18_and_portrait",
-                displayName ="Age over 18 + portrait",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_REQUEST_AGE_OVER_18_AND_PORTRAIT),
                 mdocDataElements = mapOf(
                     MDL_NAMESPACE to mapOf(
                         "age_over_18" to false,
@@ -859,7 +886,7 @@ object DrivingLicense {
             )
             .addSampleRequest(
                 id = "age_over_21_and_portrait",
-                displayName ="Age over 21 + portrait",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_REQUEST_AGE_OVER_21_AND_PORTRAIT),
                 mdocDataElements = mapOf(
                     MDL_NAMESPACE to mapOf(
                         "age_over_21" to false,
@@ -869,7 +896,7 @@ object DrivingLicense {
             )
             .addSampleRequest(
                 id = "mandatory",
-                displayName = "Mandatory data elements",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_REQUEST_MANDATORY_DATA_ELEMENTS),
                 mdocDataElements = mapOf(
                     MDL_NAMESPACE to mapOf(
                         "family_name" to false,
@@ -888,7 +915,7 @@ object DrivingLicense {
             )
             .addSampleRequest(
                 id = "full",
-                displayName ="All data elements",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_REQUEST_ALL_DATA_ELEMENTS),
                 mdocDataElements = mapOf(
                     MDL_NAMESPACE to mapOf(),
                     AAMVA_NAMESPACE to mapOf()
@@ -896,7 +923,7 @@ object DrivingLicense {
             )
             .addSampleRequest(
                 id = "name-and-address-partially-stored",
-                displayName = "Name and address (partially stored)",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_REQUEST_NAME_AND_ADDRESS_PARTIALLY_STORED),
                 mdocDataElements = mapOf(
                     MDL_NAMESPACE to mapOf(
                         "family_name" to true,
@@ -916,7 +943,7 @@ object DrivingLicense {
             )
             .addSampleRequest(
                 id = "name-and-address-all-stored",
-                displayName = "Name and address (all stored)",
+                displayName = getLocalizedString(GeneratedStringKeys.DRIVING_LICENSE_REQUEST_NAME_AND_ADDRESS_ALL_STORED),
                 mdocDataElements = mapOf(
                     MDL_NAMESPACE to mapOf(
                         "family_name" to true,

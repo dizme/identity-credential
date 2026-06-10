@@ -1,6 +1,5 @@
 package org.multipaz.compose.digitalcredentials
 
-import kotlinx.coroutines.CancellationException
 import android.content.Intent
 import android.os.Bundle
 import androidx.activity.compose.setContent
@@ -21,6 +20,7 @@ import coil3.ImageLoader
 import coil3.network.ktor3.KtorNetworkFetcherFactory
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.android.Android
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
@@ -149,7 +149,7 @@ abstract class CredentialManagerPresentmentActivity: FragmentActivity() {
 
             val documents = selectionInfo.documentIds.map {
                 settings.source.documentStore.lookupForCredmanId(it)
-                    ?: throw Error("No registered document for document ID $it")
+                    ?: throw IllegalStateException("No registered document for document ID $it")
             }
             // Find request matching the protocol for the selected entry...
             val requestForSelectedEntry = json["requests"]!!.jsonArray.find {

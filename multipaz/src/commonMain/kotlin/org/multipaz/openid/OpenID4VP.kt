@@ -56,6 +56,7 @@ import org.multipaz.sdjwt.SdJwt
 import org.multipaz.sdjwt.credential.SdJwtVcCredential
 import org.multipaz.presentment.PresentmentUnlockReason
 import org.multipaz.presentment.TransactionDataJson
+import org.multipaz.presentment.ConsentData
 import org.multipaz.presentment.computeTransactionResponse
 import org.multipaz.util.Logger
 import org.multipaz.util.fromBase64Url
@@ -88,9 +89,10 @@ object OpenID4VP {
      * @param requestSigningKey the key to sign the request with or `null`.
      * @param responseMode the response mode.
      * @param responseUri the response URI or `null`.
-     * @param dclqQuery the DCQL query.
+     * @param dcqlQuery the DCQL query.
      * @param jsonTransactionData strings from `transaction_data` array *before* base64url encoding,
      *   see OpenID4VP 1.0 section 8.4.
+     * @param state OpenID4VP state parameter (optional)
      * @return the OpenID4VP request.
      */
     suspend fun generateRequest(
@@ -102,8 +104,9 @@ object OpenID4VP {
         requestSigningKey: AsymmetricKey?,
         responseMode: ResponseMode,
         responseUri: String?,
-        dclqQuery: JsonObject,
-        jsonTransactionData: List<String> = emptyList()
+        dcqlQuery: JsonObject,
+        jsonTransactionData: List<String> = emptyList(),
+        state: String? = null
     ): JsonObject {
         if (version == Version.DRAFT_24) {
             check(jsonTransactionData.isEmpty())
@@ -115,7 +118,7 @@ object OpenID4VP {
                 requestSigningKey = requestSigningKey,
                 responseMode = responseMode,
                 responseUri = responseUri,
-                dclqQuery = dclqQuery
+                dclqQuery = dcqlQuery
             )
         }
         val responseEncryptionKeyJwk = responseEncryptionKey?.let {
@@ -141,8 +144,9 @@ object OpenID4VP {
                     add(origin)
                 }
             }
-            put("dcql_query", dclqQuery)
+            put("dcql_query", dcqlQuery)
             put("nonce", nonce)
+            state?.let { put("state", it) }
             putJsonObject("client_metadata") {
                 // TODO: take parameters for all these
                 put("vp_formats_supported", buildJsonObject {
@@ -277,11 +281,13 @@ object OpenID4VP {
      * @property response the response containing [vpToken], possibly encrypted.
      * @property vpToken the VP Token.
      * @property eventData a [EventPresentmentData] to be used for logging.
+     * @property state state parameter as specified in the request (if given)
      */
     data class OpenID4VPResponse(
         val response: JsonObject,
         val vpToken: JsonObject,
-        val eventData: EventPresentmentData
+        val eventData: EventPresentmentData,
+        val state: String?,
     )
 
     /**
@@ -451,10 +457,14 @@ object OpenID4VP {
         )
 
         val trustMetadata = source.resolveTrust(requester)
+
         val selection = source.showConsentPrompt(
             requester = requester,
             trustMetadata = trustMetadata,
-            credentialPresentmentData = dcqlResponse,
+            consentData = ConsentData.fromCredentialQueryResult(
+                credentialQueryResult = dcqlResponse,
+                source = source
+            ),
             preselectedDocuments = preselectedDocuments,
             onDocumentsInFocus = onDocumentsInFocus
         )
@@ -509,6 +519,9 @@ object OpenID4VP {
                             }
                         }
                     }
+                    (request["state"] as? JsonPrimitive)?.let {
+                        put("state", it)
+                    }
                 }
             }
 
@@ -518,6 +531,9 @@ object OpenID4VP {
                         for ((dcqlId, response) in vpTokens) {
                             put(dcqlId, response)
                         }
+                    }
+                    (request["state"] as? JsonPrimitive)?.let {
+                        put("state", it)
                     }
                 }
             }
@@ -553,7 +569,8 @@ object OpenID4VP {
                 selection = selection,
                 requester = requester,
                 trustMetadata = trustMetadata
-            )
+            ),
+            state = (request["state"] as? JsonPrimitive)?.content
         )
     }
 

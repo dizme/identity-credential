@@ -7,6 +7,7 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.put
 import multipazproject.samples.testapp.generated.resources.Res
 import multipazproject.samples.testapp.generated.resources.av18_card_art
@@ -36,30 +37,26 @@ import org.multipaz.credential.SecureAreaBoundCredential
 import org.multipaz.crypto.Algorithm
 import org.multipaz.crypto.EcPublicKey
 import org.multipaz.crypto.AsymmetricKey
+import org.multipaz.crypto.EcPrivateKey
 import org.multipaz.document.Document
 import org.multipaz.document.DocumentStore
 import org.multipaz.documenttype.DocumentCannedRequest
 import org.multipaz.documenttype.DocumentType
 import org.multipaz.documenttype.MultiDocumentCannedRequest
 import org.multipaz.documenttype.SingleDocumentCannedRequest
+import org.multipaz.documenttype.knowntypes.Aadhaar
 import org.multipaz.documenttype.knowntypes.AgeVerification
-import org.multipaz.documenttype.knowntypes.Loyalty
-import org.multipaz.documenttype.knowntypes.DigitalPaymentCredential
+import org.multipaz.utopia.knowntypes.Loyalty
+import org.multipaz.utopia.knowntypes.DigitalPaymentCredential
 import org.multipaz.documenttype.knowntypes.DrivingLicense
 import org.multipaz.documenttype.knowntypes.EUPersonalID
+import org.multipaz.documenttype.knowntypes.IDPass
 import org.multipaz.documenttype.knowntypes.ItalianDrivingLicense
 import org.multipaz.documenttype.knowntypes.PhotoID
-import org.multipaz.documenttype.knowntypes.UtopiaMovieTicket
-import org.multipaz.documenttype.knowntypes.WalletAttestation
+import org.multipaz.utopia.knowntypes.UtopiaMovieTicket
 import org.multipaz.mdoc.credential.MdocCredential
 import org.multipaz.mdoc.issuersigned.buildIssuerNamespaces
 import org.multipaz.mdoc.mso.MobileSecurityObject
-import org.multipaz.mdoc.request.DocRequestInfo
-import org.multipaz.mdoc.request.ZkRequest
-import org.multipaz.mdoc.request.buildDeviceRequest
-import org.multipaz.mdoc.request.buildDeviceRequestFromDcql
-import org.multipaz.mdoc.zkp.ZkSystemRepository
-import org.multipaz.openid.dcql.DcqlQuery
 import org.multipaz.sdjwt.SdJwt
 import org.multipaz.sdjwt.credential.KeyBoundSdJwtVcCredential
 import org.multipaz.sdjwt.credential.KeylessSdJwtVcCredential
@@ -68,6 +65,9 @@ import org.multipaz.securearea.SecureArea
 import org.multipaz.testapp.ui.DocumentCreationMode
 import org.multipaz.util.Logger
 import org.multipaz.util.truncateToWholeSeconds
+import org.multipaz.verification.DcqlRequestDefinition
+import org.multipaz.verification.VerificationSession
+import org.multipaz.verification.VerificationUtil
 import kotlin.time.Clock
 import kotlin.time.Duration.Companion.days
 import kotlin.time.Duration.Companion.hours
@@ -103,66 +103,46 @@ object TestAppUtils {
     // This domain is for KeylessSdJwtVcCredential
     const val CREDENTIAL_DOMAIN_SDJWT_KEYLESS = "sdjwt_keyless"
 
-    suspend fun generateEncodedDeviceRequest(
+    suspend fun createProximityVerificationSession(
+        app: App,
         request: DocumentCannedRequest,
-        encodedSessionTranscript: ByteArray,
-        readerKey: AsymmetricKey.X509Compatible,
-        zkSystemRepository: ZkSystemRepository? = null,
-    ): ByteArray {
-        val deviceRequest = when (request) {
-            is SingleDocumentCannedRequest -> {
-                buildDeviceRequest(
-                    sessionTranscript = RawCbor(encodedSessionTranscript)
-                ) {
-                    request.mdocRequest?.let { mdocRequest ->
-                        val itemsToRequest = mutableMapOf<String, MutableMap<String, Boolean>>()
-                        for (ns in mdocRequest.namespacesToRequest) {
-                            for ((de, intentToRetain) in ns.dataElementsToRequest) {
-                                itemsToRequest.getOrPut(ns.namespace) { mutableMapOf() }
-                                    .put(de.attribute.identifier, intentToRetain)
-                            }
-                        }
-                        val zkRequest = if (mdocRequest.useZkp) {
-                            if (zkSystemRepository == null) {
-                                throw IllegalStateException("zkSystemRepository is null")
-                            }
-                            ZkRequest(
-                                systemSpecs = zkSystemRepository.getAllZkSystemSpecs(),
-                                zkRequired = false
-                            )
-                        } else {
-                            null
-                        }
-                        val otherInfo = mutableMapOf<String, DataItem>()
-                        for (transactionData in request.transactionData) {
-                            val type = transactionData.transactionType
-                            otherInfo[type.mdocRequestInfoKeyName] = Tagged(
-                                tagNumber = Tagged.ENCODED_CBOR,
-                                taggedItem = Cbor.encode(transactionData.attributes).toDataItem()
-                            )
-                        }
-                        addDocRequest(
-                            docType = mdocRequest.docType,
-                            nameSpaces = itemsToRequest,
-                            docRequestInfo = DocRequestInfo(
-                                zkRequest = zkRequest,
-                                otherInfo = otherInfo
-                            ),
-                            readerKey = readerKey,
-                        )
-                    }
-                }
+        requestSdJwtVc: Boolean,
+        deviceEngagement: ByteString,
+        eReaderKey: EcPrivateKey,
+        handover: DataItem,
+        signRequest: Boolean = true,
+    ): VerificationSession {
+        val requestDefinition = when (request) {
+            is SingleDocumentCannedRequest -> if (requestSdJwtVc) {
+                DcqlRequestDefinition(
+                    dcql = request.jsonRequest!!.toDcql().toString(),
+                    transactionData = request.toJsonTransactionData("cred1")
+                )
+            } else {
+                DcqlRequestDefinition(
+                    dcql = request.mdocRequest!!
+                        .toDcql(app.zkSystemRepository.getAllZkSystemSpecs()).toString(),
+                    transactionData = request.toJsonTransactionData("cred1")
+                )
             }
-            is MultiDocumentCannedRequest -> {
-                buildDeviceRequestFromDcql(
-                    sessionTranscript = RawCbor(encodedSessionTranscript),
-                    dcql = Json.decodeFromString<JsonObject>( request.dcqlString)
-                ) {
-                    addReaderAuthAll(readerKey)
-                }
-            }
+            is MultiDocumentCannedRequest ->
+                DcqlRequestDefinition(
+                    dcql = request.dcqlString,
+                    transactionData = request.transactionData?.let { text ->
+                        Json.parseToJsonElement(text).jsonArray.map { it.toString() }
+                    } ?: emptyList()
+                )
         }
-        return Cbor.encode(deviceRequest.toDataItem())
+        return VerificationUtil.generateVerificationSessionForDcql(
+            requestTypes = setOf(VerificationSession.RequestType.ISO_18013_PROXIMITY),
+            dcql = requestDefinition.dcql,
+            transactionData = requestDefinition.transactionData,
+            readerAuthenticationKey = if (signRequest) app.readerKey else null,
+            deviceEngagement = deviceEngagement,
+            eReaderKey = eReaderKey,
+            handover = handover,
+            documentTypeRepository = app.documentTypeRepository,
+        )
     }
 
     fun generateEncodedSessionTranscript(
@@ -182,8 +162,14 @@ object TestAppUtils {
 
 
     val provisionedDocumentTypes = listOf(
+        DrivingLicense.getDocumentType(),
         ItalianDrivingLicense.getDocumentType(),
-        WalletAttestation.getDocumentType(),
+        PhotoID.getDocumentType(),
+        EUPersonalID.getDocumentType(),
+        UtopiaMovieTicket.getDocumentType(),
+        AgeVerification.getDocumentType(),
+        Loyalty.getDocumentType(),
+        DigitalPaymentCredential.getDocumentType(),
     )
 
     suspend fun provisionTestDocuments(
@@ -326,6 +312,19 @@ object TestAppUtils {
                     deviceKeyAlgorithm,
                     deviceKeyMacAlgorithm,
                     numCredentialsPerDomain,
+                    DrivingLicense.getDocumentType(),
+                    "Erika",
+                    "Erika's Driving License",
+                    Res.drawable.driving_license_card_art
+                )
+                provisionDocument(
+                    documentStore,
+                    secureArea,
+                    secureAreaCreateKeySettingsFunc,
+                    dsKey,
+                    deviceKeyAlgorithm,
+                    deviceKeyMacAlgorithm,
+                    numCredentialsPerDomain,
                     ItalianDrivingLicense.getDocumentType(),
                     "Erika",
                     "Erika's Italian Driving License",
@@ -339,10 +338,101 @@ object TestAppUtils {
                     deviceKeyAlgorithm,
                     deviceKeyMacAlgorithm,
                     numCredentialsPerDomain,
-                    WalletAttestation.getDocumentType(),
+                    PhotoID.getDocumentType(),
                     "Erika",
-                    "Erika's Wallet Attestation",
-                    Res.drawable.driving_license_card_art
+                    "Erika's Photo ID",
+                    Res.drawable.photo_id_card_art
+                )
+                provisionDocument(
+                    documentStore,
+                    secureArea,
+                    secureAreaCreateKeySettingsFunc,
+                    dsKey,
+                    deviceKeyAlgorithm,
+                    deviceKeyMacAlgorithm,
+                    numCredentialsPerDomain,
+                    PhotoID.getDocumentType(),
+                    "Erika #2",
+                    "Erika's Photo ID #2",
+                    Res.drawable.photo_id_card_art
+                )
+                provisionDocument(
+                    documentStore,
+                    secureArea,
+                    secureAreaCreateKeySettingsFunc,
+                    dsKey,
+                    deviceKeyAlgorithm,
+                    deviceKeyMacAlgorithm,
+                    numCredentialsPerDomain,
+                    EUPersonalID.getDocumentType(),
+                    "Erika",
+                    "Erika's EU PID",
+                    Res.drawable.pid_card_art
+                )
+                provisionDocument(
+                    documentStore,
+                    secureArea,
+                    secureAreaCreateKeySettingsFunc,
+                    dsKey,
+                    deviceKeyAlgorithm,
+                    deviceKeyMacAlgorithm,
+                    numCredentialsPerDomain,
+                    UtopiaMovieTicket.getDocumentType(),
+                    "Erika",
+                    "The Last Utopian",
+                    Res.drawable.movie_ticket_cart_art
+                )
+                provisionDocument(
+                    documentStore,
+                    secureArea,
+                    secureAreaCreateKeySettingsFunc,
+                    dsKey,
+                    deviceKeyAlgorithm,
+                    deviceKeyMacAlgorithm,
+                    numCredentialsPerDomain,
+                    UtopiaMovieTicket.getDocumentType(),
+                    "Erika",
+                    "One flew over the Utopian Nest",
+                    Res.drawable.movie_ticket_cart_art
+                )
+                provisionDocument(
+                    documentStore,
+                    secureArea,
+                    secureAreaCreateKeySettingsFunc,
+                    dsKey,
+                    deviceKeyAlgorithm,
+                    deviceKeyMacAlgorithm,
+                    numCredentialsPerDomain,
+                    UtopiaMovieTicket.getDocumentType(),
+                    "Erika",
+                    "Utopia! Utopia! Utopia!",
+                    Res.drawable.movie_ticket_cart_art
+                )
+                provisionDocument(
+                    documentStore,
+                    secureArea,
+                    secureAreaCreateKeySettingsFunc,
+                    dsKey,
+                    deviceKeyAlgorithm,
+                    deviceKeyMacAlgorithm,
+                    numCredentialsPerDomain,
+                    AgeVerification.getDocumentType(),
+                    "Erika",
+                    "Erika's Age Verification Credential",
+                    Res.drawable.av18_card_art
+                )
+                provisionDocument(
+                    documentStore,
+                    secureArea,
+                    secureAreaCreateKeySettingsFunc,
+                    dsKey,
+                    deviceKeyAlgorithm,
+                    deviceKeyMacAlgorithm,
+                    numCredentialsPerDomain,
+                    Loyalty.getDocumentType(),
+                    "Erika",
+                    "Erika's Loyalty ID",
+                    Res.drawable.card_utopia_wholesale
                 )
                 provisionDocument(
                     documentStore,
@@ -356,6 +446,32 @@ object TestAppUtils {
                     "Erika",
                     "Erika's Payment Card Credential",
                     Res.drawable.payment_card_art
+                )
+                provisionDocument(
+                    documentStore = documentStore,
+                    secureArea = secureArea,
+                    secureAreaCreateKeySettingsFunc = secureAreaCreateKeySettingsFunc,
+                    dsKey = dsKey,
+                    deviceKeyAlgorithm = deviceKeyAlgorithm,
+                    deviceKeyMacAlgorithm = deviceKeyMacAlgorithm,
+                    numCredentialsPerDomain = numCredentialsPerDomain,
+                    documentType = Aadhaar.getDocumentType(),
+                    givenNameOverride = "Erika",
+                    displayName = "Erika's Aadhaar",
+                    cardArtResource = Res.drawable.pid_card_art
+                )
+                provisionDocument(
+                    documentStore = documentStore,
+                    secureArea = secureArea,
+                    secureAreaCreateKeySettingsFunc = secureAreaCreateKeySettingsFunc,
+                    dsKey = dsKey,
+                    deviceKeyAlgorithm = deviceKeyAlgorithm,
+                    deviceKeyMacAlgorithm = deviceKeyMacAlgorithm,
+                    numCredentialsPerDomain = numCredentialsPerDomain,
+                    documentType = IDPass.getDocumentType(),
+                    givenNameOverride = "Erika",
+                    displayName = "Erika's ID pass",
+                    cardArtResource = Res.drawable.pid_card_art
                 )
                 return null
             }

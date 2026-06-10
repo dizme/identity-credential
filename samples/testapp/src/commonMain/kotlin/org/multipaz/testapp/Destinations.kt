@@ -107,8 +107,7 @@ data object DcRequestDestination: Destination()
 data class ShowResponseDestination(
     val vpResponse: String?,
     val deviceResponse: String?,
-    val sessionTranscript: String,
-    val nonce: String?,
+    val serializedSession: String,
     val eReaderKey: String?,
     val metadata: String
 ): Destination()
@@ -145,7 +144,10 @@ data class NfcReaderDestination(
 ): Destination()
 
 @Serializable
-data object DocumentListDestination: Destination()
+data class VerticalCardListDestination(
+    val focusedDocumentId: String? = null,
+    val animateListTransitions: Boolean = false
+): Destination()
 
 @Serializable
 data object EventLogDestination: Destination()

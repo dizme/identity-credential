@@ -41,10 +41,10 @@ class JsonDocumentType private constructor(
      */
     fun getDocumentAttribute(identifier: String): DocumentAttribute? {
         val splits = identifier.split(".")
-        return when (splits.size ) {
+        return when (splits.size) {
             1 -> claims[splits[0]]
             2 -> claims[splits[0]]?.embeddedAttributes?.find { it.identifier == splits[1] }
-            else -> throw Exception("Invalid identifier $identifier, can have at max one period")
+            else -> null
         }
     }
 
@@ -98,6 +98,7 @@ class JsonDocumentType private constructor(
             identifier: String,
             displayName: String,
             description: String,
+            sensitivity: DocumentAttributeSensitivity = DocumentAttributeSensitivity.PII,
             icon: Icon? = null,
             sampleValue: JsonElement? = null
         ) {
@@ -109,6 +110,7 @@ class JsonDocumentType private constructor(
                     identifier = identifier,
                     displayName = displayName,
                     description = description,
+                    sensitivity = sensitivity,
                     icon = icon,
                     sampleValueMdoc = null,
                     sampleValueJson = sampleValue,

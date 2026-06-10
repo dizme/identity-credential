@@ -28,7 +28,9 @@ dependencies {
     ksp(project(":multipaz-cbor-rpc"))
     implementation(project(":multipaz"))
     implementation(project(":multipaz-doctypes"))
+    implementation(project(":multipaz-utopia"))
     implementation(project(":multipaz-server"))
+    implementation(project(":multipaz-openid4vci"))
 
     implementation(libs.kotlinx.datetime)
     implementation(libs.kotlinx.serialization.json)

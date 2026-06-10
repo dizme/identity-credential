@@ -1,17 +1,61 @@
 // multipaz-server-deployment/build.gradle.kts
 // Tasks for building Docker images and deployment bundles
 
-tasks.register("buildAllFatJars") {
-    description = "Build fat JARs for all server modules"
+val serverProjects = listOf(
+    "multipaz-verifier-server",
+    "multipaz-openid4vci-server",
+    "multipaz-backend-server",
+    "multipaz-records-server",
+    "multipaz-csa-server",
+    "multipaz-upay-server",
+    "multipaz-utopia:organizations:brewery:backend"
+)
+
+tasks.register("collectDependencies") {
+    description = "Collect thin server JARs and shared dependency JARs into a staging directory"
     group = "multipaz-server-deployment"
 
-    dependsOn(
-        ":multipaz-verifier-server:buildFatJar",
-        ":multipaz-openid4vci-server:buildFatJar",
-        ":multipaz-backend-server:buildFatJar",
-        ":multipaz-records-server:buildFatJar",
-        ":multipaz-csa-server:buildFatJar"
-    )
+    // Depend on jar tasks for server projects plus their full runtime classpath build dependencies
+    for (name in serverProjects) {
+        val serverProject = project(":${name}")
+        dependsOn(serverProject.tasks.named("jar"))
+        dependsOn(serverProject.configurations.getByName("runtimeClasspath").buildDependencies)
+    }
+
+    val stagingDir = layout.buildDirectory.dir("docker-staging")
+
+    outputs.dir(stagingDir)
+
+    doLast {
+        val jarsDir = stagingDir.get().dir("jars").asFile
+        val libsDir = stagingDir.get().dir("libs").asFile
+        jarsDir.mkdirs()
+        libsDir.mkdirs()
+
+        // Collect all unique dependency JARs from all server projects
+        val seenLibs = mutableSetOf<String>()
+        for (name in serverProjects) {
+            val serverProject = project(":${name}")
+            val runtimeCp = serverProject.configurations.getByName("runtimeClasspath")
+
+            // Copy the thin server JAR
+            val baseName = name.removeSuffix(":backend")
+            val simpleName = baseName.substring(baseName.lastIndexOf(':') + 1)
+            val shortName = simpleName.removePrefix("multipaz-").removeSuffix("-server")
+            val jarFile = serverProject.tasks.getByName<Jar>("jar").archiveFile.get().asFile
+            jarFile.copyTo(File(jarsDir, "${shortName}.jar"), overwrite = true)
+
+            // Copy dependency JARs (deduplicated by filename)
+            for (dep in runtimeCp.resolve()) {
+                if (dep.name.endsWith(".jar") && seenLibs.add(dep.name)) {
+                    dep.copyTo(File(libsDir, dep.name), overwrite = true)
+                }
+            }
+        }
+
+        val libCount = libsDir.listFiles()?.size ?: 0
+        println("Collected ${serverProjects.size} server JARs and ${libCount} shared dependency JARs")
+    }
 }
 
 tasks.register("buildWebFrontend") {
@@ -25,7 +69,7 @@ tasks.register("buildAll") {
     description = "Build all server JARs and web frontend"
     group = "multipaz-server-deployment"
 
-    dependsOn("buildAllFatJars", "buildWebFrontend")
+    dependsOn("collectDependencies", "buildWebFrontend")
 }
 
 // Helper function to get container tool (podman or docker)
@@ -118,7 +162,7 @@ tasks.register<Exec>("runDockerImage") {
     commandLine(
         containerTool, "run",
         "--rm",
-        "-p", "8000-8008:8000-8008",
+        "-p", "8000-8010:8000-8010",
         "multipaz/server-bundle:latest"
     )
 }

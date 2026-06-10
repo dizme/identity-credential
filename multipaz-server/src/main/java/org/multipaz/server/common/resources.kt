@@ -3,7 +3,6 @@ package org.multipaz.server.common
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCall
-import io.ktor.server.application.call
 import io.ktor.server.response.respondBytes
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.Routing
@@ -22,7 +21,7 @@ import org.multipaz.rpc.cache
  */
 fun Routing.serveResources() {
     get("/") { fetchResource(call, "index.html") }
-    get("/{path...}") { fetchResource(call, call.parameters["path"]!!) }
+    get("/{path...}") { fetchResource(call, call.parameters.getAll("path")!!.joinToString("/")) }
 }
 
 /**
@@ -57,6 +56,7 @@ private suspend fun fetchResource(call: ApplicationCall, path: String) {
     }
 }
 
+/** Wrapper for cached static resource content, used as a cache key type by [serveResources]. */
 data class ResourceBytes(val bytes: ByteString)
 
 private class ResourceNotFoundException : Exception()

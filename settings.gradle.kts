@@ -31,6 +31,15 @@ pluginManagement {
     }
 }
 
+// Separate includeBuild so that non-plugin dependencies (e.g. dokkaPlugin) from
+// build-logic can be resolved via composite build substitution.
+includeBuild("build-logic") {
+    dependencySubstitution {
+        substitute(module("org.multipaz:dokka-known-subclasses-plugin"))
+            .using(project(":dokka-known-subclasses-plugin"))
+    }
+}
+
 dependencyResolutionManagement {
     repositories {
         google {
@@ -60,6 +69,7 @@ include(":multipaz")
 include(":multipaz:SwiftBridge")
 include(":multipaz-dcapi")
 include(":multipaz-doctypes")
+include(":multipaz-utopia")
 include(":multipaz-android-legacy")
 include(":multipaz-csa")
 include(":multipaz-android-legacy")
@@ -69,8 +79,11 @@ include(":multipaz-dcapi:matcherTest")
 include(":multipaz-server")
 include(":multipaz-backend-server")
 include(":multipaz-compose")
+include(":multipaz-openid4vci")
 include(":multipaz-openid4vci-server")
+include(":multipaz-verifier")
 include(":multipaz-verifier-server")
+include(":multipaz-upay-server")
 include(":multipaz-csa-server")
 include(":multipaz-records-server")
 include(":samples:testapp")
@@ -79,3 +92,5 @@ include(":xcframework")
 include(":multipaz-server-frontend")
 include(":multipaz-server-deployment")
 include(":multipaz-swiftui")
+include(":multipaz-utopia:organizations:brewery:backend")
+include(":multipaz-utopia:organizations:brewery:frontend")
