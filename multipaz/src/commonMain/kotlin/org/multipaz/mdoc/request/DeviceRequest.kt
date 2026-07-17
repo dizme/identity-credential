@@ -1,5 +1,6 @@
 package org.multipaz.mdoc.request
 
+import kotlinx.io.bytestring.ByteString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArrayBuilder
 import kotlinx.serialization.json.JsonObject
@@ -35,7 +36,6 @@ import org.multipaz.crypto.Algorithm
 import org.multipaz.crypto.AsymmetricKey
 import org.multipaz.crypto.EcCurve
 import org.multipaz.crypto.SignatureVerificationException
-import org.multipaz.crypto.X509CertChain
 import org.multipaz.documenttype.DocumentTypeRepository
 import org.multipaz.mdoc.credential.MdocCredential
 import org.multipaz.mdoc.response.Iso18015ResponseException
@@ -50,10 +50,11 @@ import org.multipaz.presentment.CredentialPresentmentSetOptionMember
 import org.multipaz.presentment.CredentialPresentmentSetOptionMemberMatch
 import org.multipaz.presentment.PresentmentSource
 import org.multipaz.presentment.TransactionData
-import org.multipaz.presentment.TransactionDataCbor
+import org.multipaz.request.Iso18013RequesterIdentity
 import org.multipaz.request.JsonRequestedClaim
 import org.multipaz.request.MdocRequestedClaim
 import org.multipaz.request.RequestedClaim
+import org.multipaz.request.RequesterIdentity
 import org.multipaz.sdjwt.credential.KeyBoundSdJwtVcCredential
 import org.multipaz.util.Logger
 import kotlin.coroutines.cancellation.CancellationException
@@ -481,7 +482,7 @@ data class DeviceRequest private constructor(
         val credential: Credential,
         val claims: Map<RequestedClaim, Claim>,
         val docRequest: DocRequest,
-        val transactionData: List<TransactionData>
+        val transactionData: List<TransactionData<*>>
     )
 
     private data class DocRequestResult(
@@ -775,7 +776,7 @@ data class DeviceRequest private constructor(
                 presentmentSource.documentTypeRepository
             )
             for (transaction in transactionData) {
-                if (!transaction.type.isApplicable(transaction, cred)) {
+                if (!transaction.isApplicable(cred)) {
                     didNotMatch = true
                     break
                 }
@@ -805,11 +806,11 @@ data class DeviceRequest private constructor(
     private fun extractTransactionData(
         requestInfo: DocRequestInfo?,
         documentTypeRepository: DocumentTypeRepository?
-    ): List<TransactionData> {
+    ): List<TransactionData<*>> {
         if (requestInfo == null || documentTypeRepository == null) {
             return emptyList()
         }
-        val list = mutableListOf<TransactionData>()
+        val list = mutableListOf<TransactionData<*>>()
         for (knownType in documentTypeRepository.transactionTypes) {
             if (!requestInfo.otherInfo.containsKey(knownType.mdocRequestInfoKeyName)) {
                 continue
@@ -819,25 +820,38 @@ data class DeviceRequest private constructor(
                 || transactionCbor.taggedItem !is Bstr) {
                 throw IllegalArgumentException("Incorrectly encoded transaction data '${knownType.identifier}'")
             }
-            list.add(TransactionDataCbor(knownType, transactionCbor))
+            list.add(knownType.parseCbor(ByteString(transactionCbor.taggedItem.asBstr)))
         }
         return list.toList()
     }
 
-    fun getRequester(): X509CertChain? {
+    /**
+     * Get the list of identities used to sign this request, one for each signature.
+     *
+     * NB: [RequesterIdentity.clientId] is not used for ISO 18013 protocols and is set to null.
+     *
+     * @return list of [RequesterIdentity] objects representing the request signatures.
+     */
+    fun getRequesterIdentities(): List<RequesterIdentity> {
         if (readerAuthAll.isNotEmpty()) {
-            return (readerAuthAll.first().protectedHeaders[Cose.COSE_LABEL_X5CHAIN.toCoseLabel]
-                ?: readerAuthAll.first().unprotectedHeaders[Cose.COSE_LABEL_X5CHAIN.toCoseLabel]
+            return readerAuthAll.map {
+                Iso18013RequesterIdentity(
+                    certChain = (it.protectedHeaders[Cose.COSE_LABEL_X5CHAIN.toCoseLabel]
+                        ?: it.unprotectedHeaders[Cose.COSE_LABEL_X5CHAIN.toCoseLabel]
                     )!!.asX509CertChain
+                )
+            }
         }
         for (docRequest in docRequests) {
             docRequest.readerAuth?.let {
-                return (it.protectedHeaders[Cose.COSE_LABEL_X5CHAIN.toCoseLabel]
+                return listOf(Iso18013RequesterIdentity(
+                    certChain = (it.protectedHeaders[Cose.COSE_LABEL_X5CHAIN.toCoseLabel]
                     ?: it.unprotectedHeaders[Cose.COSE_LABEL_X5CHAIN.toCoseLabel]
                         )!!.asX509CertChain
+                ))
             }
         }
-        return null
+        return emptyList()
     }
 
     /**

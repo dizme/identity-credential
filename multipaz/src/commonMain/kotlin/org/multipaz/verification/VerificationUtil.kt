@@ -50,8 +50,6 @@ import org.multipaz.mdoc.zkp.ZkSystemRepository
 import org.multipaz.mdoc.zkp.ZkSystemSpec
 import org.multipaz.openid.OpenID4VP
 import org.multipaz.presentment.TransactionData
-import org.multipaz.presentment.TransactionDataJson
-import org.multipaz.presentment.TransactionDataJson.Companion.convertToDocRequestOtherInfo
 import org.multipaz.request.JsonRequestedClaim
 import org.multipaz.request.MdocRequestedClaim
 import org.multipaz.sdjwt.SdJwt
@@ -95,12 +93,11 @@ object VerificationUtil {
      * @param nonce the nonce to use. For OpenID4VP, this will be base64url-encoded without padding. For mdoc-api
      *   this will be used as is.
      * @param origin the origin to use.
-     * @param clientId the client id to use, must be non-null for signed requests.
      * @param responseEncryptionKey the key to encrypt the response against or `null` to not encrypt the response.
      *   Note that in some protocols encryption of the response is mandatory and this will throw [IllegalArgumentException]
      *   if this is `null` for such protocols
-     * @param readerAuthenticationKey an optional key to use for reader authentication and its
-     *    certificate chain.
+     * @param verifierIdentities a list of verifier identities used to sign the request; empty list
+     *  for unsigned request
      * @param zkSystemSpecs if non-empty, request a ZK proof using these systems.
      * @param jsonTransactionData JSON-formatted transaction data, *before* base64url encoding,
      *   see OpenID4VP 1.0 section 8.4.
@@ -114,9 +111,8 @@ object VerificationUtil {
         claims: List<MdocRequestedClaim>,
         nonce: ByteString,
         origin: String,
-        clientId: String?,
         responseEncryptionKey: EcPublicKey?,
-        readerAuthenticationKey: AsymmetricKey.X509Compatible?,
+        verifierIdentities: List<VerifierIdentity>,
         zkSystemSpecs: List<ZkSystemSpec>,
         jsonTransactionData: List<String> = emptyList(),
         docRequestOtherInfo: Map<String, DataItem> = emptyMap()
@@ -130,9 +126,8 @@ object VerificationUtil {
                 dataElementIdentifierMapping = emptyMap(),
                 nonce = nonce,
                 origin = origin,
-                clientId = clientId,
                 responseEncryptionKey = responseEncryptionKey,
-                readerAuthenticationKey = readerAuthenticationKey,
+                verifierIdentities = verifierIdentities,
                 zkSystemSpecs = zkSystemSpecs,
                 jsonTransactionData = jsonTransactionData,
                 docRequestOtherInfo = docRequestOtherInfo
@@ -166,12 +161,11 @@ object VerificationUtil {
      * @param nonce the nonce to use. For OpenID4VP, this will be base64url-encoded without padding. For mdoc-api
      *   this will be used as is.
      * @param origin the origin to use.
-     * @param clientId the client id to use, must be non-null for signed requests.
      * @param responseEncryptionKey the key to encrypt the response against or `null` to not encrypt the response.
      *   Note that in some protocols encryption of the response is mandatory and this will throw [IllegalArgumentException]
      *   if this is `null` for such protocols
-     * @param readerAuthenticationKey an optional key to use for reader authentication and its
-     *    certificate chain.
+     * @param verifierIdentities a list of verifier identities used to sign the request; empty list
+     *  for unsigned request
      * @param jsonTransactionData JSON-formatted transaction data, *before* base64url encoding,
      *   see OpenID4VP 1.0 section 8.4.
      * @param docRequestOtherInfo transaction data encoded for use in requestInfo map in ISO 18013-7.
@@ -187,9 +181,8 @@ object VerificationUtil {
         dcql: JsonObject,
         nonce: ByteString,
         origin: String,
-        clientId: String?,
         responseEncryptionKey: EcPublicKey?,
-        readerAuthenticationKey: AsymmetricKey.X509Compatible?,
+        verifierIdentities: List<VerifierIdentity>,
         jsonTransactionData: List<String> = emptyList(),
         docRequestOtherInfo: Map<String, Map<String, DataItem>> = emptyMap(),
         state: String? = null
@@ -200,9 +193,8 @@ object VerificationUtil {
                 dcql = dcql,
                 nonce = nonce,
                 origin = origin,
-                clientId = clientId,
                 responseEncryptionKey = responseEncryptionKey,
-                readerAuthenticationKey = readerAuthenticationKey,
+                verifierIdentities = verifierIdentities,
                 jsonTransactionData = jsonTransactionData,
                 docRequestOtherInfo = docRequestOtherInfo,
                 state = state
@@ -218,9 +210,8 @@ object VerificationUtil {
         dcql: JsonObject,
         nonce: ByteString,
         origin: String,
-        clientId: String?,
         responseEncryptionKey: EcPublicKey?,
-        readerAuthenticationKey: AsymmetricKey.X509Compatible?,
+        verifierIdentities: List<VerifierIdentity>,
         jsonTransactionData: List<String>,
         docRequestOtherInfo: Map<String, Map<String, DataItem>>,
         state: String?
@@ -239,11 +230,10 @@ object VerificationUtil {
                             OpenID4VP.Version.DRAFT_29
                         },
                         origin = origin,
-                        clientId = clientId,
                         nonce = nonce.toByteArray().toBase64Url(),
                         state = state,
                         responseEncryptionKey = responseEncryptionKey,
-                        requestSigningKey = readerAuthenticationKey,
+                        verifierIdentities = verifierIdentities,
                         responseMode = OpenID4VP.ResponseMode.DC_API,
                         responseUri = null,
                         dcqlQuery = dcql,
@@ -284,8 +274,8 @@ object VerificationUtil {
                         docRequestOtherInfo = docRequestOtherInfo,
                         // TODO: sign individual requests with readerAuthenticationKey
                     ) {
-                        if (readerAuthenticationKey != null) {
-                            addReaderAuthAll(readerKey = readerAuthenticationKey)
+                        verifierIdentities.forEach { readerIdentity ->
+                            addReaderAuthAll(readerKey = readerIdentity.key)
                         }
                     }.toDataItem()
                 )
@@ -311,9 +301,8 @@ object VerificationUtil {
         dataElementIdentifierMapping: Map<String, JsonArray>,
         nonce: ByteString,
         origin: String,
-        clientId: String?,
         responseEncryptionKey: EcPublicKey?,
-        readerAuthenticationKey: AsymmetricKey.X509Compatible?,
+        verifierIdentities: List<VerifierIdentity>,
         zkSystemSpecs: List<ZkSystemSpec>,
         jsonTransactionData: List<String>,
         docRequestOtherInfo: Map<String, DataItem>
@@ -322,7 +311,8 @@ object VerificationUtil {
         when (exchangeProtocol) {
             "openid4vp",
             "openid4vp-v1-unsigned",
-            "openid4vp-v1-signed" -> {
+            "openid4vp-v1-signed",
+            "openid4vp-v1-multisigned"-> {
                 put(
                     "data",
                     OpenID4VP.generateRequest(
@@ -332,10 +322,9 @@ object VerificationUtil {
                             OpenID4VP.Version.DRAFT_29
                         },
                         origin = origin,
-                        clientId = clientId,
                         nonce = nonce.toByteArray().toBase64Url(),
                         responseEncryptionKey = responseEncryptionKey,
-                        requestSigningKey = readerAuthenticationKey,
+                        verifierIdentities = verifierIdentities,
                         responseMode = OpenID4VP.ResponseMode.DC_API,
                         responseUri = null,
                         dcqlQuery = calcDcqlMdoc(docType, claims, zkSystemSpecs),
@@ -375,7 +364,7 @@ object VerificationUtil {
                         .put(claim.dataElementName, claim.intentToRetain)
                 }
 
-                val zkRequest = if (zkSystemSpecs.size > 0) {
+                val zkRequest = if (zkSystemSpecs.isNotEmpty()) {
                     ZkRequest(
                         systemSpecs = zkSystemSpecs,
                         zkRequired = false
@@ -399,30 +388,18 @@ object VerificationUtil {
                         ))
                     )
                 ) {
-                    if (readerAuthenticationKey != null) {
-                        addDocRequest(
-                            docType = docType,
-                            nameSpaces = itemsToRequest,
-                            docRequestInfo = DocRequestInfo(
-                                zkRequest = zkRequest,
-                                docFormat = docFormat,
-                                dataElementIdentifierMapping = dataElementIdentifierMapping,
-                                otherInfo = docRequestOtherInfo
-                            ),
-                            readerKey = readerAuthenticationKey,
+                    addDocRequest(
+                        docType = docType,
+                        nameSpaces = itemsToRequest,
+                        docRequestInfo = DocRequestInfo(
+                            zkRequest = zkRequest,
+                            docFormat = docFormat,
+                            dataElementIdentifierMapping = dataElementIdentifierMapping,
+                            otherInfo = docRequestOtherInfo
                         )
-                        addReaderAuthAll(readerKey = readerAuthenticationKey)
-                    } else {
-                        addDocRequest(
-                            docType = docType,
-                            nameSpaces = itemsToRequest,
-                            docRequestInfo = DocRequestInfo(
-                                zkRequest = zkRequest,
-                                docFormat = docFormat,
-                                dataElementIdentifierMapping = dataElementIdentifierMapping,
-                                otherInfo = docRequestOtherInfo
-                            ),
-                        )
+                    )
+                    verifierIdentities.forEach { readerIdentity ->
+                        addReaderAuthAll(readerKey = readerIdentity.key)
                     }
                 }.toDataItem())
                 val base64DeviceRequest = encodedDeviceRequest.toBase64Url()
@@ -459,12 +436,11 @@ object VerificationUtil {
      * @param nonce the nonce to use. For OpenID4VP, this will be base64url-encoded without padding. For mdoc-api
      *   this will be used as is.
      * @param origin the origin to use.
-     * @param clientId the client id to use, must be non-null for signed requests.
      * @param responseEncryptionKey the key to encrypt the response against or `null` to not encrypt the response.
      *   Note that in some protocols encryption of the response is mandatory and this will throw [IllegalArgumentException]
      *   if this is `null` for such protocols
-     * @param readerAuthenticationKey an optional key to use for reader authentication and its
-     *    certificate chain.
+     * @param verifierIdentities a list of verifier identities used to sign the request; empty list
+     *  for unsigned request
      * @return a [JsonObject] with the request.
      */
     @Throws(CancellationException::class)
@@ -474,9 +450,8 @@ object VerificationUtil {
         claims: List<JsonRequestedClaim>,
         nonce: ByteString,
         origin: String,
-        clientId: String?,
         responseEncryptionKey: EcPublicKey?,
-        readerAuthenticationKey: AsymmetricKey.X509Compatible?,
+        verifierIdentities: List<VerifierIdentity>,
         jsonTransactionData: List<String> = emptyList()
     ): JsonObject {
         val requests = exchangeProtocols.map { exchangeProtocol ->
@@ -510,9 +485,8 @@ object VerificationUtil {
                                 dataElementIdentifierMapping = mapping,
                                 nonce = nonce,
                                 origin = origin,
-                                clientId = clientId,
                                 responseEncryptionKey = responseEncryptionKey,
-                                readerAuthenticationKey = readerAuthenticationKey,
+                                verifierIdentities = verifierIdentities,
                                 zkSystemSpecs = emptyList(),
                                 docRequestOtherInfo = emptyMap(), // TODO: implement transactions
                                 jsonTransactionData = emptyList()
@@ -521,7 +495,8 @@ object VerificationUtil {
                     }
                     "openid4vp",
                     "openid4vp-v1-unsigned",
-                    "openid4vp-v1-signed" -> {
+                    "openid4vp-v1-signed",
+                    "openid4vp-v1-multisigned" -> {
                         put(
                             "data",
                             OpenID4VP.generateRequest(
@@ -531,10 +506,9 @@ object VerificationUtil {
                                     OpenID4VP.Version.DRAFT_29
                                 },
                                 origin = origin,
-                                clientId = clientId,
                                 nonce = nonce.toByteArray().toBase64Url(),
                                 responseEncryptionKey = responseEncryptionKey,
-                                requestSigningKey = readerAuthenticationKey,
+                                verifierIdentities = verifierIdentities,
                                 responseMode = OpenID4VP.ResponseMode.DC_API,
                                 responseUri = null,
                                 dcqlQuery = calcDcqlSdJwt(vct, claims),
@@ -779,7 +753,7 @@ object VerificationUtil {
         nonce: String,
         documentTypeRepository: DocumentTypeRepository?,
         zkSystemRepository: ZkSystemRepository?,
-        transactionDataMap: Map<String, List<TransactionDataJson>> = emptyMap(),
+        transactionDataMap: Map<String, List<TransactionData<*>>> = emptyMap(),
         queryData: Map<String, QueryData>
     ): List<VerifiedPresentation> {
         val verifiedPresentations = mutableListOf<VerifiedPresentation>()
@@ -828,7 +802,7 @@ object VerificationUtil {
         compactSerialization: String,
         nonce: String,
         documentTypeRepository: DocumentTypeRepository?,
-        transactionData: List<TransactionData>,
+        transactionData: List<TransactionData<*>>,
         identifier: String? = null
     ): VerifiedPresentation {
         val (sdJwt, sdJwtKb) = if (compactSerialization.endsWith("~")) {
@@ -969,7 +943,7 @@ object VerificationUtil {
         sessionTranscript: DataItem,
         documentTypeRepository: DocumentTypeRepository?,
         zkSystemRepository: ZkSystemRepository?,
-        transactionData: List<TransactionData>,
+        transactionData: List<TransactionData<*>>,
         vpTokenIdentifier: String
     ): List<VerifiedPresentation> {
         val deviceResponse = DeviceResponse.fromDataItem(deviceResponse)
@@ -1162,9 +1136,8 @@ object VerificationUtil {
      * @param origin protocol and authority of the server that makes the request (e.g.
      *   `https://example.com:8000`) or an appropriate platform-specific origin for
      *   app-to-app requests
-     * @param clientId OpenID4VP client id, must be non-null for signed request
-     * @param readerAuthenticationKey certified key to sign the request, if null the request
-     *   is unsigned
+     * @param verifierIdentities a list of verifier identities used to sign the request; empty list
+     *  for unsigned request
      * @param transactionData transaction data in OpenID4VP JSON format
      *   (before Base64Url encoding), note that credentialId uses credential ids used in DCQL
      * @param nonce nonce to use, for OpenID4VP it will be Base64Url encoded
@@ -1181,9 +1154,8 @@ object VerificationUtil {
     suspend fun generateVerificationSessionForDcql(
         requestTypes: Collection<VerificationSession.RequestType>,
         dcql: String,
-        readerAuthenticationKey: AsymmetricKey.X509Compatible?,
+        verifierIdentities: List<VerifierIdentity> = listOf(),
         origin: String? = null,
-        clientId: String? = null,
         transactionData: List<String>? = null,
         nonce: ByteString = ByteString(Random.nextBytes(18)),
         encryptResponse: Boolean = true,
@@ -1206,13 +1178,16 @@ object VerificationUtil {
             null
         } else {
             lazy {
-                TransactionDataJson.parse(
-                    base64UrlEncodedJson = transactionData.map {
-                        it.encodeToByteArray().toBase64Url()
-                    },
-                    documentTypeRepository = documentTypeRepository!!
-                ).mapValues { (_, transactionData) ->
-                    transactionData.convertToDocRequestOtherInfo()
+                documentTypeRepository!!.parseJsonTransactions(transactionData.map {
+                    it.encodeToByteArray().toBase64Url()
+                }).mapValues { (_, transactionData) ->
+                    transactionData.associate { data ->
+                        val converted = data.convertToCbor()
+                        converted.type.mdocRequestInfoKeyName to Tagged(
+                            tagNumber = Tagged.ENCODED_CBOR,
+                            taggedItem = Bstr(converted.serialized.toByteArray())
+                        )
+                    }
                 }
             }
         }
@@ -1221,6 +1196,7 @@ object VerificationUtil {
             responseMode: OpenID4VP.ResponseMode,
             responseUri: String? = null,
             version: OpenID4VP.Version = OpenID4VP.Version.DRAFT_29,
+            verifierIdentities: List<VerifierIdentity>
         ): String = OpenID4VP.generateRequest(
             version = version,
             dcqlQuery = dcqlJson,
@@ -1229,9 +1205,8 @@ object VerificationUtil {
             state = state,
             origin = origin
                 ?: throw IllegalArgumentException("'origin' is required for OpenID4VP"),
-            clientId = clientId,
             responseEncryptionKey = encryptionPrivateKey?.publicKey,
-            requestSigningKey = readerAuthenticationKey,
+            verifierIdentities = verifierIdentities,
             responseMode = responseMode,
             responseUri = responseUri
         ).toString()
@@ -1243,7 +1218,7 @@ object VerificationUtil {
             dcql = dcqlJson,
             docRequestOtherInfo = docRequestOtherInfo?.value ?: emptyMap(),
         ) {
-            readerAuthenticationKey?.let { addReaderAuthAll(it) }
+            verifierIdentities.forEach { addReaderAuthAll(it.key) }
         }.toDataItem()
 
         val requests = requestTypes.map { requestType ->
@@ -1254,7 +1229,8 @@ object VerificationUtil {
                             ?: throw IllegalArgumentException("'origin' is required for DC API"),
                         responseEncryptionKey = encryptionPrivateKey,
                         openID4VPRequest = createOpenIDRequest(
-                            responseMode = OpenID4VP.ResponseMode.DC_API
+                            responseMode = OpenID4VP.ResponseMode.DC_API,
+                            verifierIdentities = verifierIdentities
                         )
                     )
 
@@ -1266,20 +1242,23 @@ object VerificationUtil {
                         openID4VPRequest = createOpenIDRequest(
                             responseMode = OpenID4VP.ResponseMode.DC_API,
                             version = OpenID4VP.Version.DRAFT_24,
+                            verifierIdentities = verifierIdentities
                         )
                     )
 
-                VerificationSession.RequestType.OPENID4VP_URI_SCHEME ->
+                VerificationSession.RequestType.OPENID4VP_URI_SCHEME -> {
                     VerificationSession.OpenID4VPUriSchemeRequest(
-                        requestorId = clientId
-                            ?: throw IllegalArgumentException("clientId must be specified"),
+                        requestorId = verifierIdentities.first().clientId
+                            ?: throw IllegalArgumentException("clientId is required for OpenID4VCI"),
                         responseEncryptionKey = encryptionPrivateKey,
                         openID4VPRequest = createOpenIDRequest(
                             responseMode = OpenID4VP.ResponseMode.DIRECT_POST,
                             responseUri = responseUri
-                                ?: throw IllegalArgumentException("responseUri must be specified")
+                                ?: throw IllegalArgumentException("responseUri must be specified"),
+                            verifierIdentities = verifierIdentities.subList(0, 1)
                         )
                     )
+                }
 
                 VerificationSession.RequestType.DC_ISO_18013 -> {
                     if (encryptionPrivateKey == null) {

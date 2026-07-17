@@ -462,7 +462,7 @@ open class CloudSecureArea protected constructor(
             appendUInt32(ivIdentifier)
             appendUInt32(encryptedCounter++)
         }.toByteArray()
-        return Crypto.encrypt(Algorithm.A128GCM, skDevice!!, iv, messagePlaintext)
+        return Crypto.encrypt(Algorithm.A256GCM, skDevice!!, iv, messagePlaintext)
     }
 
     private suspend fun decryptFromCloud(messageCiphertext: ByteArray): ByteArray {
@@ -716,6 +716,7 @@ open class CloudSecureArea protected constructor(
                     val unlockData = unlockDataProvider.getKeyUnlockData(
                         secureArea = this,
                         alias = alias,
+                        algorithm = getKeyInfo(alias).algorithm,
                         unlockReason = unlockReason
                     )
                     op.invoke(unlockData)
@@ -971,6 +972,7 @@ open class CloudSecureArea protected constructor(
         override suspend fun getKeyUnlockData(
             secureArea: SecureArea,
             alias: String,
+            algorithm: Algorithm,
             unlockReason: Reason
         ): KeyUnlockData {
             check(secureArea is CloudSecureArea)

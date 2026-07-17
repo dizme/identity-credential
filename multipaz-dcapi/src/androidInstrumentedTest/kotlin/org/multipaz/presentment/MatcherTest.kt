@@ -34,10 +34,12 @@ import org.multipaz.mdoc.util.MdocUtil
 import org.multipaz.digitalcredentials.DigitalCredentials
 import org.multipaz.digitalcredentials.calculateCredentialDatabase
 import org.multipaz.digitalcredentials.getDefault
+import org.multipaz.document.setAndroidCredmanExchangeProtocols
 import org.multipaz.mdoc.request.buildDeviceRequestFromDcql
 import org.multipaz.openid.OpenID4VP
 import org.multipaz.util.Logger
 import org.multipaz.util.toBase64Url
+import org.multipaz.verification.VerifierIdentity
 import kotlin.random.Random
 
 // Tests for the matcher in multipaz-models/src/androidMain/matcher ...
@@ -93,10 +95,11 @@ class MatcherTest {
         val requestData = OpenID4VP.generateRequest(
             version = version,
             origin = ORIGIN,
-            clientId = CLIENT_ID,
             nonce = nonce,
             responseEncryptionKey = encryptionKey?.publicKey,
-            requestSigningKey = readerAuthKey,
+            verifierIdentities = buildList {
+                readerAuthKey?.let { add(VerifierIdentity(it, CLIENT_ID)) }
+            },
             responseMode = OpenID4VP.ResponseMode.DC_API,
             responseUri = null,
             dcqlQuery = Json.decodeFromString(JsonObject.serializer(), dcql)
@@ -255,6 +258,117 @@ class MatcherTest {
                     Photo of holder: 5318 bytes
                 """.trimIndent().trim() + "\n",
             matcherResult
+        )
+    }
+
+    /**
+     * When a request lists several protocols as alternatives, a document must still be offered for a
+     * supported protocol even if a recognized-but-unsupported protocol is listed first. Here the mDL
+     * is exported for org-iso-mdoc only, and the request lists the (draft) openid4vp protocol before
+     * org-iso-mdoc. The matcher must fall through to org-iso-mdoc and offer the mDL, instead of
+     * stopping at the first recognized protocol (which matches no credential here).
+     */
+    @Test
+    fun testMatcher_protocolOrder_fallsThroughToSupported() = runTest {
+        val harness = DocumentStoreTestHarness()
+        harness.initialize()
+        harness.provisionStandardDocuments()
+        // The mDL is exported for the ISO mdoc protocol only, not the (draft) openid4vp protocol.
+        harness.docMdl.setAndroidCredmanExchangeProtocols(listOf("org-iso-mdoc"))
+
+        val dcql =
+            """
+                {
+                  "credentials": [{
+                      "id": "mdl",
+                      "format": "mso_mdoc",
+                      "meta": { "doctype_value": "org.iso.18013.5.1.mDL" },
+                      "claims": [
+                        { "path": ["org.iso.18013.5.1", "given_name"] },
+                        { "path": ["org.iso.18013.5.1", "family_name"] }
+                ]}]}
+            """.trimIndent().trim()
+
+        val nonce = Random.nextBytes(16).toBase64Url()
+
+        // First alternative: the (draft) openid4vp protocol (unsigned) — not supported by the mDL.
+        val openid4vpData = OpenID4VP.generateRequest(
+            version = OpenID4VP.Version.DRAFT_24,
+            origin = ORIGIN,
+            nonce = nonce,
+            responseEncryptionKey = null,
+            verifierIdentities = emptyList(),
+            responseMode = OpenID4VP.ResponseMode.DC_API,
+            responseUri = null,
+            dcqlQuery = Json.decodeFromString(JsonObject.serializer(), dcql)
+        )
+
+        // Second alternative: the org-iso-mdoc protocol — supported by the mDL.
+        val encryptionKey = Crypto.createEcPrivateKey(EcCurve.P256)
+        val encryptionInfo = buildCborArray {
+            add("dcapi")
+            addCborMap {
+                put("nonce", nonce.toByteArray())
+                put("recipientPublicKey", encryptionKey.toCoseKey().toDataItem())
+            }
+        }
+        val base64EncryptionInfo = Cbor.encode(encryptionInfo).toBase64Url()
+        val dcapiInfo = buildCborArray {
+            add(base64EncryptionInfo)
+            add(ORIGIN)
+        }
+        val dcapiInfoDigest = Crypto.digest(Algorithm.SHA256, Cbor.encode(dcapiInfo))
+        val sessionTranscript = buildCborArray {
+            add(Simple.NULL)
+            add(Simple.NULL)
+            addCborArray {
+                add("dcapi")
+                add(dcapiInfoDigest)
+            }
+        }
+        val deviceRequest = buildDeviceRequestFromDcql(
+            sessionTranscript = sessionTranscript,
+            dcqlString = dcql,
+        ) {}
+        val base64DeviceRequest = Cbor.encode(deviceRequest.toDataItem()).toBase64Url()
+
+        val credentialDatabase = calculateCredentialDatabase(
+            appName = "Test App",
+            documentStore = harness.documentStore,
+            documentTypeRepository = harness.documentTypeRepository,
+            selectedProtocols = DigitalCredentials.getDefault().supportedProtocols,
+        )
+
+        var result = runMatcher(
+            request = buildJsonObject {
+                putJsonArray("requests") {
+                    // (draft) openid4vp FIRST — recognized but matches no credential here
+                    addJsonObject {
+                        put("protocol", "openid4vp")
+                        put("data", openid4vpData)
+                    }
+                    // org-iso-mdoc SECOND — the mDL supports this
+                    addJsonObject {
+                        put("protocol", "org-iso-mdoc")
+                        putJsonObject("data") {
+                            put("deviceRequest", base64DeviceRequest)
+                            put("encryptionInfo", base64EncryptionInfo)
+                        }
+                    }
+                }
+            }.toString().encodeToByteArray(),
+            credentialDatabase = Cbor.encode(credentialDatabase)
+        )
+        for (docId in harness.documentStore.listDocumentIds()) {
+            val doc = harness.documentStore.lookupDocument(docId)!!
+            result = result.replace(docId, "__${doc.displayName!!}__")
+        }
+
+        // The matcher falls through from the unmatched openid4vp entry to org-iso-mdoc and offers the
+        // mDL. Without the fall-through fix, this result would be empty.
+        Assert.assertTrue(
+            "Expected the mDL to be offered over org-iso-mdoc, but the matcher output was:\n$result",
+            result.contains("org-iso-mdoc") && result.contains("__mDL__")
         )
     }
 
@@ -2187,6 +2301,190 @@ class MatcherTest {
                     Family name: Mustermann
                     Given names: Erika
                   SetEntry set_index 1
+                    cred_id 0 org-iso-mdoc __EU PID 2__
+                    Family name: Mustermann
+                    Given names: Max
+            """.trimIndent().trim() + "\n",
+            matcherResult
+        )
+    }
+
+    @Test
+    fun testMatcher_OpenID4VP_ExchangeProtocols() = runTest {
+        val matcherResult = testMatcherDcql(
+            version = OpenID4VP.Version.DRAFT_29,
+            signRequest = true,
+            encryptionKey = null,
+            harnessInitializer = { harness ->
+                harness.provisionStandardDocuments()
+                // docMdl will only support org-iso-mdoc, so it should NOT match for openid4vp-v1-signed
+                harness.docMdl.setAndroidCredmanExchangeProtocols(listOf("org-iso-mdoc"))
+                // docEuPid supports openid4vp-v1-signed, so it should match
+                harness.docEuPid.setAndroidCredmanExchangeProtocols(listOf("openid4vp-v1-signed"))
+                // docEuPid2 is not modified, so it supports all protocols by default, so it should match
+            },
+            dcql =
+                """
+                    {
+                      "credentials": [
+                        {
+                          "id": "mdl",
+                          "format": "mso_mdoc",
+                          "meta": {
+                            "doctype_value": "org.iso.18013.5.1.mDL"
+                          },
+                          "claims": [
+                            {
+                              "path": [
+                                "org.iso.18013.5.1",
+                                "given_name"
+                              ]
+                            },
+                            {
+                              "path": [
+                                "org.iso.18013.5.1",
+                                "family_name"
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "id": "pid",
+                          "format": "dc+sd-jwt",
+                          "meta": {
+                            "vct_values": [
+                              "urn:eudi:pid:1"
+                            ]
+                          },
+                          "claims": [
+                            {
+                              "path": [
+                                "family_name"
+                              ]
+                            },
+                            {
+                              "path": [
+                                "given_name"
+                              ]
+                            }
+                          ]
+                        }
+                      ],
+                      "credential_sets": [
+                        {
+                          "options": [
+                            [
+                              "mdl"
+                            ],
+                            [
+                              "pid"
+                            ]
+                          ]
+                        }
+                      ]
+                    }
+                """.trimIndent().trim(),
+        )
+        Assert.assertEquals(
+            """
+                Set
+                  set_id 0 openid4vp-v1-signed
+                  SetEntry set_index 0
+                    cred_id 0 openid4vp-v1-signed __EU PID__
+                    Family name: Mustermann
+                    Given names: Erika
+                  SetEntry set_index 0
+                    cred_id 0 openid4vp-v1-signed __EU PID 2__
+                    Family name: Mustermann
+                    Given names: Max
+            """.trimIndent().trim() + "\n",
+            matcherResult
+        )
+    }
+
+    @Test
+    fun testMatcher_Iso18013_ExchangeProtocols() = runTest {
+        val matcherResult = testMatcherIso18013(
+            signRequest = true,
+            harnessInitializer = { harness ->
+                harness.provisionStandardDocuments()
+                // docMdl will only support org-iso-mdoc, so it should match
+                harness.docMdl.setAndroidCredmanExchangeProtocols(listOf("org-iso-mdoc"))
+                // docEuPid supports openid4vp-v1-signed, so it should NOT match
+                harness.docEuPid.setAndroidCredmanExchangeProtocols(listOf("openid4vp-v1-signed"))
+                // docEuPid2 has no protocols configured, so it should match
+            },
+            dcql =
+                """
+                    {
+                      "credentials": [
+                        {
+                          "id": "mdl",
+                          "format": "mso_mdoc",
+                          "meta": {
+                            "doctype_value": "org.iso.18013.5.1.mDL"
+                          },
+                          "claims": [
+                            {
+                              "path": [
+                                "org.iso.18013.5.1",
+                                "given_name"
+                              ]
+                            },
+                            {
+                              "path": [
+                                "org.iso.18013.5.1",
+                                "family_name"
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "id": "pid",
+                          "format": "dc+sd-jwt",
+                          "meta": {
+                            "vct_values": [
+                              "urn:eudi:pid:1"
+                            ]
+                          },
+                          "claims": [
+                            {
+                              "path": [
+                                "family_name"
+                              ]
+                            },
+                            {
+                              "path": [
+                                "given_name"
+                              ]
+                            }
+                          ]
+                        }
+                      ],
+                      "credential_sets": [
+                        {
+                          "options": [
+                            [
+                              "mdl"
+                            ],
+                            [
+                              "pid"
+                            ]
+                          ]
+                        }
+                      ]
+                    }
+                """.trimIndent().trim(),
+        )
+        Assert.assertEquals(
+            """
+                Set
+                  set_id 0 org-iso-mdoc
+                  SetEntry set_index 0
+                    cred_id 0 org-iso-mdoc __mDL__
+                    Given names: Erika
+                    Family name: Mustermann
+                  SetEntry set_index 0
                     cred_id 0 org-iso-mdoc __EU PID 2__
                     Family name: Mustermann
                     Given names: Max
