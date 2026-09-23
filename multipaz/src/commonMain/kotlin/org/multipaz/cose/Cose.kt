@@ -10,8 +10,15 @@ import org.multipaz.crypto.Crypto
 import org.multipaz.crypto.EcPrivateKey
 import org.multipaz.crypto.EcPublicKey
 import org.multipaz.crypto.EcSignature
+import org.multipaz.crypto.MlDsaPublicKey
+import org.multipaz.crypto.MlDsaSignature
+import org.multipaz.crypto.MlKemPublicKey
+import org.multipaz.crypto.PublicKey
+import org.multipaz.crypto.RsaPublicKey
+import org.multipaz.crypto.RsaSignature
 import org.multipaz.crypto.SignatureVerificationException
 import org.multipaz.crypto.AsymmetricKey
+import org.multipaz.crypto.SecretKey
 import org.multipaz.securearea.KeyUnlockData
 import org.multipaz.prompt.Reason
 import org.multipaz.securearea.SecureArea
@@ -37,6 +44,13 @@ object Cose {
      * Reference: https://www.iana.org/assignments/cose/cose.xhtml#key-common-parameters
      */
     const val COSE_KEY_KID: Long = 2
+
+    /**
+     * The COSE Key common parameter for the key algorithm (int / tstr).
+     *
+     * Reference: https://www.iana.org/assignments/cose/cose.xhtml#key-common-parameters
+     */
+    const val COSE_KEY_ALG: Long = 3
 
     /**
      * The COSE Key type parameter for the EC curve (int / tstr).
@@ -81,6 +95,90 @@ object Cose {
      * Reference: https://www.iana.org/assignments/cose/cose.xhtml#key-type
      */
     const val COSE_KEY_TYPE_EC2: Long = 2
+
+    /**
+     * The COSE Key Type for RSA.
+     *
+     * Reference: https://datatracker.ietf.org/doc/html/rfc8230#section-4
+     */
+    const val COSE_KEY_TYPE_RSA: Long = 3
+
+    /**
+     * The COSE Key type parameter for RSA modulus n (bstr).
+     *
+     * Reference: https://datatracker.ietf.org/doc/html/rfc8230#section-4
+     */
+    const val COSE_KEY_PARAM_N: Long = -1
+
+    /**
+     * The COSE Key type parameter for RSA public exponent e (bstr).
+     *
+     * Reference: https://datatracker.ietf.org/doc/html/rfc8230#section-4
+     */
+    const val COSE_KEY_PARAM_E: Long = -2
+
+    /**
+     * The COSE Key type parameter for RSA private exponent d (bstr).
+     *
+     * Reference: https://datatracker.ietf.org/doc/html/rfc8230#section-4
+     */
+    const val COSE_KEY_PARAM_D_RSA: Long = -3
+
+    /**
+     * The COSE Key type parameter for RSA prime factor p (bstr).
+     *
+     * Reference: https://datatracker.ietf.org/doc/html/rfc8230#section-4
+     */
+    const val COSE_KEY_PARAM_P: Long = -4
+
+    /**
+     * The COSE Key type parameter for RSA prime factor q (bstr).
+     *
+     * Reference: https://datatracker.ietf.org/doc/html/rfc8230#section-4
+     */
+    const val COSE_KEY_PARAM_Q: Long = -5
+
+    /**
+     * The COSE Key type parameter for RSA dP (bstr).
+     *
+     * Reference: https://datatracker.ietf.org/doc/html/rfc8230#section-4
+     */
+    const val COSE_KEY_PARAM_DP: Long = -6
+
+    /**
+     * The COSE Key type parameter for RSA dQ (bstr).
+     *
+     * Reference: https://datatracker.ietf.org/doc/html/rfc8230#section-4
+     */
+    const val COSE_KEY_PARAM_DQ: Long = -7
+
+    /**
+     * The COSE Key type parameter for RSA qInv (bstr).
+     *
+     * Reference: https://datatracker.ietf.org/doc/html/rfc8230#section-4
+     */
+    const val COSE_KEY_PARAM_QINV: Long = -8
+
+    /**
+     * The COSE Key Type for Algorithm Key Pair (AKP).
+     *
+     * Reference: RFC 9964 section 4.1
+     */
+    const val COSE_KEY_TYPE_AKP: Long = 7
+
+    /**
+     * The COSE Key type parameter for AKP public key (bstr).
+     *
+     * Reference: RFC 9964 section 4.1
+     */
+    const val COSE_KEY_PARAM_PUB_KEY: Long = -1
+
+    /**
+     * The COSE Key type parameter for AKP private key (bstr).
+     *
+     * Reference: RFC 9964 section 4.1
+     */
+    const val COSE_KEY_PARAM_PRIV_KEY: Long = -2
 
     /**
      * The COSE label for conveying an algorithm.
@@ -145,7 +243,7 @@ object Cose {
      * @throws SignatureVerificationException if the signature check fails.
      */
     suspend fun coseSign1Check(
-        publicKey: EcPublicKey,
+        publicKey: PublicKey,
         detachedData: ByteArray?,
         signature: CoseSign1,
         signatureAlgorithm: Algorithm
@@ -168,11 +266,35 @@ object Cose {
             encodedProtectedHeaders = encodedProtectedHeaders,
             dataToBeSigned = detachedData ?: signature.payload!!
         )
-        Crypto.checkSignature(
-            publicKey,
-            toBeSigned,
-            signatureAlgorithm,
-            EcSignature.fromCoseEncoded(signature.signature))
+        when (publicKey) {
+            is EcPublicKey -> {
+                Crypto.checkSignature(
+                    publicKey,
+                    toBeSigned,
+                    signatureAlgorithm,
+                    EcSignature.fromCoseEncoded(signature.signature)
+                )
+            }
+            is RsaPublicKey -> {
+                Crypto.checkSignature(
+                    publicKey,
+                    toBeSigned,
+                    signatureAlgorithm,
+                    RsaSignature(signature.signature)
+                )
+            }
+            is MlDsaPublicKey -> {
+                Crypto.checkSignature(
+                    publicKey,
+                    toBeSigned,
+                    signatureAlgorithm,
+                    MlDsaSignature(signature.signature)
+                )
+            }
+            is MlKemPublicKey -> {
+                throw IllegalArgumentException("Cannot verify signature with ML-KEM key")
+            }
+        }
     }
 
     /**
@@ -195,8 +317,8 @@ object Cose {
         signingKey: AsymmetricKey,
         message: ByteArray,
         includeMessageInPayload: Boolean,
-        protectedHeaders: Map<CoseLabel, DataItem>,
-        unprotectedHeaders: Map<CoseLabel, DataItem>,
+        protectedHeaders: Map<CoseLabel, DataItem> = mapOf(),
+        unprotectedHeaders: Map<CoseLabel, DataItem> = mapOf(),
     ): CoseSign1 {
         val adjustedProtectedHeaders = mutableMapOf<CoseLabel, DataItem>()
         adjustedProtectedHeaders.putAll(protectedHeaders)
@@ -357,7 +479,7 @@ object Cose {
      * in the protected header.
      *
      * @param algorithm the algorithm to use, e.g. [Algorithm.HMAC_SHA256].
-     * @param key the bytes of the symmetric key to use.
+     * @param key the symmetric key to use.
      * @param message the message.
      * @param includeMessageInPayload whether to include the message in the payload.
      * @param protectedHeaders the protected headers to include.
@@ -365,7 +487,7 @@ object Cose {
      */
     suspend fun coseMac0(
         algorithm: Algorithm,
-        key: ByteArray,
+        key: SecretKey,
         message: ByteArray,
         includeMessageInPayload: Boolean,
         protectedHeaders: Map<CoseLabel, DataItem>,

@@ -5,7 +5,7 @@ import kotlinx.io.bytestring.decodeToString
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonArray
 import org.multipaz.claim.JsonClaim
-import org.multipaz.credential.Credential
+import org.multipaz.crypto.X509CertChain
 import org.multipaz.documenttype.DocumentTypeRepository
 import org.multipaz.sdjwt.SdJwt
 import kotlin.time.Clock
@@ -34,12 +34,25 @@ interface SdJwtVcCredential {
      */
     val issuerProvidedData: ByteString
 
+    /**
+     * The X.509 certificate chain for the issuer signature from the SD-JWT VC header (`x5c`), if present.
+     */
+    suspend fun getIssuerCertChain(): X509CertChain? {
+        val sdJwt = SdJwt.fromCompactSerialization(issuerProvidedData.decodeToString())
+        return sdJwt.x5c
+    }
+
     suspend fun getClaimsImpl(
         documentTypeRepository: DocumentTypeRepository?
     ): List<JsonClaim> {
         val ret = mutableListOf<JsonClaim>()
         val sdJwt = SdJwt.fromCompactSerialization(issuerProvidedData.decodeToString())
-        val issuerKey = sdJwt.x5c!!.certificates.first().ecPublicKey
+        // We only support keys that are certified with the certificate chain. Web-based resolution
+        // is not supported (and it is not clear it is suitable for identity credentials in general
+        // if the future goal is to support (offline) proximity presentment).
+        val x5c = sdJwt.x5c
+            ?: throw IllegalStateException("Only X509-certified keys are supported in SD-JWT")
+        val issuerKey = x5c.certificates.first().publicKey
         val processedJwt = sdJwt.verify(issuerKey)
 
         // By design, we only include the top-level claims.
@@ -50,6 +63,7 @@ interface SdJwtVcCredential {
                 JsonClaim(
                     displayName = dt?.jsonDocumentType?.claims?.get(claimName)?.displayName ?: claimName,
                     attribute = attribute,
+                    vct = vct,
                     claimPath = buildJsonArray { add(claimName) },
                     value = claimValue
                 )

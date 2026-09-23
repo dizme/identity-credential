@@ -13,9 +13,11 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.io.bytestring.ByteString
+import org.multipaz.cbor.Simple
 import org.multipaz.cbor.buildCborArray
-import org.multipaz.digitalcredentials.Default
 import org.multipaz.digitalcredentials.DigitalCredentials
+import org.multipaz.digitalcredentials.getDefault
+import org.multipaz.util.Logger
 import kotlin.Boolean
 
 /**
@@ -28,6 +30,8 @@ class TestAppSettingsModel private constructor(
 ) {
 
     private lateinit var settingsTable: StorageTable
+
+    private lateinit var digitalCredentials: DigitalCredentials
 
     companion object {
         private val tableSpec = StorageTableSpec(
@@ -48,6 +52,7 @@ class TestAppSettingsModel private constructor(
         ): TestAppSettingsModel {
             val instance = TestAppSettingsModel(readOnly)
             instance.settingsTable = storage.getTable(tableSpec)
+            instance.digitalCredentials = DigitalCredentials.getDefault()
             instance.init()
             return instance
         }
@@ -71,13 +76,17 @@ class TestAppSettingsModel private constructor(
     ) {
         val value = settingsTable.get(key)?.let {
             val dataItem = Cbor.decode(it.toByteArray())
-            when (T::class) {
-                Boolean::class -> { dataItem.asBoolean as T }
-                String::class -> { dataItem.asTstr as T }
-                List::class -> { dataItem.asArray.map { item -> (item as Tstr).value } as T }
-                Set::class -> { dataItem.asArray.map { item -> (item as Tstr).value }.toSet() as T }
-                EcCurve::class -> { EcCurve.entries.find { it.name == dataItem.asTstr } as T }
-                else -> { throw IllegalStateException("Type not supported") }
+            if (dataItem == Simple.NULL) {
+               null
+            } else {
+                when (T::class) {
+                    Boolean::class -> { dataItem.asBoolean as T }
+                    String::class -> { dataItem.asTstr as T }
+                    List::class -> { dataItem.asArray.map { item -> (item as Tstr).value } as T }
+                    Set::class -> { dataItem.asArray.map { item -> (item as Tstr).value }.toSet() as T }
+                    EcCurve::class -> { EcCurve.entries.find { it.name == dataItem.asTstr } as T }
+                    else -> { throw IllegalStateException("Type not supported") }
+                }
             }
         } ?: defaultValue
         variable.value = value
@@ -85,33 +94,37 @@ class TestAppSettingsModel private constructor(
         if (!readOnly) {
             CoroutineScope(Dispatchers.Default).launch {
                 variable.asStateFlow().collect { newValue ->
-                    val dataItem = when (T::class) {
-                        Boolean::class -> {
-                            (newValue as Boolean).toDataItem()
-                        }
-
-                        String::class -> {
-                            (newValue as String).toDataItem()
-                        }
-
-                        List::class -> {
-                            buildCborArray {
-                                (newValue as List<*>).forEach { add(Tstr(it as String)) }
+                    val dataItem = if (newValue == null) {
+                        Simple.NULL
+                    } else {
+                        when (T::class) {
+                            Boolean::class -> {
+                                (newValue as Boolean).toDataItem()
                             }
-                        }
 
-                        Set::class -> {
-                            buildCborArray {
-                                (newValue as Set<*>).forEach { add(Tstr(it as String)) }
+                            String::class -> {
+                                (newValue as String).toDataItem()
                             }
-                        }
 
-                        EcCurve::class -> {
-                            (newValue as EcCurve).name.toDataItem()
-                        }
+                            List::class -> {
+                                buildCborArray {
+                                    (newValue as List<*>).forEach { add(Tstr(it as String)) }
+                                }
+                            }
 
-                        else -> {
-                            throw IllegalStateException("Type not supported")
+                            Set::class -> {
+                                buildCborArray {
+                                    (newValue as Set<*>).forEach { add(Tstr(it as String)) }
+                                }
+                            }
+
+                            EcCurve::class -> {
+                                (newValue as EcCurve).name.toDataItem()
+                            }
+
+                            else -> {
+                                throw IllegalStateException("Type not supported")
+                            }
                         }
                     }
                     if (settingsTable.get(key) == null) {
@@ -158,14 +171,30 @@ class TestAppSettingsModel private constructor(
         bind(readerBleL2CapInEngagementEnabled, "readerBleL2CapInEngagementEnabled", true)
         bind(readerAutomaticallySelectTransport, "readerAutomaticallySelectTransport", false)
         bind(readerAllowMultipleRequests, "readerAllowMultipleRequests", false)
+        bind(readerLastSelectedRequestId, "readerLastSelectedRequestId", null)
+        bind(readerIssuerIdentifiers, "readerIssuerIdentifiers", "")
 
         bind(cloudSecureAreaUrl, "cloudSecureAreaUrl", CSA_URL_DEFAULT)
-        bind(dcApiProtocols, "dcApiProtocols", DigitalCredentials.Default.supportedProtocols)
+        bind(dcApiProtocols, "dcApiProtocols", digitalCredentials.supportedProtocols)
+        bind(dcRequestIssuerIdentifiers, "dcRequestIssuerIdentifiers", "")
+        bind(dcRequestLastSelectedRequestId, "dcRequestLastSelectedRequestId", null)
 
         bind(cryptoPreferBouncyCastle, "cryptoForceBouncyCastle", false)
 
         bind(observeModeEnabled, "observeModeEnabled", false)
         bind(observeModeEmitPollingFramesAsReader, "observeModeEmitPollingFramesAsReader", false)
+
+        bind(currentlyFocusedDocumentId, "currentlyFocusedDocumentId", "")
+
+        bind(signRequest, "signRequest", true)
+
+        bind(loggingDebugEnabled, "loggingDebugEnabled", false)
+        Logger.isDebugEnabled = loggingDebugEnabled.value
+        CoroutineScope(Dispatchers.Default).launch {
+            loggingDebugEnabled.collect { enabled ->
+                Logger.isDebugEnabled = enabled
+            }
+        }
     }
 
     val presentmentBleCentralClientModeEnabled = MutableStateFlow<Boolean>(false)
@@ -187,14 +216,22 @@ class TestAppSettingsModel private constructor(
     val readerBleL2CapInEngagementEnabled = MutableStateFlow<Boolean>(false)
     val readerAutomaticallySelectTransport = MutableStateFlow<Boolean>(false)
     val readerAllowMultipleRequests = MutableStateFlow<Boolean>(false)
+    val readerLastSelectedRequestId = MutableStateFlow<String?>(null)
+    val readerIssuerIdentifiers = MutableStateFlow<String>("")
 
     val cloudSecureAreaUrl = MutableStateFlow<String>(CSA_URL_DEFAULT)
-    val dcApiProtocols = MutableStateFlow<Set<String>>(DigitalCredentials.Default.supportedProtocols)
+    val dcApiProtocols = MutableStateFlow<Set<String>>(emptySet())
+    val dcRequestIssuerIdentifiers = MutableStateFlow<String>("")
+    val dcRequestLastSelectedRequestId = MutableStateFlow<String?>(null)
 
     val cryptoPreferBouncyCastle = MutableStateFlow<Boolean>(false)
 
     val observeModeEnabled = MutableStateFlow<Boolean>(false)
     val observeModeEmitPollingFramesAsReader = MutableStateFlow<Boolean>(false)
+    val currentlyFocusedDocumentId = MutableStateFlow<String>("")
+    val signRequest = MutableStateFlow<Boolean>(true)
+
+    val loggingDebugEnabled = MutableStateFlow<Boolean>(false)
 }
 
 // Default to our open CSA, where "open" means it'll work with even unlocked bootloaders

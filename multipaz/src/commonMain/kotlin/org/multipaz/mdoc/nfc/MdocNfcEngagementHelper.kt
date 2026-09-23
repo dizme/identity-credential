@@ -1,5 +1,6 @@
 package org.multipaz.mdoc.nfc
 
+import kotlinx.coroutines.CancellationException
 import org.multipaz.cbor.DataItem
 import org.multipaz.cbor.Simple
 import org.multipaz.crypto.EcPublicKey
@@ -23,6 +24,8 @@ import kotlinx.io.bytestring.append
 import kotlinx.io.bytestring.encodeToByteString
 import org.multipaz.cbor.Cbor
 import org.multipaz.cbor.buildCborArray
+import org.multipaz.cbor.toDataItem
+import org.multipaz.mdoc.engagement.Capability
 import org.multipaz.mdoc.engagement.buildDeviceEngagement
 import org.multipaz.mdoc.role.MdocRole
 import org.multipaz.util.getUInt16
@@ -43,6 +46,7 @@ import org.multipaz.util.getUInt16
  * element, or null to not use NFC static handover.
  * @param negotiatedHandoverPicker a function to choose one of the connection methods from the mdoc reader or
  * null to not use NFC negotiated handover.
+ * @property capabilities the capabilities to convey to the mdoc reader.
  */
 class MdocNfcEngagementHelper(
     val eDeviceKey: EcPublicKey,
@@ -50,9 +54,13 @@ class MdocNfcEngagementHelper(
         connectionMethods: List<MdocConnectionMethod>,
         encodedDeviceEngagement: ByteString,
         handover: DataItem) -> Unit,
-    val onError: (error: Throwable) -> Unit,
+    val onError: (error: Exception) -> Unit,
     val staticHandoverMethods: List<MdocConnectionMethod>? = null,
     val negotiatedHandoverPicker: ((connectionMethods: List<MdocConnectionMethod>) -> MdocConnectionMethod)? = null,
+    val capabilities: Map<Capability, DataItem> = mapOf(
+        Capability.READER_AUTH_ALL_SUPPORT to true.toDataItem(),
+        Capability.EXTENDED_REQUEST_SUPPORT to true.toDataItem()
+    ),
 ) {
     companion object {
         private const val TAG = "MdocNfcEngagementHelper"
@@ -92,7 +100,7 @@ class MdocNfcEngagementHelper(
     private fun raiseError(errorMessage: String, cause: Throwable? = null) {
         check(!raisedError && !raisedHandoverComplete)
         raisedError = true
-        onError(Error(errorMessage, cause))
+        onError(IllegalStateException(errorMessage, cause))
     }
 
     private fun raiseHandoverComplete(
@@ -157,6 +165,7 @@ class MdocNfcEngagementHelper(
                         )
                     )
                     val initialNdefMessagePayload = initialNdefMessage.encode()
+                    Logger.dHex(TAG, "Prepared NDEF message", initialNdefMessagePayload)
                     val bsb = ByteStringBuilder()
                     bsb.append((initialNdefMessagePayload.size/0x100).and(0xff).toByte())
                     bsb.append(initialNdefMessagePayload.size.and(0xff).toByte())
@@ -165,7 +174,11 @@ class MdocNfcEngagementHelper(
                     negotiatedHandoverState = NegotiatedHandoverState.EXPECT_SERVICE_SELECT
                 } else {
                     val encodedDeviceEngagement = Cbor.encode(
-                        buildDeviceEngagement(eDeviceKey = eDeviceKey) { }.toDataItem()
+                        buildDeviceEngagement(eDeviceKey = eDeviceKey) {
+                            capabilities.forEach { (capability, value) ->
+                                addCapability(capability, value)
+                            }
+                        }.toDataItem()
                     )
 
                     val combinedStaticHandoverMethods = MdocConnectionMethod.combine(staticHandoverMethods!!)
@@ -175,6 +188,7 @@ class MdocNfcEngagementHelper(
                         skipUuids = false,
                     )
                     val hsPayload = handoverSelectMessage.encode()
+                    Logger.dHex(TAG, "Prepared Handover Select message", hsPayload)
 
                     val handover = buildCborArray {
                         add(hsPayload)                      // Handover Select message
@@ -216,7 +230,7 @@ class MdocNfcEngagementHelper(
     private suspend fun ndefTransactHandleServiceSelect(message: NdefMessage): NdefMessage {
         check(message.records.size == 1) { "Expected just a single record for service select" }
         val serviceSelectRecord = ServiceSelectRecord.fromNdefRecord(message.records[0])
-            ?: throw Error("Service Select record not found")
+            ?: throw IllegalStateException("Service Select record not found")
         check(serviceSelectRecord.serviceName == Nfc.SERVICE_NAME_CONNECTION_HANDOVER) {
             "Expected service ${Nfc.SERVICE_NAME_CONNECTION_HANDOVER} found ${serviceSelectRecord.serviceName}"
         }
@@ -233,7 +247,7 @@ class MdocNfcEngagementHelper(
     private suspend fun ndefTransactHandleHandoverRequest(message: NdefMessage): NdefMessage {
         // Handover Request Record must be the first record in Handover Request Message..
         val hrRecord = HandoverRequestRecord.fromNdefRecord(message.records[0])
-            ?: throw Error("Handover Request Record not the first in message")
+            ?: throw IllegalStateException("Handover Request Record not the first in message")
         check(hrRecord.version == 0x15) {
             "Expected Connection Handover version 1.5, got ${byteArrayOf(hrRecord.version.toByte()).toHex()}"
         }
@@ -245,7 +259,7 @@ class MdocNfcEngagementHelper(
             }
         }
         if (availableConnectionMethods.isEmpty()) {
-            throw Error("No supported connection methods found in Handover Request method")
+            throw IllegalStateException("No supported connection methods found in Handover Request method")
         }
         val disambiguatedConnectionMethods = MdocConnectionMethod.disambiguate(
             availableConnectionMethods,
@@ -332,12 +346,19 @@ class MdocNfcEngagementHelper(
     }
 
     private suspend fun ndefTransact(message: NdefMessage): NdefMessage {
-        return when (negotiatedHandoverState) {
-            NegotiatedHandoverState.NOT_STARTED -> throw Error("Unexpected message - Negotiated Handover not started")
+        if (Logger.isDebugEnabled) {
+            Logger.dHex(TAG, "Received NDEF message", message.encode())
+        }
+        val response = when (negotiatedHandoverState) {
+            NegotiatedHandoverState.NOT_STARTED -> throw IllegalStateException("Unexpected message - Negotiated Handover not started")
             NegotiatedHandoverState.EXPECT_SERVICE_SELECT -> ndefTransactHandleServiceSelect(message)
             NegotiatedHandoverState.EXPECT_HANDOVER_REQUEST_MESSAGE -> ndefTransactHandleHandoverRequest(message)
-            NegotiatedHandoverState.EXPECT_HANDOVER_SELECT_MESSAGE -> throw Error("Negotiated Handover is complete")
+            NegotiatedHandoverState.EXPECT_HANDOVER_SELECT_MESSAGE -> throw IllegalStateException("Negotiated Handover is complete")
         }
+        if (Logger.isDebugEnabled) {
+            Logger.dHex(TAG, "Responding with NDEF message", response.encode())
+        }
+        return response
     }
 
     private suspend fun processUpdateBinaryNdefMessage(message: NdefMessage): ResponseApdu {
@@ -351,7 +372,8 @@ class MdocNfcEngagementHelper(
             bsb.append(responseNdefMessagePayload)
             selectedFilePayload = bsb.toByteString()
             return ResponseApdu(Nfc.RESPONSE_STATUS_SUCCESS)
-        } catch (error: Throwable) {
+        } catch (error: Exception) {
+            if (error is CancellationException) throw error
             raiseError(error.message!!, error)
             return ResponseApdu(Nfc.RESPONSE_STATUS_ERROR_NO_PRECISE_DIAGNOSIS)
         }
@@ -422,27 +444,42 @@ class MdocNfcEngagementHelper(
      * @return the response.
      */
     suspend fun processApdu(command: CommandApdu): ResponseApdu {
-        if (raisedError) {
-            Logger.w(TAG, "processApdu: Already in error state, responding to APDU with status 6f00")
-            return ResponseApdu(Nfc.RESPONSE_STATUS_ERROR_NO_PRECISE_DIAGNOSIS)
+        if (Logger.isDebugEnabled) {
+            Logger.dHex(TAG, "Command APDU", command.encode())
         }
-        try {
-            when (command.ins) {
-                Nfc.INS_SELECT -> {
-                    when (command.p1) {
-                        Nfc.INS_SELECT_P1_FILE -> return processSelectFile(command)
-                        Nfc.INS_SELECT_P1_APPLICATION -> return processSelectApplication(command)
+        val response = if (raisedError) {
+            Logger.w(TAG, "processApdu: Already in error state, responding to APDU with status 6f00")
+            ResponseApdu(Nfc.RESPONSE_STATUS_ERROR_NO_PRECISE_DIAGNOSIS)
+        } else {
+            try {
+                when (command.ins) {
+                    Nfc.INS_SELECT -> {
+                        when (command.p1) {
+                            Nfc.INS_SELECT_P1_FILE -> processSelectFile(command)
+                            Nfc.INS_SELECT_P1_APPLICATION -> processSelectApplication(command)
+                            else -> {
+                                raiseError("Command ${command.p1} of INS_SELECT in $command not supported, returning 6d00")
+                                ResponseApdu(Nfc.RESPONSE_STATUS_ERROR_INSTRUCTION_NOT_SUPPORTED_OR_INVALID)
+                            }
+                        }
+                    }
+                    Nfc.INS_READ_BINARY -> processReadBinary(command)
+                    Nfc.INS_UPDATE_BINARY -> processUpdateBinary(command)
+                    else -> {
+                        raiseError("Instruction ${command.ins} of $command not supported, returning 6d00")
+                        ResponseApdu(Nfc.RESPONSE_STATUS_ERROR_INSTRUCTION_NOT_SUPPORTED_OR_INVALID)
                     }
                 }
-                Nfc.INS_READ_BINARY -> return processReadBinary(command)
-                Nfc.INS_UPDATE_BINARY -> return processUpdateBinary(command)
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                raiseError("Error processing APDU: ${error.message}", error)
+                ResponseApdu(Nfc.RESPONSE_STATUS_ERROR_NO_PRECISE_DIAGNOSIS)
             }
-            raiseError("Command APDU $command not supported, returning 6d00")
-            return ResponseApdu(Nfc.RESPONSE_STATUS_ERROR_INSTRUCTION_NOT_SUPPORTED_OR_INVALID)
-        } catch (error: Throwable) {
-            raiseError("Error processing APDU: ${error.message}", error)
-            return ResponseApdu(Nfc.RESPONSE_STATUS_ERROR_NO_PRECISE_DIAGNOSIS)
         }
+        if (Logger.isDebugEnabled) {
+            Logger.dHex(TAG, "Response APDU", response.encode())
+        }
+        return response
     }
 
     /**
@@ -450,7 +487,7 @@ class MdocNfcEngagementHelper(
      *
      * @param reason the reason.
      */
-    suspend fun processDeactivated(reason: Int) {
+    fun processDeactivated(reason: Int) {
         if (raisedHandoverComplete || raisedError) {
             return
         } else {

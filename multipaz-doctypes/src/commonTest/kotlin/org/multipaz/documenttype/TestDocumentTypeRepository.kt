@@ -14,8 +14,12 @@ import kotlinx.datetime.TimeZone
 import org.multipaz.cbor.addCborMap
 import org.multipaz.cbor.buildCborArray
 import org.multipaz.cbor.buildCborMap
+import org.multipaz.documenttype.knowntypes.EUPersonalID
+import org.multipaz.documenttype.knowntypes.Aadhaar
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
+import kotlin.test.assertTrue
 
 class TestDocumentTypeRepository {
     companion object {
@@ -36,7 +40,7 @@ class TestDocumentTypeRepository {
         documentTypeRepository.addDocumentType(DrivingLicense.getDocumentType())
         val documentTypes = documentTypeRepository.documentTypes
         assertEquals(1, documentTypes.count())
-        assertEquals("Driving License", documentTypes[0].displayName)
+        assertEquals("Driving license", documentTypes[0].displayName)
         assertEquals("org.iso.18013.5.1.mDL", documentTypes[0].mdocDocumentType?.docType)
         assertEquals(
             "org.iso.18013.5.1",
@@ -58,6 +62,33 @@ class TestDocumentTypeRepository {
             DocumentAttributeType.ComplexType,
             documentTypes[0].mdocDocumentType?.namespaces?.get("org.iso.18013.5.1.aamva")?.dataElements?.get("domestic_driving_privileges")?.attribute?.type
         )
+    }
+
+    @Test
+    fun testAadhaarDocumentType() {
+        val documentType = Aadhaar.getDocumentType()
+        val mdoc = documentType.mdocDocumentType
+        assertNotNull(mdoc)
+
+        assertEquals("Aadhaar", documentType.displayName)
+        assertEquals(Aadhaar.AADHAAR_DOCTYPE, mdoc.docType)
+        assertTrue(mdoc.namespaces.containsKey(Aadhaar.AADHAAR_NAMESPACE))
+
+        val aadhaarNamespace = mdoc.namespaces[Aadhaar.AADHAAR_NAMESPACE]
+        assertNotNull(aadhaarNamespace)
+
+        listOf(
+            "ResidentName",
+            "EnrolmentNumber",
+            "Mobile",
+            "Email",
+            "Dob",
+        ).forEach { dataElementName ->
+            assertTrue(
+                aadhaarNamespace.dataElements.containsKey(dataElementName),
+                "Expected data element '$dataElementName' in aadhaar namespace"
+            )
+        }
     }
 
     @Test
@@ -142,12 +173,7 @@ class TestDocumentTypeRepository {
                     type = DocumentAttributeType.DateTime,
                     identifier = "",
                     displayName = "",
-                    description = "",
-                    icon = null,
-                    sampleValueMdoc = null,
-                    sampleValueJson = null,
-                    parentAttribute = null,
-                    embeddedAttributes = emptyList()
+                    description = ""
                 ),
                 false
             ).renderValue(
@@ -162,12 +188,7 @@ class TestDocumentTypeRepository {
                     type = DocumentAttributeType.DateTime,
                     identifier = "",
                     displayName = "",
-                    description = "",
-                    icon = null,
-                    sampleValueMdoc = null,
-                    sampleValueJson = null,
-                    parentAttribute = null,
-                    embeddedAttributes = emptyList()
+                    description = ""
                 ),
                 false
             ).renderValue(
@@ -190,12 +211,7 @@ class TestDocumentTypeRepository {
                         type = DocumentAttributeType.DateTime,
                         identifier = "",
                         displayName = "",
-                        description = "",
-                        icon = null,
-                        sampleValueMdoc = null,
-                        sampleValueJson = null,
-                        parentAttribute = null,
-                        embeddedAttributes = emptyList()
+                        description = ""
                     ),
                     false
                 ).renderValue(
@@ -210,12 +226,7 @@ class TestDocumentTypeRepository {
                         type = DocumentAttributeType.DateTime,
                         identifier = "",
                         displayName = "",
-                        description = "",
-                        icon = null,
-                        sampleValueMdoc = null,
-                        sampleValueJson = null,
-                        parentAttribute = null,
-                        embeddedAttributes = emptyList()
+                        description = ""
                     ),
                     false
                 ).renderValue(
@@ -315,6 +326,18 @@ class TestDocumentTypeRepository {
             mdlNs.dataElements["portrait"]?.renderValue(Bstr(byteArrayOf(1, 2, 3)))
         )
 
+    }
+
+    // This test exists to ensure that DocumentAttribute's hashCode(), toString(), and equals() doesn't
+    // stack overflow when using embedded attributes such as in the JSON version of EU PID.
+    @Test
+    fun testEUPidClaimsNoOverflow() {
+        val documentType = EUPersonalID.getDocumentType()
+        documentType.jsonDocumentType!!.claims.forEach { (key, value) ->
+            val hashCode = value.hashCode()
+            val string = value.toString()
+            val equals = value.equals(value)
+        }
     }
 
 }

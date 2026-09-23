@@ -17,6 +17,7 @@ startParameter.excludedTaskNames +=
     )
 
 pluginManagement {
+    includeBuild("build-logic")
     repositories {
         google {
             mavenContent {
@@ -27,6 +28,15 @@ pluginManagement {
         }
         mavenCentral()
         gradlePluginPortal()
+    }
+}
+
+// Separate includeBuild so that non-plugin dependencies (e.g. dokkaPlugin) from
+// build-logic can be resolved via composite build substitution.
+includeBuild("build-logic") {
+    dependencySubstitution {
+        substitute(module("org.multipaz:dokka-known-subclasses-plugin"))
+            .using(project(":dokka-known-subclasses-plugin"))
     }
 }
 
@@ -45,6 +55,8 @@ dependencyResolutionManagement {
                 includeGroup("com.github.yuriy-budiyev")
             }
         }
+        // Koog repository for Lokalize plugin worker dependencies
+        maven("https://packages.jetbrains.team/maven/p/kt/koog")
     }
 }
 
@@ -57,6 +69,7 @@ include(":multipaz")
 include(":multipaz:SwiftBridge")
 include(":multipaz-dcapi")
 include(":multipaz-doctypes")
+include(":multipaz-utopia")
 include(":multipaz-android-legacy")
 include(":multipaz-csa")
 include(":multipaz-android-legacy")
@@ -66,11 +79,19 @@ include(":multipaz-dcapi:matcherTest")
 include(":multipaz-server")
 include(":multipaz-backend-server")
 include(":multipaz-compose")
+include(":multipaz-openid4vci")
 include(":multipaz-openid4vci-server")
+include(":multipaz-verifier")
 include(":multipaz-verifier-server")
 include(":multipaz-csa-server")
+include(":multipaz-records")
 include(":multipaz-records-server")
 include(":samples:testapp")
+include(":samples:SwiftTestApp")
 include(":xcframework")
 include(":multipaz-server-frontend")
 include(":multipaz-server-deployment")
+include(":multipaz-swiftui")
+include(":multipaz-tools:web")
+include(":multipaz-tools:server")
+

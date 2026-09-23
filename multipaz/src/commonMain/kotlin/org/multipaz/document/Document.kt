@@ -15,6 +15,11 @@
  */
 package org.multipaz.document
 
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import org.multipaz.credential.Credential
 import org.multipaz.credential.SecureAreaBoundCredential
 import org.multipaz.storage.StorageTableSpec
@@ -24,7 +29,12 @@ import kotlinx.coroutines.sync.withLock
 import kotlin.time.Clock
 import kotlin.time.Instant
 import kotlinx.io.bytestring.ByteString
+import org.multipaz.cbor.Cbor
+import org.multipaz.cbor.buildCborMap
 import org.multipaz.storage.base.BaseStorageTable
+import org.multipaz.tags.Tags
+import kotlin.collections.component1
+import kotlin.collections.component2
 import kotlin.concurrent.Volatile
 
 /**
@@ -92,6 +102,8 @@ class Document internal constructor(
     // DocumentStore.lock, as it will cause a deadlock, as there are code paths that
     // obtain this lock when DocumentStore.lock is already held.
     private val lock = Mutex()
+    // Protects write access to data and metadata fields.
+    private val editLock = Mutex()
     private val credentialCache = mutableMapOf<String, Credential>()
     private var allCredentialsLoaded = false
 
@@ -111,8 +123,6 @@ class Document internal constructor(
     val provisioned: Boolean get() = data.provisioned
 
     val created: Instant get() = data.created
-
-    val orderingKey: String? get() = data.orderingKey
 
     /** User-facing name of this specific [Document] instance, e.g. "John's Passport". */
     val displayName: String? get() = data.displayName
@@ -138,6 +148,74 @@ class Document internal constructor(
      * user to re-authorize.
      */
     val authorizationData: ByteString? get() = data.authorizationData
+
+    /**
+     * Application-specific data.
+     */
+    val appData: ByteString? get() = data.appData
+
+    /**
+     * The unique identifier if this document is imported from a [org.multipaz.mpzpass.MpzPass].
+     */
+    val mpzPassId: String? get() = data.mpzPassId
+
+    /**
+     * The version of the pass if this document is imported from a [org.multipaz.mpzpass.MpzPass].
+     */
+    val mpzPassVersion: Long? get() = data.mpzPassVersion
+
+    /**
+     * A list of reader identifiers for reader authentication.
+     *
+     * If non-empty, the document is only accessible to readers using reader authentication
+     * and where a certificate in the x5chain for the request contains an AuthorityKeyIdentifier
+     * in this list.
+     */
+    val readerIdentifiers: List<ByteString> get() = data.readerIdentifiers ?: emptyList()
+
+    /**
+     * A [Tags] for storing application-specific data.
+     *
+     * Applications must use collision-resistant keys when using the [Tags] instance.
+     */
+    val tags: Tags by lazy {
+        Tags(
+            data = data.tagsData?.let { Cbor.decode(it.toByteArray()) },
+            editLock = editLock,
+            saveFn = { newData ->
+                val data = DocumentData(
+                    provisioned = data.provisioned,
+                    created = data.created,
+                    displayName = data.displayName,
+                    typeDisplayName = data.typeDisplayName,
+                    cardArt = data.cardArt,
+                    issuerLogo = data.issuerLogo,
+                    authorizationData = data.authorizationData,
+                    appData = data.appData,
+                    mpzPassId = data.mpzPassId,
+                    mpzPassVersion = data.mpzPassVersion,
+                    readerIdentifiers = data.readerIdentifiers,
+                    metadata = data.metadata,
+                    tagsData = if (newData.asMap.isEmpty()) {
+                        null
+                    } else {
+                        ByteString(Cbor.encode(newData))
+                    }
+                )
+                // Emit events only if something actually changed.
+                if (data != this.data) {
+                    val blob = ByteString(data.toCbor())
+                    this.data = data
+                    store.getDocumentTable().update(identifier, blob)
+                    return@Tags {
+                        store.emitOnDocumentChanged(identifier)
+                    }
+                } else {
+                    return@Tags null
+                }
+            }
+        )
+    }
 
     /** Clear cached credentials; only used for testing */
     internal suspend fun deleteCache() = lock.withLock {
@@ -236,7 +314,6 @@ class Document internal constructor(
     // Called from DocumentStore.deleteDocument
     internal suspend fun deleteDocument() {
         deleted = true
-        store.emitOnDocumentDeleted(identifier)
         for (credential in getCredentials()) {
             credential.clearCredential()
         }
@@ -305,7 +382,7 @@ class Document internal constructor(
     private suspend fun deleteCredentialIfInvalidated(credential: Credential) {
         try {
             if (credential.isInvalidated()) {
-                Logger.i(TAG, "Deleting invalidated credential ${credential.identifier}")
+                Logger.d(TAG, "Deleting invalidated credential ${credential.identifier}")
                 deleteCredential(credential.identifier)
             }
         } catch (err: IllegalArgumentException) {
@@ -369,58 +446,99 @@ class Document internal constructor(
     }
 
     suspend fun edit(editAction: suspend Editor.() -> Unit) {
-        val editor = Editor(
-            provisioned = data.provisioned,
-            created = data.created,
-            orderingKey = data.orderingKey,
-            displayName = data.displayName,
-            typeDisplayName = data.typeDisplayName,
-            cardArt = data.cardArt,
-            issuerLogo = data.issuerLogo,
-            authorizationData = data.authorizationData,
-            metadata = metadata
-        )
-        editAction.invoke(editor)
-        val data = DocumentData(
-            provisioned = editor.provisioned,
-            created = editor.created,
-            orderingKey = editor.orderingKey,
-            displayName = editor.displayName,
-            typeDisplayName = editor.typeDisplayName,
-            cardArt = editor.cardArt,
-            issuerLogo = editor.issuerLogo,
-            authorizationData = editor.authorizationData,
-            metadata = metadata?.serialize()
-        )
-        val blob = ByteString(data.toCbor())
-        metadata = editor.metadata
-        this.data = data
-        store.getDocumentTable().update(identifier, blob)
-        store.emitOnDocumentChanged(identifier)
+        var emitChanged = false
+        editLock.withLock {
+            val editor = Editor(
+                provisioned = data.provisioned,
+                created = data.created,
+                displayName = data.displayName,
+                typeDisplayName = data.typeDisplayName,
+                cardArt = data.cardArt,
+                issuerLogo = data.issuerLogo,
+                authorizationData = data.authorizationData,
+                appData = data.appData,
+                mpzPassId = data.mpzPassId,
+                mpzPassVersion = data.mpzPassVersion,
+                readerIdentifiers = data.readerIdentifiers ?: emptyList(),
+                metadata = metadata,
+                tags = Tags.Editor(this@Document.tags._tags)
+            )
+            editAction.invoke(editor)
+            val newTagsData = if (editor.tags.tags.isEmpty()) {
+                null
+            } else {
+                buildCborMap {
+                    this@Document.tags._tags.forEach { (key, value) -> put(key, value) }
+                }
+            }
+            val data = DocumentData(
+                provisioned = editor.provisioned,
+                created = editor.created,
+                displayName = editor.displayName,
+                typeDisplayName = editor.typeDisplayName,
+                cardArt = editor.cardArt,
+                issuerLogo = editor.issuerLogo,
+                authorizationData = editor.authorizationData,
+                appData = editor.appData,
+                mpzPassId = editor.mpzPassId,
+                mpzPassVersion = editor.mpzPassVersion,
+                readerIdentifiers = editor.readerIdentifiers.ifEmpty { null },
+                metadata = editor.metadata?.serialize(),
+                tagsData = newTagsData?.let { ByteString(Cbor.encode(it)) }
+            )
+            // Emit events only if something actually changed.
+            if (data != this.data) {
+                val blob = ByteString(data.toCbor())
+                metadata = editor.metadata
+                this.data = data
+                this@Document.tags._tags = editor.tags.tags
+                store.getDocumentTable().update(identifier, blob)
+                emitChanged = true
+            }
+        }
+        if (emitChanged) {
+            store.emitOnDocumentChanged(identifier)
+        }
     }
 
+    /**
+     * An interface to edit [Document] metadata
+     *
+     * @property provisioned Whether the document is provisioned, i.e. issuer is ready to provide credentials.
+     * @property created The time the document was created.
+     * @property displayName User-facing name of this specific [Document] instance, e.g. "John's Passport".
+     * @property typeDisplayName User-facing name of this document type, e.g. "Utopia Passport".
+     * @property cardArt An image that represents this document to the user in the UI.
+     * @property issuerLogo An image that represents the issuer of the document in the UI.
+     * @property authorizationData Saved authorization data to refresh credentials, possibly without requiring user to re-authorize.
+     * @property appData Application-specific data.
+     * @property mpzPassId The unique identifier if this document is imported from a [org.multipaz.mpzpass.MpzPass].
+     * @property mpzPassVersion The version if this document is imported from a [org.multipaz.mpzpass.MpzPass].
+     * @property readerIdentifiers A list of reader identifiers for reader authentication.
+     * @property metadata A [AbstractDocumentMetadata] for storing application-specific data.
+     * @property tags A [Tags] for storing application-specific data.
+     */
     class Editor internal constructor(
         var provisioned: Boolean,
         var created: Instant,
-        var orderingKey: String?,
         var displayName: String?,
         var typeDisplayName: String?,
         var cardArt: ByteString?,
         var issuerLogo: ByteString?,
         var authorizationData: ByteString?,
-        var metadata: AbstractDocumentMetadata?
+        var appData: ByteString?,
+        var mpzPassId: String?,
+        var mpzPassVersion: Long?,
+        var readerIdentifiers: List<ByteString> = emptyList(),
+        var metadata: AbstractDocumentMetadata?,
+        val tags: Tags.Editor
     )
 
     /**
-     * Defines default document order: by [Document.orderingKey], then by [Document.created],
-     * then by [Document.identifier].
+     * Defines default document order: by [Document.created], then by [Document.identifier].
      */
     object Comparator: kotlin.Comparator<Document> {
         override fun compare(a: Document, b: Document): Int {
-            val ordering = (a.orderingKey ?: "").compareTo(b.orderingKey ?: "")
-            if (ordering != 0) {
-                return ordering
-            }
             val creation = a.created.compareTo(b.created)
             if (creation != 0) {
                 return creation
@@ -432,9 +550,15 @@ class Document internal constructor(
     companion object {
         private const val TAG = "Document"
 
+        /**
+         * Migration function to update to 0.97.0.
+         */
         var customSchema0_97_0_MigrationFn:
                 ((documentId: String, data: ByteString) -> ByteString)? = null
 
+        /**
+         * The default [StorageTableSpec] to use for [Document].
+         */
         val defaultTableSpec = object: StorageTableSpec(
             name = "Documents",
             supportPartitions = false,
@@ -499,6 +623,7 @@ class Document internal constructor(
                                     metadata = existing.other
                                 )
                             } catch (err: Exception) {
+                                if (err is CancellationException) throw err
                                 Logger.e(TAG, "Error parsing document '$documentId'", err)
                                 // keep the document as not provisioned; this will have to be handled by
                                 // the app (e.g. consult credentials, delete document,
@@ -509,6 +634,7 @@ class Document internal constructor(
                         try {
                             table.update(documentId, ByteString(newData.toCbor()))
                         } catch (err: Exception) {
+                            if (err is CancellationException) throw err
                             Logger.e(TAG, "Error writing document '$documentId'", err)
                             table.delete(documentId)
                         }

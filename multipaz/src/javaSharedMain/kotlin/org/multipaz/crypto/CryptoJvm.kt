@@ -1,20 +1,31 @@
 package org.multipaz.crypto
 
+import kotlinx.coroutines.CancellationException
+import kotlinx.io.bytestring.ByteString
 import org.multipaz.asn1.ASN1
 import org.multipaz.asn1.ASN1Integer
 import org.multipaz.asn1.ASN1ObjectIdentifier
 import org.multipaz.asn1.ASN1OctetString
 import org.multipaz.asn1.ASN1Sequence
+import kotlin.random.Random
+import kotlin.random.asKotlinRandom
+import java.security.GeneralSecurityException
 import java.security.KeyPairGenerator
+import java.security.SecureRandom
 import java.security.MessageDigest
 import java.security.Security
 import java.security.Signature
 import java.security.interfaces.ECPrivateKey
+import java.security.interfaces.RSAPrivateCrtKey
+import java.security.interfaces.RSAPublicKey
 import java.security.spec.ECGenParameterSpec
+import java.security.spec.MGF1ParameterSpec
+import java.security.spec.PSSParameterSpec
 import javax.crypto.Cipher
 import javax.crypto.KeyAgreement
 import javax.crypto.Mac
 import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
 /**
@@ -22,6 +33,11 @@ import javax.crypto.spec.SecretKeySpec
  *
  * This object contains various cryptographic primitives and is a wrapper to a platform-
  * specific crypto library.
+ *
+ * For post-quantum cryptography algorithms (ML-DSA and ML-KEM) to work on the JVM or
+ * Android, the `bcprov` package (`org.bouncycastle:bcprov-jdk18on`) must be present on the
+ * classpath. It is consumed via reflection to avoid pulling in a large dependency into the
+ * core SDK.
  */
 @Suppress("EXPECT_ACTUAL_CLASSIFIERS_ARE_IN_BETA_WARNING")
 actual object Crypto {
@@ -58,7 +74,48 @@ actual object Crypto {
             }
         }
 
-    actual val supportedEncryptionAlgorithms = setOf(Algorithm.A128GCM, Algorithm.A192GCM, Algorithm.A256GCM)
+    actual val supportedEncryptionAlgorithms = setOf(
+        Algorithm.A128GCM,
+        Algorithm.A192GCM,
+        Algorithm.A256GCM,
+        Algorithm.A128CBC,
+        Algorithm.A192CBC,
+        Algorithm.A256CBC
+    )
+
+    /**
+     * The ML-DSA algorithms supported by the platform.
+     *
+     * Requires the `bcprov` package (`org.bouncycastle:bcprov-jdk18on`) on the classpath,
+     * which is consumed via reflection. If not present, this returns an empty set.
+     */
+    actual val supportedMlDsaAlgorithms: Set<Algorithm>
+        get() = if (BouncyCastlePqc.isAvailable) {
+            setOf(
+                Algorithm.ML_DSA_44,
+                Algorithm.ML_DSA_65,
+                Algorithm.ML_DSA_87
+            )
+        } else {
+            emptySet()
+        }
+
+    /**
+     * The ML-KEM algorithms supported by the platform.
+     *
+     * Requires the `bcprov` package (`org.bouncycastle:bcprov-jdk18on`) on the classpath,
+     * which is consumed via reflection. If not present, this returns an empty set.
+     */
+    actual val supportedMlKemAlgorithms: Set<Algorithm>
+        get() = if (BouncyCastlePqc.isAvailable) {
+            setOf(
+                Algorithm.ML_KEM_512,
+                Algorithm.ML_KEM_768,
+                Algorithm.ML_KEM_1024
+            )
+        } else {
+            emptySet()
+        }
 
     actual val provider: String
         get() {
@@ -72,6 +129,8 @@ actual object Crypto {
             }
             return sb.toString()
         }
+
+    actual val secureRandom: Random = SecureRandom().asKotlinRandom()
 
     init {
     }
@@ -97,7 +156,9 @@ actual object Crypto {
                 throw IllegalArgumentException("Unsupported algorithm $algorithm")
             }
         }
-        return MessageDigest.getInstance(algName).digest(message)
+        val md = MessageDigest.getInstance(algName)
+        md.update(message)
+        return md.digest()
     }
 
     /**
@@ -112,9 +173,10 @@ actual object Crypto {
      */
     actual suspend fun mac(
         algorithm: Algorithm,
-        key: ByteArray,
+        key: SecretKey,
         message: ByteArray
     ): ByteArray {
+        key.checkNotDestroyed()
         val algName = when (algorithm) {
             Algorithm.HMAC_INSECURE_SHA1 -> "HmacSha1"
             Algorithm.HMAC_SHA256 -> "HmacSha256"
@@ -125,8 +187,10 @@ actual object Crypto {
             }
         }
 
+        val rawKey = key.data
+        val effectiveKey = if (rawKey.isEmpty()) ByteArray(1) else rawKey
         return Mac.getInstance(algName).run {
-            init(SecretKeySpec(key, ""))
+            init(SecretKeySpec(effectiveKey, ""))
             update(message)
             doFinal()
         }
@@ -135,73 +199,97 @@ actual object Crypto {
     /**
      * Message encryption.
      *
-     * @param algorithm must be one of [Algorithm.A128GCM], [Algorithm.A192GCM], [Algorithm.A256GCM].
+     * @param algorithm must be one of [Algorithm.A128GCM], [Algorithm.A192GCM], [Algorithm.A256GCM],
+     *   [Algorithm.A128CBC], [Algorithm.A192CBC], [Algorithm.A256CBC].
      * @param key the encryption key.
      * @param nonce the nonce/IV.
      * @param messagePlaintext the message to encrypt.
-     * @return the cipher text with the tag appended to it.
+     * @return the cipher text with the tag appended to it (for GCM) or padded (for CBC).
      * @throws IllegalArgumentException if the given algorithm is not supported.
      */
     actual suspend fun encrypt(
         algorithm: Algorithm,
-        key: ByteArray,
+        key: SecretKey,
         nonce: ByteArray,
         messagePlaintext: ByteArray,
         aad: ByteArray?
     ): ByteArray {
+        key.checkNotDestroyed()
+        val rawKey = key.data
         when (algorithm) {
-            Algorithm.A128GCM -> {}
-            Algorithm.A192GCM -> {}
-            Algorithm.A256GCM -> {}
-            else -> {
-                throw IllegalArgumentException("Unsupported algorithm $algorithm")
-            }
+            Algorithm.A128GCM, Algorithm.A128CBC -> require(rawKey.size == 16) { "Key size must be 16 bytes" }
+            Algorithm.A192GCM, Algorithm.A192CBC -> require(rawKey.size == 24) { "Key size must be 24 bytes" }
+            Algorithm.A256GCM, Algorithm.A256CBC -> require(rawKey.size == 32) { "Key size must be 32 bytes" }
+            else -> throw IllegalArgumentException("Unsupported algorithm $algorithm")
         }
-        return Cipher.getInstance("AES/GCM/NoPadding").run {
-            init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(128, nonce))
-            aad?.let { updateAAD(it) }
-            doFinal(messagePlaintext)
+        return when (algorithm) {
+            Algorithm.A128GCM, Algorithm.A192GCM, Algorithm.A256GCM -> {
+                Cipher.getInstance("AES/GCM/NoPadding").run {
+                    init(Cipher.ENCRYPT_MODE, SecretKeySpec(rawKey, "AES"), GCMParameterSpec(128, nonce))
+                    aad?.let { updateAAD(it) }
+                    doFinal(messagePlaintext)
+                }
+            }
+            Algorithm.A128CBC, Algorithm.A192CBC, Algorithm.A256CBC -> {
+                Cipher.getInstance("AES/CBC/PKCS5Padding").run {
+                    init(Cipher.ENCRYPT_MODE, SecretKeySpec(rawKey, "AES"), IvParameterSpec(nonce))
+                    doFinal(messagePlaintext)
+                }
+            }
+            else -> throw IllegalArgumentException("Unsupported algorithm $algorithm")
         }
     }
 
     /**
      * Message decryption.
      *
-     * @param algorithm must be one of [Algorithm.A128GCM], [Algorithm.A192GCM], [Algorithm.A256GCM].
+     * @param algorithm must be one of [Algorithm.A128GCM], [Algorithm.A192GCM], [Algorithm.A256GCM],
+     *   [Algorithm.A128CBC], [Algorithm.A192CBC], [Algorithm.A256CBC].
      * @param key the encryption key.
      * @param nonce the nonce/IV.
-     * @param messageCiphertext the message to decrypt with the tag at the end.
+     * @param messageCiphertext the message to decrypt with the tag at the end (for GCM) or padded (for CBC).
      * @return the plaintext.
      * @throws IllegalArgumentException if the given algorithm is not supported.
      * @throws IllegalStateException if decryption fails
      */
     actual suspend fun decrypt(
         algorithm: Algorithm,
-        key: ByteArray,
+        key: SecretKey,
         nonce: ByteArray,
         messageCiphertext: ByteArray,
         aad: ByteArray?
     ): ByteArray {
+        key.checkNotDestroyed()
+        val rawKey = key.data
         when (algorithm) {
-            Algorithm.A128GCM -> {}
-            Algorithm.A192GCM -> {}
-            Algorithm.A256GCM -> {}
-            else -> {
-                throw IllegalArgumentException("Unsupported algorithm $algorithm")
+            Algorithm.A128GCM, Algorithm.A192GCM, Algorithm.A256GCM -> {
+                return try {
+                    Cipher.getInstance("AES/GCM/NoPadding").run {
+                        init(
+                            Cipher.DECRYPT_MODE,
+                            SecretKeySpec(rawKey, "AES"),
+                            GCMParameterSpec(128, nonce)
+                        )
+                        aad?.let { updateAAD(it) }
+                        doFinal(messageCiphertext)
+                    }
+                } catch (e: Exception) {
+                    if (e is CancellationException) throw e
+                    throw IllegalStateException("Decryption failed", e)
+                }
             }
-        }
-        return try {
-            Cipher.getInstance("AES/GCM/NoPadding").run {
-                init(
-                    Cipher.DECRYPT_MODE,
-                    SecretKeySpec(key, "AES"),
-                    GCMParameterSpec(128, nonce)
-                )
-                aad?.let { updateAAD(it) }
-                doFinal(messageCiphertext)
+            Algorithm.A128CBC, Algorithm.A192CBC, Algorithm.A256CBC -> {
+                return try {
+                    Cipher.getInstance("AES/CBC/PKCS5Padding").run {
+                        init(Cipher.DECRYPT_MODE, SecretKeySpec(rawKey, "AES"), IvParameterSpec(nonce))
+                        doFinal(messageCiphertext)
+                    }
+                } catch (e: Exception) {
+                    if (e is CancellationException) throw e
+                    throw IllegalStateException("Decryption failed", e)
+                }
             }
-        } catch (e: Exception) {
-            throw IllegalStateException("Error decrypting", e)
+            else -> throw IllegalArgumentException("Unsupported algorithm $algorithm")
         }
     }
 
@@ -253,12 +341,62 @@ actual object Crypto {
                 update(message)
                 verify(rawSignature)
             }
-        } catch (e: Throwable) {
-            throw IllegalStateException("Error occurred verifying signature", e)
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            throw IllegalArgumentException("Error occurred verifying signature", e)
         }
         if (!verified) {
             throw SignatureVerificationException("Signature verification failed")
         }
+    }
+
+    actual suspend fun checkSignature(
+        publicKey: RsaPublicKey,
+        message: ByteArray,
+        algorithm: Algorithm,
+        signature: RsaSignature
+    ) {
+        val (signatureAlgorithm, pssParameterSpec) = when (algorithm.joseAlgorithmIdentifier) {
+            "RS256" -> Pair("SHA256withRSA", null)
+            "RS384" -> Pair("SHA384withRSA", null)
+            "RS512" -> Pair("SHA512withRSA", null)
+            "PS256" -> Pair("RSASSA-PSS", PSSParameterSpec("SHA-256", "MGF1", MGF1ParameterSpec.SHA256, 32, 1))
+            "PS384" -> Pair("RSASSA-PSS", PSSParameterSpec("SHA-384", "MGF1", MGF1ParameterSpec.SHA384, 48, 1))
+            "PS512" -> Pair("RSASSA-PSS", PSSParameterSpec("SHA-512", "MGF1", MGF1ParameterSpec.SHA512, 64, 1))
+            else -> throw IllegalArgumentException("Unsupported RSA algorithm $algorithm")
+        }
+
+        val verified = try {
+            Signature.getInstance(signatureAlgorithm).run {
+                initVerify(publicKey.javaPublicKey)
+                if (pssParameterSpec != null) {
+                    setParameter(pssParameterSpec)
+                }
+                update(message)
+                verify(signature.signature)
+            }
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            throw IllegalArgumentException("Error occurred verifying signature", e)
+        }
+        if (!verified) {
+            throw SignatureVerificationException("Signature verification failed")
+        }
+    }
+
+    actual suspend fun checkSignature(
+        publicKey: MlDsaPublicKey,
+        message: ByteArray,
+        algorithm: Algorithm,
+        signature: MlDsaSignature
+    ) {
+        require(algorithm == publicKey.algorithm) {
+            "Signature algorithm $algorithm doesn't match key algorithm ${publicKey.algorithm}"
+        }
+        if (!BouncyCastlePqc.isAvailable) {
+            throw UnsupportedOperationException("ML-DSA is not supported in the current environment")
+        }
+        BouncyCastlePqc.checkSignature(publicKey, message, algorithm, signature)
     }
 
     internal fun fixupEcDsaPrivateKeyMaterial(curve: EcCurve, d: ByteArray): ByteArray {
@@ -346,6 +484,45 @@ actual object Crypto {
             }
         }
 
+    actual suspend fun createRsaPrivateKey(keySizeBits: Int): RsaPrivateKey {
+        val kpg = KeyPairGenerator.getInstance("RSA")
+        kpg.initialize(keySizeBits)
+        val keyPair = kpg.generateKeyPair()
+        val priv = keyPair.private as RSAPrivateCrtKey
+        val pub = keyPair.public as RSAPublicKey
+        val rsaPub = RsaPublicKey(
+            modulus = stripLeadingZero(pub.modulus.toByteArray()),
+            publicExponent = stripLeadingZero(pub.publicExponent.toByteArray())
+        )
+        return RsaPrivateKey(
+            publicKey = rsaPub,
+            privateExponent = stripLeadingZero(priv.privateExponent.toByteArray()),
+            p = stripLeadingZero(priv.primeP.toByteArray()),
+            q = stripLeadingZero(priv.primeQ.toByteArray()),
+            dp = stripLeadingZero(priv.primeExponentP.toByteArray()),
+            dq = stripLeadingZero(priv.primeExponentQ.toByteArray()),
+            qInv = stripLeadingZero(priv.crtCoefficient.toByteArray())
+        )
+    }
+
+    actual suspend fun createMlDsaPrivateKey(
+        algorithm: Algorithm
+    ): MlDsaPrivateKey {
+        if (!BouncyCastlePqc.isAvailable) {
+            throw UnsupportedOperationException("ML-DSA is not supported in the current environment")
+        }
+        return BouncyCastlePqc.createMlDsaPrivateKey(algorithm)
+    }
+
+    actual suspend fun createMlKemPrivateKey(
+        algorithm: Algorithm
+    ): MlKemPrivateKey {
+        if (!BouncyCastlePqc.isAvailable) {
+            throw UnsupportedOperationException("ML-KEM is not supported in the current environment")
+        }
+        return BouncyCastlePqc.createMlKemPrivateKey(algorithm)
+    }
+
     /**
      * Signs data with a key.
      *
@@ -381,7 +558,8 @@ actual object Crypto {
                     sign()
                 }
                 EcSignature.fromDerEncoded(key.curve.bitSize, derEncodedSignature)
-            } catch (e: Throwable) {
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
                 throw IllegalStateException("Unexpected Exception", e)
             }
         }
@@ -398,7 +576,8 @@ actual object Crypto {
                     rawSignature.sliceArray(IntRange(0, rawSignature.size/2 - 1)),
                     rawSignature.sliceArray(IntRange(rawSignature.size/2, rawSignature.size - 1))
                 )
-            } catch (e: Throwable) {
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
                 throw IllegalStateException("Unexpected Exception", e)
             }
         }
@@ -415,7 +594,8 @@ actual object Crypto {
                     rawSignature.sliceArray(IntRange(0, rawSignature.size/2 - 1)),
                     rawSignature.sliceArray(IntRange(rawSignature.size/2, rawSignature.size - 1))
                 )
-            } catch (e: Throwable) {
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
                 throw IllegalStateException("Unexpected Exception", e)
             }
         }
@@ -424,6 +604,69 @@ actual object Crypto {
         EcCurve.X448 -> {
             throw IllegalStateException("Key with curve ${key.curve} does not support signing")
         }
+    }
+
+    actual suspend fun sign(
+        key: RsaPrivateKey,
+        signatureAlgorithm: Algorithm,
+        message: ByteArray
+    ): RsaSignature {
+        val (signatureAlgorithmName, pssParameterSpec) = when (signatureAlgorithm.joseAlgorithmIdentifier) {
+            "RS256" -> Pair("SHA256withRSA", null)
+            "RS384" -> Pair("SHA384withRSA", null)
+            "RS512" -> Pair("SHA512withRSA", null)
+            "PS256" -> Pair("RSASSA-PSS", PSSParameterSpec("SHA-256", "MGF1", MGF1ParameterSpec.SHA256, 32, 1))
+            "PS384" -> Pair("RSASSA-PSS", PSSParameterSpec("SHA-384", "MGF1", MGF1ParameterSpec.SHA384, 48, 1))
+            "PS512" -> Pair("RSASSA-PSS", PSSParameterSpec("SHA-512", "MGF1", MGF1ParameterSpec.SHA512, 64, 1))
+            else -> throw IllegalArgumentException("Unsupported RSA signing algorithm $signatureAlgorithm")
+        }
+        val signatureBytes = try {
+            Signature.getInstance(signatureAlgorithmName).run {
+                initSign(key.javaPrivateKey)
+                if (pssParameterSpec != null) {
+                    setParameter(pssParameterSpec)
+                }
+                update(message)
+                sign()
+            }
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            throw IllegalStateException("Unexpected Exception", e)
+        }
+        return RsaSignature(signatureBytes)
+    }
+
+    actual suspend fun sign(
+        key: MlDsaPrivateKey,
+        signatureAlgorithm: Algorithm,
+        message: ByteArray
+    ): MlDsaSignature {
+        require(signatureAlgorithm == key.algorithm) {
+            "Signature algorithm $signatureAlgorithm doesn't match key algorithm ${key.algorithm}"
+        }
+        if (!BouncyCastlePqc.isAvailable) {
+            throw UnsupportedOperationException("ML-DSA is not supported in the current environment")
+        }
+        return BouncyCastlePqc.sign(key, signatureAlgorithm, message)
+    }
+
+    actual suspend fun kemEncapsulate(
+        recipientPublicKey: MlKemPublicKey
+    ): KemResult {
+        if (!BouncyCastlePqc.isAvailable) {
+            throw UnsupportedOperationException("ML-KEM is not supported in the current environment")
+        }
+        return BouncyCastlePqc.kemEncapsulate(recipientPublicKey)
+    }
+
+    actual suspend fun kemDecapsulate(
+        key: MlKemPrivateKey,
+        ciphertext: ByteArray
+    ): SecureByteString {
+        if (!BouncyCastlePqc.isAvailable) {
+            throw UnsupportedOperationException("ML-KEM is not supported in the current environment")
+        }
+        return BouncyCastlePqc.kemDecapsulate(key, ciphertext)
     }
 
     /**
@@ -435,8 +678,8 @@ actual object Crypto {
     actual suspend fun keyAgreement(
         key: EcPrivateKey,
         otherKey: EcPublicKey
-    ): ByteArray =
-        when (key.curve) {
+    ): SecureByteString {
+        val secretBytes = when (key.curve) {
             EcCurve.P256,
             EcCurve.P384,
             EcCurve.P521,
@@ -450,7 +693,8 @@ actual object Crypto {
                     ka.init(key.javaPrivateKey)
                     ka.doPhase(otherKey.javaPublicKey, true)
                     ka.generateSecret()
-                } catch (e: Throwable) {
+                } catch (e: Exception) {
+                    if (e is CancellationException) throw e
                     throw IllegalStateException("Unexpected Exception", e)
                 }
             }
@@ -467,7 +711,8 @@ actual object Crypto {
                     ka.init(key.javaPrivateKey)
                     ka.doPhase(otherKey.javaPublicKey, true)
                     ka.generateSecret()
-                } catch (e: Throwable) {
+                } catch (e: Exception) {
+                    if (e is CancellationException) throw e
                     throw IllegalStateException("Unexpected Exception", e)
                 }
             }
@@ -479,13 +724,18 @@ actual object Crypto {
                     ka.init(key.javaPrivateKey)
                     ka.doPhase(otherKey.javaPublicKey, true)
                     ka.generateSecret()
-                } catch (e: Throwable) {
+                } catch (e: Exception) {
+                    if (e is CancellationException) throw e
                     throw IllegalStateException("Unexpected Exception", e)
                 }
             }
         }
+        val sharedSecret = SecureByteString(secretBytes)
+        secretBytes.secureZero()
+        return sharedSecret
+    }
 
-    internal actual suspend fun validateCertChain(certChain: X509CertChain): Boolean {
+    internal actual suspend fun validateCertChainSignatures(certChain: X509CertChain): Boolean {
         val javaCerts = certChain.javaX509Certificates
         for (n in javaCerts.indices) {
             if (n < javaCerts.size - 1) {
@@ -493,7 +743,8 @@ actual object Crypto {
                 val certSignedBy = javaCerts[n + 1]
                 try {
                     cert.verify(certSignedBy.publicKey)
-                } catch (_: Throwable) {
+                } catch (e: Exception) {
+                    if (e is CancellationException) throw e
                     return false
                 }
             }

@@ -28,7 +28,9 @@ dependencies {
     ksp(project(":multipaz-cbor-rpc"))
     implementation(project(":multipaz"))
     implementation(project(":multipaz-doctypes"))
+    implementation(project(":multipaz-utopia"))
     implementation(project(":multipaz-server"))
+    implementation(project(":multipaz-records"))
 
     implementation(libs.kotlinx.datetime)
     implementation(libs.kotlinx.serialization.json)
@@ -50,7 +52,4 @@ dependencies {
 }
 
 ktor {
-}
-subprojects {
-	apply(plugin = "org.jetbrains.dokka")
 }

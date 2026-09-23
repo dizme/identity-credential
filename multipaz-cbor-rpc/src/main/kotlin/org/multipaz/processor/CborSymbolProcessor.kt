@@ -26,7 +26,6 @@ import org.multipaz.graphhash.Leaf
 import org.multipaz.graphhash.Node
 import org.multipaz.graphhash.UnassignedLoopException
 import java.security.MessageDigest
-import kotlin.collections.set
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.Base64.PaddingOption
 import kotlin.io.encoding.ExperimentalEncodingApi
@@ -145,7 +144,15 @@ class CborSymbolProcessor(
                 "kotlin.Double" -> return "${base}asDouble"
                 "kotlin.Boolean" -> return "${base}asBoolean"
                 "kotlin.time.Instant" -> "${base}asDateTimeString"
-                "kotlin.time.LocalDate" -> "${base}asDateString"
+                "kotlin.time.Duration" -> {
+                    codeBuilder.importQualifiedName("kotlin.time.Duration")
+                    return if (type.isMarkedNullable) {
+                        "${base}asNullable?.asTstr?.let { Duration.parse(it) }"
+                    } else {
+                        "Duration.parse(${base}asTstr)"
+                    }
+                }
+                "kotlinx.datetime.LocalDate" -> "${base}asDateString"
                 DATA_ITEM_CLASS -> return code
                 else -> return if (declaration is KSClassDeclaration &&
                     declaration.classKind == ClassKind.ENUM_CLASS
@@ -343,6 +350,16 @@ class CborSymbolProcessor(
                     }
                 }
 
+                "kotlin.time.Duration" -> {
+                    codeBuilder.importQualifiedName(TSTR_TYPE)
+                    return if (nullable) {
+                        codeBuilder.importQualifiedName(SIMPLE_TYPE)
+                        "${base}let { Tstr(it.toIsoString()) } ?: Simple.NULL"
+                    } else {
+                        "Tstr(${base}toIsoString())"
+                    }
+                }
+
                 "kotlinx.datetime.LocalDate" -> {
                     codeBuilder.importQualifiedName(TO_DATAITEM_FULLDATE_FUN)
                     return if (nullable) {
@@ -496,14 +513,28 @@ class CborSymbolProcessor(
                             clazz
                         )
                     } else {
-                        // Annotated subclass
-                        allSealedSubclasses.getOrPut(superDeclaration) { mutableSetOf() }
-                            .add(clazz)
+                        // Annotated subclass - skip intermediates which are sealed
+                        if (!clazz.modifiers.contains(Modifier.SEALED)) {
+                            allSealedSubclasses.getOrPut(superDeclaration) { mutableSetOf() }
+                                .add(clazz)
+                        }
                         return@Declaration
                     }
                 }
                 if (clazz.modifiers.contains(Modifier.SEALED)) {
-                    val subclasses = clazz.getSealedSubclasses()
+                    // Note: getSealedSubclasses() only returns the immediate subclasses but we might have
+                    // a whole hierarchy for example
+                    //
+                    //  sealed class Event
+                    //  sealed class EventPresentment: Event
+                    //  sealed class EventPresentmentIso18013: EventPresentment
+                    //  sealed class EventPresentmentOpenID4VP: EventPresentment
+                    //
+                    // In this setup getSealedSubclasses() only returns EventPresentment but our
+                    // extension getAllSealedSubclasses() returns all of them.
+                    //
+                    val subclasses = clazz.getAllSealedSubclasses()
+                        .filterNot { it.modifiers.contains(Modifier.SEALED) }
                     for (subclass in subclasses) {
                         // if annotated, it will be processed in another branch
                         if (findAnnotation(subclass, ANNOTATION_SERIALIZABLE) == null) {
@@ -713,13 +744,17 @@ class CborSymbolProcessor(
                         }
                     }
                 }
-                line("return $baseName(")
-                withIndent {
-                    constructorParameters.forEach { parameter ->
-                        line("$parameter,")
+                if (classDeclaration.classKind == ClassKind.OBJECT) {
+                    line ("return $baseName")
+                } else {
+                    line("return $baseName(")
+                    withIndent {
+                        constructorParameters.forEach { parameter ->
+                            line("$parameter,")
+                        }
                     }
+                    line(")")
                 }
-                line(")")
             }
 
             if (hadMergedMap) {
@@ -754,16 +789,29 @@ class CborSymbolProcessor(
     }
 
     private fun getSealedSuperclass(classDeclaration: KSClassDeclaration): KSClassDeclaration? {
-        for (supertype in classDeclaration.superTypes) {
-            val superDeclaration = supertype.resolve().declaration
-            if (superDeclaration is KSClassDeclaration &&
-                superDeclaration.classKind == ClassKind.CLASS &&
-                superDeclaration.modifiers.contains(Modifier.SEALED)) {
-                return superDeclaration
+        var current = classDeclaration
+        while (true) {
+            var superClass: KSClassDeclaration? = null
+            for (supertype in current.superTypes) {
+                val superDeclaration = supertype.resolve().declaration
+                if (superDeclaration is KSClassDeclaration &&
+                    superDeclaration.classKind == ClassKind.CLASS &&
+                    superDeclaration.qualifiedName?.asString() != "kotlin.Any") {
+                    superClass = superDeclaration
+                    break
+                }
             }
+            if (superClass == null) {
+                return null
+            }
+            if (superClass.modifiers.contains(Modifier.SEALED) &&
+                findAnnotation(superClass, ANNOTATION_SERIALIZABLE) != null) {
+                return superClass
+            }
+            current = superClass
         }
-        return null
     }
+
 
     private fun getTypeKey(annotation: KSAnnotation?): String {
         annotation?.arguments?.forEach { arg ->
@@ -799,7 +847,7 @@ class CborSymbolProcessor(
         return if (name.startsWith(superName)) {
             name.substring(superName.length)
         } else if (name.endsWith(superName)) {
-            name.substring(0, name.length - superName.length)
+            name.dropLast(superName.length)
         } else if (subclass.parentDeclaration != null &&
             (subclass.parentDeclaration === superclass
                 || subclass.parentDeclaration == superclass.parentDeclaration)) {
@@ -888,7 +936,7 @@ class CborSymbolProcessor(
 
         val graphHasher = GraphHasher {
             object: HashBuilder {
-                val digest = MessageDigest.getInstance("SHA3-256");
+                val digest = MessageDigest.getInstance("SHA3-256")
                 override fun update(data: ByteString) = digest.update(data.toByteArray())
                 override fun build(): ByteString = ByteString(digest.digest())
             }
@@ -917,7 +965,7 @@ class CborSymbolProcessor(
                         }
                     }
                 }
-                val random = ByteString(Random.Default.nextBytes(32)).toBase64Url()
+                val random = ByteString(Random.nextBytes(32)).toBase64Url()
                 logger.error("Specify ($className) schemaId on one of the loop members, e.g, schemaId = \"$random\"")
                 return emptyMap()
             }
@@ -942,8 +990,8 @@ class CborSymbolProcessor(
         var extra: ByteString? = null
         if (clazz.modifiers.contains(Modifier.SEALED)) {
             // For sealed class, the schema is a union of subclasses
-            val annotation = findAnnotation(clazz, ANNOTATION_SERIALIZABLE)!!
-            extra = getTypeKey(annotation).encodeToByteString()
+            val annotation = findAnnotation(clazz, ANNOTATION_SERIALIZABLE)
+            extra = annotation?.let { getTypeKey(it).encodeToByteString() }
             for (subclass in clazz.getSealedSubclasses()) {
                 val subclassQualifiedName = subclass.qualifiedName!!.asString()
                 val subclassTypeInfo = schemaTypeInfoCache[qualifiedName] ?:
@@ -1141,6 +1189,7 @@ class CborSymbolProcessor(
             "kotlin.Double" -> simpleLeaf("Double")
             "kotlin.Boolean" -> simpleLeaf("Boolean")
             "kotlin.time.Instant" -> simpleLeaf("DateTimeString")
+            "kotlin.time.Duration" -> simpleLeaf("DurationString")
             "kotlinx.datetime.LocalDate" -> simpleLeaf("DateString")
             DATA_ITEM_CLASS -> simpleLeaf("Any")
             else -> {
@@ -1161,3 +1210,14 @@ class CborSymbolProcessor(
     class ForceAddSerializableClass(val declaration: KSClassDeclaration): Exception()
 }
 
+private fun KSClassDeclaration.getAllSealedSubclasses(): Sequence<KSClassDeclaration> {
+    return this.getSealedSubclasses().flatMap { subclass ->
+        if (subclass.modifiers.contains(Modifier.SEALED)) {
+            // It's another sealed class, recurse!
+            sequenceOf(subclass) + subclass.getAllSealedSubclasses()
+        } else {
+            // It's a concrete class (or object), just return it
+            sequenceOf(subclass)
+        }
+    }
+}

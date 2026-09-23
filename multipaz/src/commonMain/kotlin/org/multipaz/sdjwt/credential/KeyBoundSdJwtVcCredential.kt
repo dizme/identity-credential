@@ -1,5 +1,6 @@
 package org.multipaz.sdjwt.credential
 
+import kotlinx.io.bytestring.decodeToString
 import org.multipaz.cbor.CborBuilder
 import org.multipaz.cbor.DataItem
 import org.multipaz.cbor.MapBuilder
@@ -8,8 +9,12 @@ import org.multipaz.credential.Credential
 import org.multipaz.credential.SecureAreaBoundCredential
 import org.multipaz.document.Document
 import org.multipaz.documenttype.DocumentTypeRepository
+import org.multipaz.mpzpass.MpzPass
+import org.multipaz.mpzpass.MpzPassSdJwtVc
 import org.multipaz.securearea.CreateKeySettings
+import org.multipaz.securearea.KeyUnlockData
 import org.multipaz.securearea.SecureArea
+import org.multipaz.securearea.software.SoftwareSecureArea
 import kotlin.time.Instant
 
 /**
@@ -189,4 +194,25 @@ class KeyBoundSdJwtVcCredential : SecureAreaBoundCredential, SdJwtVcCredential {
 
     override suspend fun extractValidityFromIssuerData(): Pair<Instant, Instant> =
         extractValidityFromIssuerDataImpl()
+
+    override suspend fun exportToMpzPass(keyUnlockData: KeyUnlockData?): MpzPass {
+        check(secureArea is SoftwareSecureArea) {
+            "You can only export a credential if it's using a SoftwareSecureArea"
+        }
+        val swSecureArea = secureArea as SoftwareSecureArea
+        val keyInfo = swSecureArea.getKeyInfo(alias)
+        val deviceKeyPrivate = swSecureArea.getPrivateKey(alias, keyUnlockData)
+        return MpzPass(
+            name = document.displayName,
+            typeName = document.typeDisplayName,
+            cardArt = document.cardArt,
+            userAuthenticationRequired = keyInfo.isUserAuthenticationRequired,
+            readerIdentifiers = document.readerIdentifiers,
+            sdJwtVc = listOf(MpzPassSdJwtVc(
+                vct = vct,
+                deviceKeyPrivate = deviceKeyPrivate,
+                compactSerialization = issuerProvidedData.decodeToString()
+            ))
+        )
+    }
 }

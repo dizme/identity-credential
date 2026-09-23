@@ -19,12 +19,16 @@ import org.multipaz.compose.cards.InfoCard
 import org.multipaz.compose.cards.WarningCard
 import org.multipaz.compose.permissions.rememberBluetoothPermissionState
 import org.multipaz.compose.document.DocumentModel
+import org.multipaz.digitalcredentials.DigitalCredentials
+import org.multipaz.digitalcredentials.DigitalCredentialsAuthorizationState
 import org.multipaz.testapp.TestAppConfiguration
 import org.multipaz.testapp.TestAppPlatform
 
 @Composable
 fun StartScreen(
     documentModel: DocumentModel,
+    digitalCredentials: DigitalCredentials,
+    onDigitalCredentialsReregister: suspend () -> Unit = {},
     onClickAbout: () -> Unit = {},
     onClickDocumentStore: () -> Unit = {},
     onClickTrustedIssuers: () -> Unit = {},
@@ -35,7 +39,6 @@ fun StartScreen(
     onClickSecureEnclaveSecureArea: () -> Unit = {},
     onClickPassphraseEntryField: () -> Unit = {},
     onClickPassphrasePrompt: () -> Unit = {},
-    onClickProvisioningTestField: () -> Unit = {},
     onClickConsentSheetList: () -> Unit = {},
     onClickQrCodes: () -> Unit = {},
     onClickNfc: () -> Unit = {},
@@ -48,11 +51,19 @@ fun StartScreen(
     onClickNotifications: () -> Unit = {},
     onClickScreenLock: () -> Unit = {},
     onClickPickersScreen: () -> Unit = {},
-    onClickDocumentCarouselScreen: () -> Unit = {},
+    onClickNfcReadersScreen: () -> Unit = {},
+    onClickVerticalCardListScreen: () -> Unit = {},
+    onClickQuickAccessWallet: () -> Unit = {},
+    onClickEventLog: () -> Unit = {},
+    onClickShareSheet: () -> Unit = {},
+    onClickGenerateMpzPass: () -> Unit = {},
+    onClickFloatingItemList: () -> Unit = {},
+    onClickDeviceCheck: () -> Unit = {},
 ) {
     val blePermissionState = rememberBluetoothPermissionState()
     val coroutineScope = rememberCoroutineScope()
     val documentInfos = documentModel.documentInfos.collectAsState().value
+    val dcAuthorizationState = digitalCredentials.authorizationState.collectAsState().value
 
     Surface(
         modifier = Modifier.fillMaxSize(),
@@ -93,6 +104,20 @@ fun StartScreen(
                         }
                     }
                 }
+                if (dcAuthorizationState == DigitalCredentialsAuthorizationState.NOT_AUTHORIZED) {
+                    WarningCard(
+                        modifier = Modifier.padding(8.dp).clickable() {
+                            coroutineScope.launch {
+                                onDigitalCredentialsReregister()
+                            }
+                        }
+                    ) {
+                        Text(
+                            "W3C DC API is not authorized and needs to be manually enabled in OS Settings app. " +
+                                    "When enabled, click here to retry exporting documents"
+                        )
+                    }
+                }
             }
             LazyColumn {
                 item {
@@ -103,7 +128,13 @@ fun StartScreen(
 
                 item {
                     TextButton(onClick = onClickDocumentStore) {
-                        Text("Document store")
+                        Text("Document Store")
+                    }
+                }
+
+                item {
+                    TextButton(onClick = onClickVerticalCardListScreen) {
+                        Text("Vertical Card List")
                     }
                 }
 
@@ -244,8 +275,44 @@ fun StartScreen(
                 }
 
                 item {
-                    TextButton(onClick = onClickDocumentCarouselScreen) {
-                        Text("Document Carousel")
+                    TextButton(onClick = onClickNfcReadersScreen) {
+                        Text("External NFC Readers")
+                    }
+                }
+
+                item {
+                    TextButton(onClick = onClickQuickAccessWallet) {
+                        Text("QuickAccessWallet")
+                    }
+                }
+
+                item {
+                    TextButton(onClick = onClickEventLog) {
+                        Text("Event Log")
+                    }
+                }
+
+                item {
+                    TextButton(onClick = onClickShareSheet) {
+                        Text("Share sheet")
+                    }
+                }
+
+                item {
+                    TextButton(onClick = onClickGenerateMpzPass) {
+                        Text("MpzPass generation")
+                    }
+                }
+
+                item {
+                    TextButton(onClick = onClickFloatingItemList) {
+                        Text("FloatingItemList examples")
+                    }
+                }
+
+                item {
+                    TextButton(onClick = onClickDeviceCheck) {
+                        Text("DeviceCheck")
                     }
                 }
             }

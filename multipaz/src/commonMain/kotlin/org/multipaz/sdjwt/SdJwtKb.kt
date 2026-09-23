@@ -1,22 +1,27 @@
 package org.multipaz.sdjwt
 
+import kotlinx.coroutines.CancellationException
+import kotlinx.io.bytestring.ByteString
 import kotlin.time.Instant
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import org.multipaz.crypto.Algorithm
 import org.multipaz.crypto.Crypto
-import org.multipaz.crypto.EcPublicKey
+import org.multipaz.crypto.PublicKey
 import org.multipaz.crypto.JsonWebSignature
 import org.multipaz.crypto.SignatureVerificationException
+import org.multipaz.presentment.TransactionData
+import org.multipaz.presentment.TransactionProtocol
 import org.multipaz.util.fromBase64Url
 import org.multipaz.util.toBase64Url
 
 
 /**
- * A SD-JWT+KB according to
- * [draft-ietf-oauth-selective-disclosure-jwt](https://datatracker.ietf.org/doc/draft-ietf-oauth-selective-disclosure-jwt/).
+ * A SD-JWT+KB according to [RFC 9901](https://datatracker.ietf.org/doc/rfc9901/).
  *
  * When a [SdJwtKb] instance is initialized, cursory checks on the provided string with compact serialization
  * are performed. Full verification of the SD-JWT+KB can be done using the [verify] method.
@@ -47,25 +52,34 @@ class SdJwtKb private constructor(
     }
 
     /**
-     * Verifies a SD-JWT+KB according to Section 7.3 of the SD-JWT specification
+     * Verifies a SD-JWT+KB according to Section 7.3 of the SD-JWT specification.
      *
-     * @param issuerKey the issuer's key to use for verification.
+     * Note that per Section 7.3 of RFC 9901, the returned JSON object is the Processed SD-JWT
+     * Payload containing only the Issuer-signed claims (with Disclosures resolved). The
+     * device-signed claims in the Key Binding JWT (such as `nonce`, `aud`, `iat`, and any
+     * transaction response claims) are not included in this returned payload and must be
+     * retrieved separately from [jwtBody].
+     *
+     * @param issuerKey the issuer's key to use for verification or `null` to not perform issuer signature validation.
      * @param checkNonce a function to check that the nonce in the KB JWT is as expected.
      * @param checkAudience a function to check that the audience in the KB JWT is as expected.
      * @param checkCreationTime a function to check that the creation time in the KB JWT is as expected.
-     * @return the processed SD-JWT payload,
+     * @param transactionData transaction data that was sent with the request.
+     * @return the processed SD-JWT payload.
      * @throws SignatureVerificationException if the issuer signature or key-binding signature failed to validate.
      * @throws IllegalStateException if [checkNonce], [checkAudience], or [checkCreationTime] returns false.
      */
     suspend fun verify(
-        issuerKey: EcPublicKey,
-        checkNonce: (nonce: String) -> Boolean,
-        checkAudience: (audience: String) -> Boolean,
-        checkCreationTime: (creationTime: Instant) -> Boolean
+        issuerKey: PublicKey? = null,
+        checkNonce: (nonce: String) -> Boolean = { true },
+        checkAudience: (audience: String) -> Boolean = { true },
+        checkCreationTime: (creationTime: Instant) -> Boolean = { true },
+        transactionData: List<TransactionData<*>> = listOf()
     ): JsonObject {
         try {
             JsonWebSignature.verify("$kbHeader.$kbBody.$kbSignature", sdJwt.kbKey!!)
-        } catch (e: Throwable) {
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
             throw SignatureVerificationException("Error validating KB signature", e)
         }
 
@@ -87,6 +101,50 @@ class SdJwtKb private constructor(
             throw IllegalStateException("Failed verification of creationTime")
         }
 
+        val isIso18013_5 = transactionData.any { it.protocol == TransactionProtocol.ISO_18013_5 }
+        val hashes = jwtBody["transaction_data_hashes"]
+        if (isIso18013_5) {
+            if (hashes != null) {
+                throw IllegalStateException("Unexpected 'transaction_data_hashes' in ISO 18013-5 presentation")
+            }
+            for (transaction in transactionData) {
+                val responseClaims = jwtBody[transaction.type.kbJwtResponseClaimName]?.jsonObject ?: emptyMap()
+                transaction.verifySdJwtResponse(responseClaims)
+            }
+        } else {
+            if (hashes == null) {
+                if (transactionData.isNotEmpty()) {
+                    throw IllegalStateException("Transaction data was not processed")
+                }
+            } else {
+                hashes as? JsonArray
+                    ?: throw IllegalStateException("Invalid 'transaction_data_hashes'")
+                if (hashes.size != transactionData.size) {
+                    if (transactionData.isEmpty()) {
+                        throw IllegalStateException("Unexpected 'transaction_data_hashes'")
+                    } else {
+                        throw IllegalStateException("Unexpected 'transaction_data_hashes' size")
+                    }
+                }
+                val hashAlgorithm = try {
+                    jwtBody["transaction_data_hashes_alg"]?.jsonPrimitive?.content?.let {
+                        Algorithm.fromHashAlgorithmIdentifier(it)
+                    } ?: Algorithm.SHA256
+                } catch (err: Exception) {
+                    throw IllegalStateException("Unknown or invalid transaction data hash algorithm", err)
+                }
+                transactionData.zip(hashes).forEach { (transaction, hash) ->
+                    if (hash !is JsonPrimitive || !hash.isString) {
+                        throw IllegalStateException("Invalid transaction data hash value")
+                    }
+                    val responseHash = ByteString(hash.content.fromBase64Url())
+                    if (transaction.computeHash(hashAlgorithm) != responseHash) {
+                        throw IllegalStateException("Transaction data hash mismatch")
+                    }
+                }
+            }
+        }
+
         return sdJwt.verify(issuerKey)
     }
 
@@ -102,7 +160,7 @@ class SdJwtKb private constructor(
                 throw IllegalArgumentException("Given compact serialization appears to be a SD-JWT, not SD-JWT+KB")
             }
             val lastTilde = compactSerialization.lastIndexOf('~')
-            val sdJwtCompactSerialization = compactSerialization.substring(0, lastTilde + 1)
+            val sdJwtCompactSerialization = compactSerialization.take(lastTilde + 1)
             val kbJwt = compactSerialization.substring(lastTilde + 1, compactSerialization.length)
 
             val sdJwt = SdJwt.fromCompactSerialization(sdJwtCompactSerialization)

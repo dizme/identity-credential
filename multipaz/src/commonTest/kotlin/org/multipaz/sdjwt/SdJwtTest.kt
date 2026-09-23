@@ -9,6 +9,8 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.add
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -18,6 +20,9 @@ import org.multipaz.crypto.EcCurve
 import org.multipaz.crypto.EcPublicKey
 import org.multipaz.crypto.EcPublicKeyDoubleCoordinate
 import org.multipaz.crypto.AsymmetricKey
+import org.multipaz.crypto.RsaPublicKey
+import org.multipaz.crypto.SignatureVerificationException
+import org.multipaz.sdjwt.DisclosureMetadata.Companion.listOfArrayDisclosures
 import org.multipaz.util.fromBase64Url
 import org.multipaz.util.toBase64Url
 import org.multipaz.util.toHex
@@ -25,6 +30,7 @@ import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertTrue
 
 class SdJwtTest {
     companion object {
@@ -37,10 +43,12 @@ class SdJwtTest {
 
         fun prettyPrintDisclosures(disclosures: List<String>): String {
             return prettyJson.encodeToString(
-                disclosures.map { Json.decodeFromString(
-                    JsonArray.serializer(),
-                    it.fromBase64Url().decodeToString()
-                ).jsonArray }
+                disclosures.map {
+                    Json.decodeFromString(
+                        JsonArray.serializer(),
+                        it.fromBase64Url().decodeToString()
+                    ).jsonArray
+                }
             )
         }
 
@@ -891,7 +899,8 @@ class SdJwtTest {
 
     @Test
     fun testVerifySdJwtRfcAppendixA3KeyBinding() = runTest {
-        val sdJwtKb = SdJwtKb.fromCompactSerialization(sdJwtRfcAppendixA3SdJwtKbCompactSerialization)
+        val sdJwtKb =
+            SdJwtKb.fromCompactSerialization(sdJwtRfcAppendixA3SdJwtKbCompactSerialization)
         assertEquals(
             """
                 {
@@ -987,12 +996,13 @@ class SdJwtTest {
                  ]
                }
                   """.trimIndent().trim(),
-            prettyJson.encodeToString(sdJwtKb.verify(
-                issuerKey = sdJwtRfcIssuerKey,
-                checkNonce = { nonce -> nonce == "1234567890" },
-                checkAudience = { audience -> audience == "https://verifier.example.org" },
-                checkCreationTime = { creationTime -> creationTime.toEpochMilliseconds() == 1748454271000L }
-            ))
+            prettyJson.encodeToString(
+                sdJwtKb.verify(
+                    issuerKey = sdJwtRfcIssuerKey,
+                    checkNonce = { nonce -> nonce == "1234567890" },
+                    checkAudience = { audience -> audience == "https://verifier.example.org" },
+                    checkCreationTime = { creationTime -> creationTime.toEpochMilliseconds() == 1748454271000L }
+                ))
         )
 
         // Negative tests to check that callbacks are properly evaluated
@@ -1217,7 +1227,8 @@ class SdJwtTest {
 
     @Test
     fun testVerifySdJwtRfcAppendixA4KeyBinding() = runTest {
-        val sdJwtKb = SdJwtKb.fromCompactSerialization(sdJwtRfcAppendixA4SdJwtKbCompactSerialization)
+        val sdJwtKb =
+            SdJwtKb.fromCompactSerialization(sdJwtRfcAppendixA4SdJwtKbCompactSerialization)
         assertEquals(
             """
                 {
@@ -1344,12 +1355,13 @@ class SdJwtTest {
                   }
                 }
                """.trimIndent().trim(),
-            prettyJson.encodeToString(sdJwtKb.verify(
-                issuerKey = sdJwtRfcIssuerKey,
-                checkNonce = { nonce -> nonce == "1234567890" },
-                checkAudience = { audience -> audience == "https://verifier.example.org" },
-                checkCreationTime = { creationTime -> creationTime.toEpochMilliseconds() == 1748454271000L }
-            ))
+            prettyJson.encodeToString(
+                sdJwtKb.verify(
+                    issuerKey = sdJwtRfcIssuerKey,
+                    checkNonce = { nonce -> nonce == "1234567890" },
+                    checkAudience = { audience -> audience == "https://verifier.example.org" },
+                    checkCreationTime = { creationTime -> creationTime.toEpochMilliseconds() == 1748454271000L }
+                ))
         )
     }
 
@@ -1359,7 +1371,7 @@ class SdJwtTest {
             compactSerialization =
                 "eyJ4NWMiOlsiTUlJQzR6Q0NBb21nQXdJQkFnSUJEakFLQmdncWhrak9QUVFEQWpCak1Rc3dDUVlEVlFRR0V3SkVSVEVQTUEwR0ExVUVCd3dHUW1WeWJHbHVNUjB3R3dZRFZRUUtEQlJDZFc1a1pYTmtjblZqYTJWeVpXa2dSMjFpU0RFS01BZ0dBMVVFQ3d3QlNURVlNQllHQTFVRUF3d1BTVVIxYm1sdmJpQlVaWE4wSUVOQk1CNFhEVEkxTURFeU56RTFOVGswTWxvWERUSTJNRE13TXpFMU5UazBNbG93VGpFTE1Ba0dBMVVFQmhNQ1JFVXhIVEFiQmdOVkJBb01GRUoxYm1SbGMyUnlkV05yWlhKbGFTQkhiV0pJTVFvd0NBWURWUVFMREFGSk1SUXdFZ1lEVlFRRERBdFVaWE4wSUVsemMzVmxjakJaTUJNR0J5cUdTTTQ5QWdFR0NDcUdTTTQ5QXdFSEEwSUFCR2NFN0pPVU92VUwwYmZ0eXdzSEc0UWJKcDZ3c0ZhZ3E4NUpScmlXbUxzS1pjc1haS0I0QU52cW1YcUxocjJYN0JnS2ExOERCSEw3bllTMk9ONXlHdVdqZ2dGQk1JSUJQVEFkQmdOVkhRNEVGZ1FVNlR3dDV5eWNmMWpLOE1GQlpRbU5JbWR2Y3M0d0RBWURWUjBUQVFIL0JBSXdBREFPQmdOVkhROEJBZjhFQkFNQ0I0QXdnZHdHQTFVZEVRU0IxRENCMFlJVFpHVnRieTVpWkhJdGNISnZkRzkwZVhCbGM0WTBhSFIwY0hNNkx5OWtaVzF2TG1Ka2NpMXdjbTkwYjNSNWNHVnpMMmx6YzNWbGNpOTFibWwyWlhKemFYUjVibVYwZDI5eWE0WW1hSFIwY0hNNkx5OWtaVzF2TG1Ka2NpMXdjbTkwYjNSNWNHVnpMMmx6YzNWbGNpOXdhV1NHTEdoMGRIQnpPaTh2WkdWdGJ5NWlaSEl0Y0hKdmRHOTBlWEJsY3k5cGMzTjFaWEl2WW5WdVpHVnpZVzEwaGk1b2RIUndjem92TDJSbGJXOHVZbVJ5TFhCeWIzUnZkSGx3WlhNdmFYTnpkV1Z5TDJGeVltVnBkR2RsWW1WeU1COEdBMVVkSXdRWU1CYUFGRStXNno3YWpUdW1leCtZY0Zib05yVmVDMnRSTUFvR0NDcUdTTTQ5QkFNQ0EwZ0FNRVVDSUFHVDE4RTRRdThhT012MWI5V1dYMmlNM2drWlRSck14MlB4RzRxYTREeWhBaUVBeFVTTmUrdVNzTkJCSXh3b2I2K0RKMnVjN21USnp5aGlJQ2ZaR0J4MjNPOD0iLCJNSUlDTFRDQ0FkU2dBd0lCQWdJVU1ZVUhoR0Q5aFUvYzBFbzZtVzhyamplSit0MHdDZ1lJS29aSXpqMEVBd0l3WXpFTE1Ba0dBMVVFQmhNQ1JFVXhEekFOQmdOVkJBY01Ca0psY214cGJqRWRNQnNHQTFVRUNnd1VRblZ1WkdWelpISjFZMnRsY21WcElFZHRZa2d4Q2pBSUJnTlZCQXNNQVVreEdEQVdCZ05WQkFNTUQwbEVkVzVwYjI0Z1ZHVnpkQ0JEUVRBZUZ3MHlNekEzTVRNd09USTFNamhhRncwek16QTNNVEF3T1RJMU1qaGFNR014Q3pBSkJnTlZCQVlUQWtSRk1ROHdEUVlEVlFRSERBWkNaWEpzYVc0eEhUQWJCZ05WQkFvTUZFSjFibVJsYzJSeWRXTnJaWEpsYVNCSGJXSklNUW93Q0FZRFZRUUxEQUZKTVJnd0ZnWURWUVFEREE5SlJIVnVhVzl1SUZSbGMzUWdRMEV3V1RBVEJnY3Foa2pPUFFJQkJnZ3Foa2pPUFFNQkJ3TkNBQVNFSHo4WWpyRnlUTkhHTHZPMTRFQXhtOXloOGJLT2drVXpZV2NDMWN2ckpuNUpnSFlITXhaYk5NTzEzRWgwRXIyNzM4UVFPZ2VSb1pNSVRhb2RrZk5TbzJZd1pEQWRCZ05WSFE0RUZnUVVUNWJyUHRxTk82WjdINWh3VnVnMnRWNExhMUV3SHdZRFZSMGpCQmd3Rm9BVVQ1YnJQdHFOTzZaN0g1aHdWdWcydFY0TGExRXdFZ1lEVlIwVEFRSC9CQWd3QmdFQi93SUJBREFPQmdOVkhROEJBZjhFQkFNQ0FZWXdDZ1lJS29aSXpqMEVBd0lEUndBd1JBSWdZMERlcmRDeHQ0ekdQWW44eU5yRHhJV0NKSHB6cTRCZGpkc1ZOMm8xR1JVQ0lCMEtBN2JHMUZWQjFJaUs4ZDU3UUFMK1BHOVg1bGRLRzdFa29BbWhXVktlIl0sImtpZCI6ImJjMGRlZGE0NTU1NGVjYzNlZTQzNjA5YmEyMDc4MzIwMWY5NGEwOTYiLCJ0eXAiOiJkYytzZC1qd3QiLCJhbGciOiJFUzI1NiJ9.eyJfc2QiOlsiODQ5T1hCSnktcHZfNTk4UVhWcVFmVEp3X0tIdjlzOGdna25VMzBVaDZjayIsIlB6cTRsLUdBU2tlTV9kM09tS1lnQ0tUelU4T1FlNjZZbnFKal9XcUtPTGMiLCJiX3FLZXRVT3ppRXdPRl9LYVEyR0xoNXo5d2huYUVjNmtFdEFDdHlqSnZ3IiwiakVhd1FHRUVjU2RJWDRWbUtRS0J1dHQxRWJPVGc0QS1wcXJVbXlvOHFsRSIsImphSUpMSDc5MTYySVEydmZONTRBZ011VWxCNmx0OV80N1NsczlwUDUtQWsiLCJubEl4OXQxOXlrcEkxSm1pTF9mcmV4X0xVTnpMcEFUYXVZX0VXd09ES2ljIiwicDlXbTQxLUNsTy1acXNSVnNucnNUc3JlUGpoWGRqMnJUbFdJa2dqOUNsMCIsInZqZVFoSmJfU1J6NXY3TjY0NEd1bkczTkZQRURRY3RLZFQwN215ZjVLRzgiXSwidmN0IjoidXJuOmV1ZGk6cGlkOjEiLCJfc2RfYWxnIjoic2hhLTI1NiIsImlzcyI6Imh0dHBzOi8vZGVtby5iZHItcHJvdG90eXBlcy9pc3N1ZXIvcGlkIiwiY25mIjp7Imp3ayI6eyJrdHkiOiJFQyIsImNydiI6IlAtMjU2IiwieCI6IjRsbElYWVpJLVIzSWppMm5wRDAwWmdZc3gtQmtKamY4bnFSeFVrRndDUTAiLCJ5IjoiVlRBMFdRSFo1el96NDJvQ2RFWHdCakYxblpUdHdyUnBYODNMazgweTE0ZyJ9fSwiZXhwIjoxNzUzNzg3NjY1LCJpYXQiOjE3NDYwMTE2NjUsImFnZV9lcXVhbF9vcl9vdmVyIjp7Il9zZCI6WyI4c2ZoOFJPaHlRV00tcmR6el9pb2xBYnZZY21ncFdjRHFNdUVSWnZ0NTFjIiwiVkFvc0czU2ZYb0hmUFVWTmgtaGlCRlNIbnl4MWRoM1FzZm9xcURwcS1aRSJdfX0.5KKKPiTNxNDzagKzYnaolyRciOZgOHFwub33BUWetUt8UatNQcX3nc87lRR6X1hzFY3p5gKWyP0BAtTX_mZyGA~WyIwSmRWenhqT1BmcGdETU9KOUNSWkxRIiwiZmFtaWx5X25hbWUiLCJNVVNURVJNQU5OIl0~WyI5UWFPdGVra193ZmxzZkFheFRNWVp3IiwiZ2l2ZW5fbmFtZSIsIkVSSUtBIl0~WyJQMzVoUEtIWlZ0bTVacnp3MTMwV0RBIiwiYmlydGhkYXRlIiwiMjAwNi0wMi0yOCJd~WyJXeExqYVZ2eHozem1NUkl6bm1SbVRBIiwiY291bnRyeSIsIkJFUkxJTiJd~WyJWdjM4ZVM3YTB1aXJCbWEydDAwaDh3IiwibG9jYWxpdHkiLCJCRVJMSU4iXQ~WyJNVGVhZVZkVmVKa243Tm1GOFNSdU53IiwicmVnaW9uIiwiQkVSTElOIl0~WyJRSkt6WktUVldqaHo4dFhuVWFGZTJBIiwicGxhY2Vfb2ZfYmlydGgiLHsiX3NkIjpbIjVMNkJiUGIxU2tGSWdvQUZ6VXFzRGJqeHVzN3V0RFVPUHgwZ3FadXVLYmMiLCJIanBVd3pjcXNCeEgtUFdmRnJqc2x0UzVmM3pWUExGU1liZjNPYUZ1OGprIiwiTmtkTEJzX180M0ROSDNKd09UNll2UDhxbUc1em9OMDJBbHZNbmJTcDF6byJdfV0~WyJlVm9qMTRPQ1pPN0VaYVZGcHQybTRRIiwibmF0aW9uYWxpdGllcyIsW11d~WyJUbTVITUY0cmhhY0ltNV91WGxKbkhnIiwiZGF0ZV9vZl9leHBpcnkiLCIyMDI2LTEyLTMxIl0~WyIxTURKcDhZV193Qnp1QktNa0hKSExBIiwiMTgiLHRydWVd~WyI5QVRkUldEdGVuVnNiMF85MWRueENnIiwiMjEiLGZhbHNlXQ~WyJmMFItM0xSMzA0bG45WXVKeVlnUGRRIiwiaXNzdWluZ19hdXRob3JpdHkiLCJERSJd~WyJhQlpCd3hyT1Rjd0JZemVDeDRlenpRIiwiaXNzdWluZ19jb3VudHJ5IiwiREUiXQ~"
         )
-        val embeddedIssuerKey = sdJwt.x5c!!.certificates.first().ecPublicKey
+        val embeddedIssuerKey = sdJwt.x5c!!.certificates.first().publicKey
         assertEquals(
             """
                 {
@@ -1691,12 +1703,364 @@ class SdJwtTest {
         )
     }
 
+    @Test
+    fun testCreateFromMetadata() = runTest {
+        val issuerKey = Crypto.createEcPrivateKey(EcCurve.P256)
+        val sdJwt = SdJwt.createFromMetadata(
+            issuerKey = AsymmetricKey.anonymous(issuerKey, Algorithm.ESP256),
+            kbKey = null,
+            random = Random(0),
+            claims = Json.parseToJsonElement(
+                """
+                    {
+                      "given_name": "Erika",
+                      "family_name": "Mustermann",
+                      "age_birth_year": 1963,
+                      "age_equal_or_over": {
+                        "12": true,
+                        "14": true,
+                        "16": true,
+                        "18": true,
+                        "21": true,
+                        "65": false,
+                        "_sd": ${DisclosureMetadata.All.toJsonObject()}
+                      },
+                      "nationalities": [
+                        "DE",
+                        "US",
+                        "DK"
+                      ],
+                     "vct": "urn:eudi:pid:de:1",
+                     "iss": "https://pid-issuer.bund.de.example",
+                     "_sd": ${
+                        DisclosureMetadata(
+                            claimNames = listOf(
+                                "given_name",
+                                "family_name",
+                                "age_birth_year",
+                                "age_equal_or_over",
+                                "nationalities"
+                            ),
+                            arrayDisclosures = listOfArrayDisclosures("nationalities")
+                        ).toJsonObject()
+                }
+                    }                    
+                """.trimIndent().trim()
+            ).jsonObject
+        )
+
+        assertEquals(
+            """
+                {
+                  "vct": "urn:eudi:pid:de:1",
+                  "iss": "https://pid-issuer.bund.de.example",
+                  "_sd": [
+                    "7By1ZYnPqIm002hk803CGwHE2oOPTeVhFhP1LbZeDIo",
+                    "tA1MbUtOb7DNrEl5-nZ9ycp1FMvGa1bywpB2H_sLcL0",
+                    "IxHTcmPQxGkK7QLP3Y-aHl8IgMMYvHOLheOmiZ8-v14",
+                    "L8PfuQ9a6MCXlqOpwPnepcZzAzGBOomP8z_KdJ29DNo",
+                    "g1hFrw58GXGDplr7zhow1Y6cnGsDS9x-ocR62QglINg"
+                  ],
+                  "_sd_alg": "sha-256"
+                }
+            """.trimIndent().trim(),
+            prettyJson.encodeToString(sdJwt.jwtBody)
+        )
+
+        assertEquals(
+            """
+                [
+                  [
+                    "LMK0jFCu_lOzl07ZHmtOqQ",
+                    "given_name",
+                    "Erika"
+                  ],
+                  [
+                    "53vML1N_CwLv6GAwrCwxUw",
+                    "family_name",
+                    "Mustermann"
+                  ],
+                  [
+                    "wKeWAvmlExDI7tmInUbvOw",
+                    "age_birth_year",
+                    1963
+                  ],
+                  [
+                    "Cf-HXWT2yPIvr2IMcilpAA",
+                    "12",
+                    true
+                  ],
+                  [
+                    "Vml25Rd2VJC86JxzOCo0Kw",
+                    "14",
+                    true
+                  ],
+                  [
+                    "l1J5hbcVzU-JcvQonhGyLg",
+                    "16",
+                    true
+                  ],
+                  [
+                    "UAfxWiEGSzdMfH8Z70q5Cw",
+                    "18",
+                    true
+                  ],
+                  [
+                    "HYuz-QMe58l2GieOlzD_Kg",
+                    "21",
+                    true
+                  ],
+                  [
+                    "c9bSh4D24cnb0UtII211fw",
+                    "65",
+                    false
+                  ],
+                  [
+                    "3fmcSCNCxkGHyE43oiXe3g",
+                    "age_equal_or_over",
+                    {
+                      "_sd": [
+                        "05uahUW9clwm18BzECWj07NHKhgZ5fCqbCHGwod7Fmw",
+                        "jOg0uBowidxdszcmz8PaLaklADgMgkD9ylRwvMIT9Kw",
+                        "51EW28Po8yjEDdta1ylwPKQEm_pOPJUC7SI4Kf_iAOo",
+                        "0U8TFOmeYpTEINAOL00hzAgUkd28sAhgwYylunV8XAg",
+                        "XbobgnNiRnKgg04w55mvgXjcpXBnHdJfHvhIlszJs64",
+                        "c9qyu4RFNp5r0pB7QWSwcPeBgw08ZQ-zS7G0IE_z7ck"
+                      ]
+                    }
+                  ],
+                  [
+                    "yUpTzlSZ7Clfpz0eykbSnw",
+                    "DE"
+                  ],
+                  [
+                    "QyVu1oQpCqA0IvFunik-aQ",
+                    "US"
+                  ],
+                  [
+                    "NhBu7A2mB7_oVgTk42cPdw",
+                    "DK"
+                  ],
+                  [
+                    "FJ9ZnatPnIoKD2GTtP_7JQ",
+                    "nationalities",
+                    [
+                      {
+                        "...": "Gg_rF--hhVUPgoGoNCGo4tpP94TZ6jC1fgtgYwY8FW8"
+                      },
+                      {
+                        "...": "HQesjd7LZyvIqL5TNxV8p1eNgckEkKwlQewZ2ZSZkXI"
+                      },
+                      {
+                        "...": "Lq4W3DK4Plo9ImvkqnJts1vhaNVyAIfZ4KUSxtOyk4c"
+                      }
+                    ]
+                  ]
+                ]
+            """.trimIndent().trim(),
+            prettyPrintDisclosures(sdJwt.disclosures)
+        )
+
+        assertEquals(
+            """
+                {
+                  "vct": "urn:eudi:pid:de:1",
+                  "iss": "https://pid-issuer.bund.de.example",
+                  "given_name": "Erika",
+                  "family_name": "Mustermann",
+                  "age_birth_year": 1963,
+                  "age_equal_or_over": {
+                    "12": true,
+                    "14": true,
+                    "16": true,
+                    "18": true,
+                    "21": true,
+                    "65": false
+                  },
+                  "nationalities": [
+                    "DE",
+                    "US",
+                    "DK"
+                  ]
+                }
+            """.trimIndent().trim(),
+            prettyJson.encodeToString(sdJwt.verify(issuerKey.publicKey))
+        )
+    }
+
+    @Test
+    fun testCreateFromMetadata_partialSubDisclosures_disclosesCorrectly() = runTest {
+        val issuerKey = Crypto.createEcPrivateKey(EcCurve.P256)
+        val sdJwt = SdJwt.createFromMetadata(
+            issuerKey = AsymmetricKey.anonymous(issuerKey, Algorithm.ESP256),
+            kbKey = null,
+            random = Random(0),
+            claims = Json.parseToJsonElement(
+                """
+                    {
+                      "given_name": "Erika",
+                      "family_name": "Mustermann",
+                      "age_birth_year": 1963,
+                      "age_equal_or_over": {
+                        "12": true,
+                        "14": true,
+                        "16": true,
+                        "18": true,
+                        "21": true,
+                        "65": false,
+                        "_sd": ${DisclosureMetadata(claimNames = listOf("12", "14", "21")).toJsonObject()}
+                      },
+                      "nationalities": [
+                        "DE",
+                        "US",
+                        "DK"
+                      ],
+                     "vct": "urn:eudi:pid:de:1",
+                     "iss": "https://pid-issuer.bund.de.example",
+                     "_sd": ${
+                         DisclosureMetadata(
+                             claimNames = listOf(
+                                 "given_name",
+                                 "family_name",
+                                 "age_birth_year",
+                                 "age_equal_or_over",
+                                 ),
+                             arrayDisclosures = listOf(
+                                 DisclosureMetadata.ArrayDisclosure(
+                                     "nationalities",
+                                     listOf(0, 2)
+                                 )
+                             )
+                         ).toJsonObject()
+                     }
+                    }                    
+                """.trimIndent().trim()
+            ).jsonObject
+        )
+
+        assertEquals(
+            """
+                {
+                  "nationalities": [
+                    {
+                      "...": "i9PL9FRk1uYL25rsEnLhLTFpcyRKAYt1NsD8-ZyLWXg"
+                    },
+                    "US",
+                    {
+                      "...": "ReUJI-7K8Q-cGqRaP7YkFwLnkmbhosoMnq31WmnmIN0"
+                    }
+                  ],
+                  "vct": "urn:eudi:pid:de:1",
+                  "iss": "https://pid-issuer.bund.de.example",
+                  "_sd": [
+                    "7By1ZYnPqIm002hk803CGwHE2oOPTeVhFhP1LbZeDIo",
+                    "tA1MbUtOb7DNrEl5-nZ9ycp1FMvGa1bywpB2H_sLcL0",
+                    "IxHTcmPQxGkK7QLP3Y-aHl8IgMMYvHOLheOmiZ8-v14",
+                    "rr8pjsZQ_FsrGvojK9vnUsri1DLkAw-dbFU7sohyz1s"
+                  ],
+                  "_sd_alg": "sha-256"
+                }
+            """.trimIndent().trim(),
+            prettyJson.encodeToString(sdJwt.jwtBody)
+        )
+
+        assertEquals(
+            """
+                [
+                  [
+                    "LMK0jFCu_lOzl07ZHmtOqQ",
+                    "given_name",
+                    "Erika"
+                  ],
+                  [
+                    "53vML1N_CwLv6GAwrCwxUw",
+                    "family_name",
+                    "Mustermann"
+                  ],
+                  [
+                    "wKeWAvmlExDI7tmInUbvOw",
+                    "age_birth_year",
+                    1963
+                  ],
+                  [
+                    "Cf-HXWT2yPIvr2IMcilpAA",
+                    "12",
+                    true
+                  ],
+                  [
+                    "Vml25Rd2VJC86JxzOCo0Kw",
+                    "14",
+                    true
+                  ],
+                  [
+                    "l1J5hbcVzU-JcvQonhGyLg",
+                    "21",
+                    true
+                  ],
+                  [
+                    "UAfxWiEGSzdMfH8Z70q5Cw",
+                    "age_equal_or_over",
+                    {
+                      "16": true,
+                      "18": true,
+                      "65": false,
+                      "_sd": [
+                        "05uahUW9clwm18BzECWj07NHKhgZ5fCqbCHGwod7Fmw",
+                        "jOg0uBowidxdszcmz8PaLaklADgMgkD9ylRwvMIT9Kw",
+                        "dbU7RwEAQNt91q2EXLfYYp3kzKozMA4YESex5wgzKes"
+                      ]
+                    }
+                  ],
+                  [
+                    "HYuz-QMe58l2GieOlzD_Kg",
+                    "DE"
+                  ],
+                  [
+                    "c9bSh4D24cnb0UtII211fw",
+                    "DK"
+                  ]
+                ]
+            """.trimIndent().trim(),
+            prettyPrintDisclosures(sdJwt.disclosures)
+        )
+
+        assertEquals(
+            """
+                {
+                  "nationalities": [
+                    "DE",
+                    "US",
+                    "DK"
+                  ],
+                  "vct": "urn:eudi:pid:de:1",
+                  "iss": "https://pid-issuer.bund.de.example",
+                  "given_name": "Erika",
+                  "family_name": "Mustermann",
+                  "age_birth_year": 1963,
+                  "age_equal_or_over": {
+                    "16": true,
+                    "18": true,
+                    "65": false,
+                    "12": true,
+                    "14": true,
+                    "21": true
+                  }
+                }
+            """.trimIndent().trim(),
+            prettyJson.encodeToString(sdJwt.verify(issuerKey.publicKey))
+        )
+    }
+
     // Check that no filter produces the same SD-JWT.
     @Test
     fun testFilterAll() = runTest {
-        val filteredSdJwt = SdJwt.fromCompactSerialization(sdJwtRfcAppendixA3SdJwtCompactSerialization)
-            .filter { path: JsonArray, value: JsonElement -> true }
-        assertEquals(filteredSdJwt.compactSerialization, sdJwtRfcAppendixA3SdJwtCompactSerialization)
+        val filteredSdJwt =
+            SdJwt.fromCompactSerialization(sdJwtRfcAppendixA3SdJwtCompactSerialization)
+                .filter { path: JsonArray, value: JsonElement -> true }
+        assertEquals(
+            filteredSdJwt.compactSerialization,
+            sdJwtRfcAppendixA3SdJwtCompactSerialization
+        )
         assertEquals(
             """
                 [
@@ -1918,8 +2282,9 @@ class SdJwtTest {
     // Check that filtering all includes only the always disclosed elements.
     @Test
     fun testFilterNone() = runTest {
-        val filteredSdJwt = SdJwt.fromCompactSerialization(sdJwtRfcAppendixA3SdJwtCompactSerialization)
-            .filter { path: JsonArray, value: JsonElement -> false }
+        val filteredSdJwt =
+            SdJwt.fromCompactSerialization(sdJwtRfcAppendixA3SdJwtCompactSerialization)
+                .filter { path: JsonArray, value: JsonElement -> false }
         assertEquals(
             """
                 []
@@ -1943,7 +2308,8 @@ class SdJwtTest {
                   }
                 }
             """.trimIndent().trim(),
-            prettyJson.encodeToString(filteredSdJwt.verify(sdJwtRfcIssuerKey)
+            prettyJson.encodeToString(
+                filteredSdJwt.verify(sdJwtRfcIssuerKey)
             )
         )
     }
@@ -1951,10 +2317,11 @@ class SdJwtTest {
     // Check filtering on "given_name".
     @Test
     fun testFilterGivenNameOnly() = runTest {
-        val filteredSdJwt = SdJwt.fromCompactSerialization(sdJwtRfcAppendixA3SdJwtCompactSerialization)
-            .filter { path: JsonArray, value: JsonElement ->
-                path.size == 1 && path[0].jsonPrimitive.content == "given_name"
-            }
+        val filteredSdJwt =
+            SdJwt.fromCompactSerialization(sdJwtRfcAppendixA3SdJwtCompactSerialization)
+                .filter { path: JsonArray, value: JsonElement ->
+                    path.size == 1 && path[0].jsonPrimitive.content == "given_name"
+                }
         assertEquals(
             """
                 [
@@ -1995,10 +2362,11 @@ class SdJwtTest {
     //
     @Test
     fun testFilterTopOffWorks() = runTest {
-        val filteredSdJwt = SdJwt.fromCompactSerialization(sdJwtRfcAppendixA3SdJwtCompactSerialization)
-            .filter { path: JsonArray, value: JsonElement ->
-                path.size == 2 && path[0].jsonPrimitive.content == "address" && path[1].jsonPrimitive.content == "locality"
-            }
+        val filteredSdJwt =
+            SdJwt.fromCompactSerialization(sdJwtRfcAppendixA3SdJwtCompactSerialization)
+                .filter { path: JsonArray, value: JsonElement ->
+                    path.size == 2 && path[0].jsonPrimitive.content == "address" && path[1].jsonPrimitive.content == "locality"
+                }
         assertEquals(
             """
                 [
@@ -2050,13 +2418,14 @@ class SdJwtTest {
     // Check filtering using paths on top-level claims.
     @Test
     fun testFilterOnPaths() = runTest {
-        val filteredSdJwt = SdJwt.fromCompactSerialization(sdJwtRfcAppendixA3SdJwtCompactSerialization)
-            .filter(
-                listOf(
-                    JsonArray(listOf(JsonPrimitive("given_name"))),
-                    JsonArray(listOf(JsonPrimitive("address"))),
+        val filteredSdJwt =
+            SdJwt.fromCompactSerialization(sdJwtRfcAppendixA3SdJwtCompactSerialization)
+                .filter(
+                    listOf(
+                        JsonArray(listOf(JsonPrimitive("given_name"))),
+                        JsonArray(listOf(JsonPrimitive("address"))),
+                    )
                 )
-            )
         assertEquals(
             """
                 [
@@ -2132,14 +2501,15 @@ class SdJwtTest {
     // Check filtering using paths into an object.
     @Test
     fun testFilterOnPathsIntoObject() = runTest {
-        val filteredSdJwt = SdJwt.fromCompactSerialization(sdJwtRfcAppendixA3SdJwtCompactSerialization)
-            .filter(
-                listOf(
-                    JsonArray(listOf(JsonPrimitive("given_name"))),
-                    JsonArray(listOf(JsonPrimitive("address"), JsonPrimitive("locality"))),
-                    JsonArray(listOf(JsonPrimitive("address"), JsonPrimitive("country"))),
+        val filteredSdJwt =
+            SdJwt.fromCompactSerialization(sdJwtRfcAppendixA3SdJwtCompactSerialization)
+                .filter(
+                    listOf(
+                        JsonArray(listOf(JsonPrimitive("given_name"))),
+                        JsonArray(listOf(JsonPrimitive("address"), JsonPrimitive("locality"))),
+                        JsonArray(listOf(JsonPrimitive("address"), JsonPrimitive("country"))),
+                    )
                 )
-            )
         assertEquals(
             """
                 [
@@ -2203,13 +2573,14 @@ class SdJwtTest {
     // Check filtering using paths into an array.
     @Test
     fun testFilterOnPathsIntoArrayWhole() = runTest {
-        val filteredSdJwt = SdJwt.fromCompactSerialization(sdJwtRfcSection51SdJwtCompactSerialization)
-            .filter(
-                listOf(
-                    JsonArray(listOf(JsonPrimitive("given_name"))),
-                    JsonArray(listOf(JsonPrimitive("nationalities"))),
+        val filteredSdJwt =
+            SdJwt.fromCompactSerialization(sdJwtRfcSection51SdJwtCompactSerialization)
+                .filter(
+                    listOf(
+                        JsonArray(listOf(JsonPrimitive("given_name"))),
+                        JsonArray(listOf(JsonPrimitive("nationalities"))),
+                    )
                 )
-            )
         assertEquals(
             """
                 [
@@ -2259,13 +2630,14 @@ class SdJwtTest {
     // Check filtering using paths into an array.
     @Test
     fun testFilterOnPathsIntoArray() = runTest {
-        val filteredSdJwt = SdJwt.fromCompactSerialization(sdJwtRfcSection51SdJwtCompactSerialization)
-            .filter(
-                listOf(
-                    JsonArray(listOf(JsonPrimitive("given_name"))),
-                    JsonArray(listOf(JsonPrimitive("nationalities"), JsonPrimitive(0))),
+        val filteredSdJwt =
+            SdJwt.fromCompactSerialization(sdJwtRfcSection51SdJwtCompactSerialization)
+                .filter(
+                    listOf(
+                        JsonArray(listOf(JsonPrimitive("given_name"))),
+                        JsonArray(listOf(JsonPrimitive("nationalities"), JsonPrimitive(0))),
+                    )
                 )
-            )
         assertEquals(
             """
                 [
@@ -2310,13 +2682,14 @@ class SdJwtTest {
     // Check filtering using paths into an array.
     @Test
     fun testFilterOnPathsIntoArray2() = runTest {
-        val filteredSdJwt = SdJwt.fromCompactSerialization(sdJwtRfcSection51SdJwtCompactSerialization)
-            .filter(
-                listOf(
-                    JsonArray(listOf(JsonPrimitive("given_name"))),
-                    JsonArray(listOf(JsonPrimitive("nationalities"), JsonPrimitive(1))),
+        val filteredSdJwt =
+            SdJwt.fromCompactSerialization(sdJwtRfcSection51SdJwtCompactSerialization)
+                .filter(
+                    listOf(
+                        JsonArray(listOf(JsonPrimitive("given_name"))),
+                        JsonArray(listOf(JsonPrimitive("nationalities"), JsonPrimitive(1))),
+                    )
                 )
-            )
         assertEquals(
             """
                 [
@@ -2355,6 +2728,47 @@ class SdJwtTest {
                 }
             """.trimIndent().trim(),
             prettyJson.encodeToString(filteredSdJwt.verify(sdJwtRfcIssuerKey))
+        )
+    }
+
+    @Test
+    fun testObjectNotDisclosed() = runTest {
+        // This is a SD-JWT from the issuer in https://github.com/openwallet-foundation/multipaz/issues/1742
+        // which has a single disclosure for the object `age_equal_or_over` like this:
+        //
+        //  Key: age_equal_or_over
+        //  Value: { "12": true, "14": true, "16": true, "18": true, "21": true, "65": false }
+        //
+        val sdJwt = SdJwt.fromCompactSerialization(
+            "eyJ0eXAiOiJkYytzZC1qd3QiLCJhbGciOiJFUzI1NiIsIng1YyI6WyJNSUlCMERDQ0FYYWdBd0lCQWdJUUF4NmMyWXhZRlFaNTdFTHJMa0RCWnpBS0JnZ3Foa2pPUFFRREFqQXFNUXN3Q1FZRFZRUUdFd0pFUlRFYk1Ca0dBMVVFQXhNU1VHeGhlV2R5YjNWdVpDQlNiMjkwSUVOQk1CNFhEVEkyTURVeU1UQTRNemd4T0ZvWERUSTNNRFV5TVRBNE16Z3hPRm93SWpFTE1Ba0dBMVVFQmhNQ1JFVXhFekFSQmdOVkJBTVRDbEJzWVhsbmNtOTFibVF3V1RBVEJnY3Foa2pPUFFJQkJnZ3Foa2pPUFFNQkJ3TkNBQVQ2N1dEeWpCZmhZSVYxSXA5NVZaQnMxWjd1RFNKOXZwREpZODdSZXZ3OGkveW1xWUtZRVhQZEFPbkd5YWNidFBsTzJJVEtUSmIrWDhDa0xBTmUxcUxpbzRHRk1JR0NNQ0lHQTFVZEVRUWJNQm1DRjJWMVpHbHdiRzh1WlhWa2FTMTNZV3hzWlhRdVpHVjJNQXdHQTFVZEV3RUIvd1FDTUFBd0RnWURWUjBQQVFIL0JBUURBZ1dnTUIwR0ExVWREZ1FXQkJUY2hhNE10bFIxdjE1WlNRSEN5L2lVVlFqYm5qQWZCZ05WSFNNRUdEQVdnQlR6SE1CNU43K2dZUEI4NGxSZmMxRVJpemFaakRBS0JnZ3Foa2pPUFFRREFnTklBREJGQWlFQTc0NHhVVnVnV2FzWms2RGpMclhqdDF2anNWQUZXZzZodGN5VW1xSEp1bGdDSUZJdjVxZkJ6QnArVE41bFJyVVdNQXAzc0YrQmFkZmUvWllxTmRJRFg0Q0giXX0.eyJpc3MiOiJodHRwczovL2V1ZGlwbG8uZXVkaS13YWxsZXQuZGV2L2lzc3VlcnMvcGxheWdyb3VuZCIsImlhdCI6MTc3OTgwODcxMywiZXhwIjoxNzgwNDEzNTEzLCJ2Y3QiOiJ1cm46ZXVkaTpwaWQ6ZGU6MSIsImNuZiI6eyJqd2siOnsia3R5IjoiRUMiLCJjcnYiOiJQLTI1NiIsIngiOiJjSkxLYTdHSlZKdHoxS1ItUVd0cGFmTjRCZVVoV1BsdnRpZWRjRHNqSjdnIiwieSI6ImFfYWVsOFZpT1Faa3BfNHlOejdzSGNLMmt5b3pSVHZjVmRzaHVhanJkQ2ciLCJraWQiOiI4ZnhveWdMX2lLZUQifX0sInN0YXR1cyI6eyJzdGF0dXNfbGlzdCI6eyJpZHgiOjI4OTYsInVyaSI6Imh0dHBzOi8vZXVkaXBsby5ldWRpLXdhbGxldC5kZXYvaXNzdWVycy9wbGF5Z3JvdW5kL3N0YXR1cy1tYW5hZ2VtZW50L3N0YXR1cy1saXN0L3BpZCJ9fSwiX3NkIjpbIjY4MmFpZ0l3Sm96ajdjZXI3LUdHM25YQXh4aUNLZmNlRFlzMWtrSTloM3MiLCI2OW1nSzNVZkdzVmphbFllcTdUSnhHTEROUDlKYnZuNEt4R3dHN3FZalNRIiwiTW1Ma1BKaWdlOV9aUk1NOVkyUzg2YzZoRkhxeWJ4Y2FjWUoyRV8wcUhvayIsIldZTERZT0dKRjRFWWJLcDFkZGUxbWdZNmM0SjFBM1ZWYkNpcURVSjVGbDAiLCJaX2ZrZERSMjNJSHZTQXRGVjNwQnh0NDJwV2F4UzVMZ0xjNFRjRHlWYllNIiwiZnhfbXNSZmxxOTk1eWIxQmozRVpCYi1IenhrNlg3dkkzaC1Na0xLX25HZyIsImxIUFZUa3BNWkRWb3QxRTJ6eVowYzU1bEdybWF0b2VGXzg0d2haU0FQU3ciLCJtVFpOUjRfcUFLcHdGSXhkRHFIb1lNRFhPcWF5MXJMSnFNcHlnMGV1X28wIiwibjhBNkZ3V0pxSEtUT1VoUXFMZ0JWUnhBd2U4NUpEWTdhUG1VRmQ4QnlUMCIsInF4Yjk0cEFBVklqc3BoX1JQdF9PblNmcl9VbDFwYXZuQmlBazhLbWNMRGsiLCJyZGo3Z0QzWVpOWk12ejBIa0dkcTdwV19OR2UwOTBOODRycUhZYmdhX1YwIiwidFlJQVdxc01hZWVGc3JDYkNvN3hZSmdxSzdONHBlSEZDRkhmdmQ4XzI4MCJdLCJfc2RfYWxnIjoic2hhLTI1NiJ9.Akjo1M1RD_wnrF9Rv3wWrpCaTL5rnMwt8xOZsFHlVqtPk6XcMOlkYfxaagUnSICYzhiQ4qykgxUFYO_zdxaHBA~WyIxMjg3YmFjZDQ2MWQxMDA0Iiwic3RyZWV0X2FkZHJlc3MiLCJNVVNURVJTVFJBU1NFIDEyMyJd~WyJhNzU1MDg5ZDQ3NWNmODRhIiwibG9jYWxpdHkiLCJCRVJMSU4iXQ~WyI0MTBhNDNmYTk0M2MyYzQyIiwiY291bnRyeSIsIkRFIl0~WyJmZjc5NGZiOThhOGQzYzIwIiwicG9zdGFsX2NvZGUiLCIxMDExNSJd~WyJjYTY2ZjdiYmM3Nzg4NjQ0IiwiaXNzdWluZ19jb3VudHJ5IiwiREUiXQ~WyI1YzRkMjhlM2VkMjVhOGU3IiwiaXNzdWluZ19hdXRob3JpdHkiLCJERSJd~WyJhZjk4Yjk3MGM1MzkyMWQ3Iiwic291cmNlX2RvY3VtZW50X3R5cGUiLCJpZF9jYXJkIl0~WyI1NTkzYjYwZDllY2ZhNWRlIiwiZ2l2ZW5fbmFtZSIsIk1BWCJd~WyI3OTg2NzA0ZmFhOGNiNDFiIiwiZmFtaWx5X25hbWUiLCJNVVNURVJNQU5OIl0~WyI1YjhhMGIyZGM5NWI3NTQzIiwiYmlydGhkYXRlIiwiMTk5MC0wMS0xNSJd~WyIxNTA2YmU3OGEyY2I5YzkyIiwiYWdlX2JpcnRoX3llYXIiLDE5OTBd~WyJkOWU5OTZkYjM3MjUwOWMyIiwiYWdlX2luX3llYXJzIiwzNl0~WyI4N2U5NjY1YmU0MzZkYWM1IiwiYWdlX2VxdWFsX29yX292ZXIiLHsiMTIiOnRydWUsIjE0Ijp0cnVlLCIxNiI6dHJ1ZSwiMTgiOnRydWUsIjIxIjp0cnVlLCI2NSI6ZmFsc2V9XQ~WyI4NTRlZjRlYjFhOWQ0NzgwIiwicGxhY2Vfb2ZfYmlydGgiLHsibG9jYWxpdHkiOiJCRVJMSU4ifV0~WyI4YWYzNjFjYWQ3ZWE5MGM2IiwiYWRkcmVzcyIseyJfc2QiOlsiOF9ORE9rRzRNOEtLVUZGZnZGa2dRTlZFWWZhZi03cGtfUTY1cVZ4QWdLWSIsIlNGSUh2Y2RqYXdYRF94anhfcjI3LUttOXNmZWl4NDllV285RTNWZ3JIaE0iLCJYSm9TR0hmNVB2N29XY3BnLXJnLVYzVl9VZFpQQWFFT1ZQODVNeWJ3VVhjIiwibGJRdDZQN1U5Z3BVUlBRUHlXZFZtZXpfRWJDWW93X3RyRnpIUXUwNTBZOCJdfV0~WyI1MjFlZGY3OGIyYzE5ZjBiIiwibmF0aW9uYWxpdGllcyIsWyJERSJdXQ~"
+        )
+
+        val ageEqualOrOverFilteredSdJwt =  sdJwt.filter(
+            pathsToInclude = listOf(
+                buildJsonArray { add("age_equal_or_over") }
+            )
+        )
+        assertEquals(1, ageEqualOrOverFilteredSdJwt.disclosures.size)
+        assertEquals(
+            """
+                ["87e9665be436dac5","age_equal_or_over",{"12":true,"14":true,"16":true,"18":true,"21":true,"65":false}]
+            """.trimIndent(),
+            ageEqualOrOverFilteredSdJwt.disclosures[0].fromBase64Url().decodeToString()
+        )
+
+        // This should return the disclosure which contains `age_equal_or_over` which unfortunately
+        // will leak other ages too...
+        val ageEqualOrOver16FilteredSdJwt =  sdJwt.filter(
+            pathsToInclude = listOf(
+                buildJsonArray { add("age_equal_or_over"); add("16") }
+            )
+        )
+        assertEquals(1, ageEqualOrOver16FilteredSdJwt.disclosures.size)
+        assertEquals(
+            """
+                ["87e9665be436dac5","age_equal_or_over",{"12":true,"14":true,"16":true,"18":true,"21":true,"65":false}]
+            """.trimIndent(),
+            ageEqualOrOver16FilteredSdJwt.disclosures[0].fromBase64Url().decodeToString()
         )
     }
 
@@ -2399,7 +2813,8 @@ class SdJwtTest {
         )
 
         val nonce = Random.nextBytes(16).toHex()
-        val creationTime = Instant.fromEpochSeconds(Clock.System.now().toEpochMilliseconds()/1000L)
+        val creationTime =
+            Instant.fromEpochSeconds(Clock.System.now().toEpochMilliseconds() / 1000L)
         val sdJwtKb = sdJwt
             .filter(
                 listOf(
@@ -2440,13 +2855,120 @@ class SdJwtTest {
                   ]
                 }
             """.trimIndent().trim(),
-            prettyJson.encodeToString(sdJwtKb.verify(
-                issuerKey = issuerKey.publicKey,
+            prettyJson.encodeToString(
+                sdJwtKb.verify(
+                    issuerKey = issuerKey.publicKey,
+                    checkNonce = { nonce_ -> nonce_ == nonce },
+                    checkAudience = { audience_ -> audience_ == "https://verifier.example.org" },
+                    checkCreationTime = { creationTime_ -> creationTime_ == creationTime }
+                ))
+        )
+    }
+
+    @Test
+    fun testPresentRsa() = runTest {
+        val issuerKey = Crypto.createRsaPrivateKey(2048)
+        val kbKey = Crypto.createRsaPrivateKey(2048)
+        val sdJwt = SdJwt.create(
+            issuerKey = AsymmetricKey.anonymous(issuerKey, Algorithm.RS256),
+            kbKey = kbKey.publicKey,
+            random = Random(0),
+            claims = Json.parseToJsonElement(
+                """
+                    {
+                      "given_name": "Erika",
+                      "family_name": "Mustermann",
+                      "age_birth_year": 1963,
+                      "age_equal_or_over": {
+                        "12": true,
+                        "14": true,
+                        "16": true,
+                        "18": true,
+                        "21": true,
+                        "65": false
+                      },
+                      "nationalities": [
+                        "DE",
+                        "US",
+                        "DK"
+                      ]
+                    }                    
+                """.trimIndent().trim()
+            ).jsonObject,
+            nonSdClaims = Json.parseToJsonElement(
+                """
+                   {
+                     "vct": "urn:eudi:pid:de:1",
+                     "iss": "https://pid-issuer.bund.de.example"
+                   }                    
+                """.trimIndent().trim()
+            ).jsonObject,
+        )
+
+        assertEquals(kbKey.publicKey, sdJwt.kbKey)
+        assertTrue(sdJwt.kbKey is RsaPublicKey)
+
+        val nonce = Random.nextBytes(16).toHex()
+        val creationTime =
+            Instant.fromEpochSeconds(Clock.System.now().toEpochMilliseconds() / 1000L)
+        val sdJwtKb = sdJwt
+            .filter(
+                listOf(
+                    JsonArray(listOf(JsonPrimitive("given_name"))),
+                    JsonArray(listOf(JsonPrimitive("age_equal_or_over"), JsonPrimitive("18"))),
+                    JsonArray(listOf(JsonPrimitive("nationalities"))),
+                    JsonArray(listOf(JsonPrimitive("age_birth_year"))),
+                )
+            )
+            .present(
+                signingKey = AsymmetricKey.anonymous(kbKey, Algorithm.RS256),
+                nonce = nonce,
+                audience = "https://verifier.example.org",
+                creationTime = creationTime
+            )
+        assertEquals(
+            """
+                {
+                  "vct": "urn:eudi:pid:de:1",
+                  "iss": "https://pid-issuer.bund.de.example",
+                  "cnf": {
+                    "jwk": {
+                      "e": "${kbKey.publicKey.publicExponent.toBase64Url()}",
+                      "kty": "RSA",
+                      "n": "${kbKey.publicKey.modulus.toBase64Url()}"
+                    }
+                  },
+                  "given_name": "Erika",
+                  "age_birth_year": 1963,
+                  "age_equal_or_over": {
+                    "18": true
+                  },
+                  "nationalities": [
+                    "DE",
+                    "US",
+                    "DK"
+                  ]
+                }
+            """.trimIndent().trim(),
+            prettyJson.encodeToString(
+                sdJwtKb.verify(
+                    issuerKey = issuerKey.publicKey,
+                    checkNonce = { nonce_ -> nonce_ == nonce },
+                    checkAudience = { audience_ -> audience_ == "https://verifier.example.org" },
+                    checkCreationTime = { creationTime_ -> creationTime_ == creationTime }
+                ))
+        )
+
+        // Negative test: wrong issuer key fails verification
+        val wrongIssuerKey = Crypto.createRsaPrivateKey(2048)
+        assertFailsWith<SignatureVerificationException> {
+            sdJwtKb.verify(
+                issuerKey = wrongIssuerKey.publicKey,
                 checkNonce = { nonce_ -> nonce_ == nonce },
                 checkAudience = { audience_ -> audience_ == "https://verifier.example.org" },
                 checkCreationTime = { creationTime_ -> creationTime_ == creationTime }
-            ))
-        )
+            )
+        }
     }
 
     @Test
@@ -2469,7 +2991,8 @@ class SdJwtTest {
             """.trimIndent().trim(),
             prettyJson.encodeToString(
                 sdJwt.kbKey!!.toJwk()
-            ))
+            )
+        )
 
         val otherSdJwt = SdJwt.fromCompactSerialization(sdJwtRfcSection51SdJwtCompactSerialization)
         assertEquals("user_42", otherSdJwt.subject)

@@ -1,7 +1,6 @@
 import Foundation
 import UIKit
 import Multipaz
-import MultipazSwift
 import Observation
 import SwiftUI
 
@@ -9,47 +8,74 @@ import SwiftUI
 @Observable
 class ViewModel {
 
-    var path = NavigationPath()
+    var path: [Destination] = []
+
+    let verticalCardListState = VerticalCardListState()
+
+    /// Pushes a destination onto the navigation stack without iOS's default horizontal slide animation.
+    /// Used for in-place transitions (such as focusing a card in `VerticalCardListScreen`).
+    func push(_ destination: Destination) {
+        if path.last != destination {
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                path.append(destination)
+            }
+        }
+    }
+
+    /// Pops the top destination off the navigation stack without iOS's default horizontal slide-to-right animation.
+    /// Used after in-place animations (such as card unfocus) have already completed visually.
+    func popWithoutAnimation() {
+        if !path.isEmpty {
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                path.removeLast()
+            }
+        }
+    }
 
     var isLoading: Bool = true
 
     var storage: Storage!
     var secureArea: SecureArea!
+    var softwareSecureArea: SecureArea!
     var secureAreaRepository: SecureAreaRepository!
     var documentTypeRepository: DocumentTypeRepository!
     var documentStore: DocumentStore!
     var documentModel: DocumentModel!
-    var readerTrustManager: TrustManagerLocal!
+    var readerTrustManager: TrustManager!
+    var provisioningModel: ProvisioningModel!
+    var provisioningSupport: ProvisioningSupport!
 
     let promptModel = Platform.shared.promptModel
     
     private let presentmentModel = PresentmentModel()
 
-    //var provisioningModel: ProvisioningModel!
-    //var provisioningState: ProvisioningModel.State = ProvisioningModel.Idle()
-            
     func load() async {
         PromptModel.Companion.shared.setGlobal(promptModel: promptModel)
         
         storage = IosStorage(
             storageFileUrl: FileManager.default.containerURL(
-                forSecurityApplicationGroupIdentifier: "group.org.multipaz.SwiftTestApp")!
+                forSecurityApplicationGroupIdentifier: Bundle.main.object(forInfoDictionaryKey: "AppGroupID") as! String)!
                 .appendingPathComponent("storage.db"),
             excludeFromBackup: true
         )
         secureArea = try! await Platform.shared.getSecureArea(storage: storage)
+        softwareSecureArea = try! await SoftwareSecureArea.companion.create(storage: storage)
         secureAreaRepository = SecureAreaRepository.Builder()
             .add(secureArea: secureArea)
+            .add(secureArea: softwareSecureArea)
             .build()
         documentTypeRepository = DocumentTypeRepository()
-        documentTypeRepository.addDocumentType(documentType: DrivingLicense.shared.getDocumentType())
-        documentTypeRepository.addDocumentType(documentType: PhotoID.shared.getDocumentType())
-        documentTypeRepository.addDocumentType(documentType: UtopiaBoardingPass.shared.getDocumentType())
+        documentTypeRepository.addKnownTypes(locale: LocalizedStrings.shared.getCurrentLocale())
+        documentTypeRepository.addUtopiaTypes(locale: LocalizedStrings.shared.getCurrentLocale())
         documentStore = DocumentStore.Builder(
             storage: storage,
             secureAreaRepository: secureAreaRepository
         ).build()
-        readerTrustManager = TrustManagerLocal(storage: storage, identifier: "default", partitionId: "default_default")
+        readerTrustManager = TrustManager(storage: storage, identifier: "default", partitionId: "default_default")
         try! await readerTrustManager.deleteAll()
         try! await readerTrustManager.addX509Cert(
             certificate: X509Cert.companion.fromPem(
@@ -141,24 +167,22 @@ class ViewModel {
                 certificate: X509Cert.companion.fromPem(
                     pemEncoding: """
                         -----BEGIN CERTIFICATE-----
-                        MIICrjCCAjSgAwIBAgIQPBwq4BiWYFZE6A+NyGDT8jAKBggqhkjOPQQDAzBMMT0wOwYDVQQDDDRW
-                        ZXJpZmllciBSb290IGF0IGh0dHBzOi8vaXNzdWVyLm11bHRpcGF6Lm9yZy9yZWNvcmRzMQswCQYD
-                        VQQGDAJVUzAeFw0yNjAxMDUxNjM0MzNaFw00MTAxMDExNjM0MzNaMEwxPTA7BgNVBAMMNFZlcmlm
-                        aWVyIFJvb3QgYXQgaHR0cHM6Ly9pc3N1ZXIubXVsdGlwYXoub3JnL3JlY29yZHMxCzAJBgNVBAYM
-                        AlVTMHYwEAYHKoZIzj0CAQYFK4EEACIDYgAEY3+0sjs0mzzXVlxSfAsimOl9pviPCMONvjT7a7ZR
-                        5FuQATIYnHPK8Qu/YJtwG7LWMPgsUR6H9fwyfLMqHZ309z+MJyDgKcn5tmlCyT0rslJzqWQeC1oB
-                        /tXsFcc9Y5dto4HaMIHXMA4GA1UdDwEB/wQEAwIBBjASBgNVHRMBAf8ECDAGAQH/AgEBMC4GA1Ud
-                        EgQnMCWGI2h0dHBzOi8vaXNzdWVyLm11bHRpcGF6Lm9yZy9yZWNvcmRzMEEGA1UdHwQ6MDgwNqA0
-                        oDKGMGh0dHBzOi8vaXNzdWVyLm11bHRpcGF6Lm9yZy9yZWNvcmRzL2NybC92ZXJpZmllcjAdBgNV
-                        HQ4EFgQUkdd4v76+FW8lvSXKJ+I/z0D+JCUwHwYDVR0jBBgwFoAUkdd4v76+FW8lvSXKJ+I/z0D+
-                        JCUwCgYIKoZIzj0EAwMDaAAwZQIwWJx6Dn0NRjKCXiRKesqOKlA+CI5MhTDP9uj5T857U8alpOsD
-                        Ho923n0DcjK5o/GeAjEAkEUFodNSrClSunFQAN+63KMqZmyNyS/pBi7k3CH1gTzC/kC9uU4yADKe
-                        MTZj3/iH
+                        MIICaTCCAe+gAwIBAgIQtzUvFDCKLUBWQAZ4UnCw5zAKBggqhkjOPQQDAzA3MQswCQYDVQQGDAJV
+                        UzEoMCYGA1UEAwwfdmVyaWZpZXIubXVsdGlwYXoub3JnIFJlYWRlciBDQTAeFw0yNTA2MTkyMjE2
+                        MzJaFw0zMDA2MTkyMjE2MzJaMDcxCzAJBgNVBAYMAlVTMSgwJgYDVQQDDB92ZXJpZmllci5tdWx0
+                        aXBhei5vcmcgUmVhZGVyIENBMHYwEAYHKoZIzj0CAQYFK4EEACIDYgAEa6oCzC8rfHfwVOmQf83W
+                        yHEQFE8HrLK+NxsufJDrSFgMXjhRvPt3fIjlMyRAaf94Y25Ux9tXg+28EzzB/xG7q8P/FQ9nOSJk
+                        w4cQJVdD/ufN599uVdfp1URdG95Vncuoo4G/MIG8MA4GA1UdDwEB/wQEAwIBBjASBgNVHRMBAf8E
+                        CDAGAQH/AgEAMFYGA1UdHwRPME0wS6BJoEeGRWh0dHBzOi8vZ2l0aHViLmNvbS9vcGVud2FsbGV0
+                        LWZvdW5kYXRpb24tbGFicy9pZGVudGl0eS1jcmVkZW50aWFsL2NybDAdBgNVHQ4EFgQUsYQ5hS9K
+                        buq/6mKtvFHQgfdIhykwHwYDVR0jBBgwFoAUsYQ5hS9Kbuq/6mKtvFHQgfdIhykwCgYIKoZIzj0E
+                        AwMDaAAwZQIwKh87sK/cMbzuc9PFvyiSRedr2RoP0fuFK0X8ddOpi6hEMOapHL/Gs/QByROCpDpk
+                        AjEA2yLSJDZEu1GI8uChAsDBZwJPtv5KHUjq1Vpok69SNn+zzb1mNpqmiey+tchPBjZm
                         -----END CERTIFICATE-----
                         """.trimmingCharacters(in: .whitespacesAndNewlines)
                 ),
                 metadata: TrustMetadata(
-                    displayName: "Multipaz Identity Verifier",
+                    displayName: "Multipaz Verifier",
                     displayIcon: UIImage(named: "multipaz-logo")!.pngData()!.toByteString(),
                     displayIconUrl: nil,
                     privacyPolicyUrl: "https://apps.multipaz.org",
@@ -167,50 +191,106 @@ class ViewModel {
                     extensions: [:]
                 )
             )
-
-        /*
-        self.provisioningModel = ProvisioningModel.companion.create(
-            documentStore: documentStore,
-            secureArea: secureArea,
+        
+        self.provisioningModel = ProvisioningModel(
+            documentProvisioningHandler: DocumentProvisioningHandler.companion.create(
+                secureArea: secureArea,
+                documentStore: documentStore,
+                metadataHandler: nil,
+                defaultDocumentProvisioningSettings: DocumentProvisioningSettings(
+                    minValidTime: 5*86400*1000_000_000,
+                    keyBoundCredentialMaxUses: 1,
+                    keyBoundCredentialNumPerDomain: 5,
+                    keylessCredentialMaxUses: Int32.max,
+                    keylessCredentialNumPerDomain: 1,
+                    userAuthTimeout: 0,
+                    requestUserAuth: true,
+                    requestNoUserAuth: true,
+                    mdocUserAuthDomain: "mdoc_user_auth",
+                    mdocNoUserAuthDomain: "mdoc_no_user_auth",
+                    sdJwtUserAuthDomain: "sdjwt_user_auth",
+                    sdJwtNoUserAuthDomain: "sdjwt_no_user_auth",
+                    sdJwtKeylessDomain: "sdjwt_keyless"
+                ),
+                selectSecureAreaFn: { appData, suggestedCreateKeySettings in
+                    print("in selectSecureAreaFn: appData=\(String(describing: appData)), algorithm=\(suggestedCreateKeySettings.algorithm)")
+                    return SelectedSecureArea(
+                        secureArea: self.secureArea,
+                        createKeySettings: suggestedCreateKeySettings
+                    )
+                }
+            ),
             httpClient: HttpClient(engineFactory: Darwin()) { config in
                 config.followRedirects = false
             },
-            promptModel: Platform.shared.promptModel,
-            documentMetadataInitializer: { documentMetadata, credentialDisplay, issuerDisplay in
-                print("Setting metadata from \(credentialDisplay) and \(issuerDisplay)")
-                try! await documentMetadata.setMetadata(
-                    displayName: credentialDisplay.text,
-                    typeDisplayName: credentialDisplay.text, // TODO: doctype instead
-                    cardArt: credentialDisplay.logo,
-                    issuerLogo: issuerDisplay.logo,
-                    other: nil
-                )
-            }
+            promptModel: promptModel,
+            authorizationSecureArea: secureArea,
+            eventLogger: nil
         )
-         */
+        self.provisioningSupport = ProvisioningSupport(
+            storage: storage,
+            secureArea: secureArea
+        )
+        await self.provisioningSupport.initialize()
         
-        let dcApi = DigitalCredentialsCompanion.shared.Default
-        if dcApi.available {
-            try! await dcApi.startExportingCredentials(
-                documentStore: documentStore,
-                documentTypeRepository: documentTypeRepository
-            )
+        let dcApi = try! await DigitalCredentialsCompanion.shared.getDefault()
+        if dcApi.registerAvailable {
+            // Keep in sync with samples/SwiftTestApp/SwiftTestApp/SwiftTestApp.entitlements
+            try! await documentStore.setIosMdocDoctypes(value: [
+                "eu.europa.ec.av.1",
+                "eu.europa.ec.eudi.pid.1",
+                "org.iso.18013.5.1.mDL",
+                "org.iso.23220.photoid.1",
+            ])
+            do {
+                try await dcApi.register(
+                    documentStore: documentStore,
+                    documentTypeRepository: documentTypeRepository,
+                    selectedProtocols: dcApi.supportedProtocols,
+                    forceRegistration: false
+                )
+            } catch {
+                print("Error registering with DigitalCredentials API: \(error)")
+            }
+            Task {
+                for await _ in documentStore.eventFlow {
+                    do {
+                        try await dcApi.register(
+                            documentStore: documentStore,
+                            documentTypeRepository: documentTypeRepository,
+                            selectedProtocols: dcApi.supportedProtocols,
+                            forceRegistration: false
+                        )
+                    } catch {
+                        print("Error updating DC registration: \(error)")
+                    }
+                }
+            }
         }
         
-        documentModel = DocumentModel(documentTypeRepository: documentTypeRepository)
-        await documentModel.setDocumentStore(documentStore: documentStore)
+        documentModel = try! await DocumentModel(
+            documentStore: documentStore,
+            documentTypeRepository: documentTypeRepository,
+            badgeFunction: { document in await self.getBadges(document: document) }
+        )
     
         isLoading = false
     }
     
-    private func getIsRunningOnSimulator() -> Bool {
-#if targetEnvironment(simulator)
-        return true
-#else
-        return false
-#endif
+    // For testing of the badge rendering, always add a badge with the document name
+    func getBadges(document: Document) async -> [DocumentBadge] {
+        let displayName = document.displayName ?? "Unknown Document"
+        let hash = displayName.hashValue
+        let red = (hash >> 16) & 0xFF
+        let green = (hash >> 8) & 0xFF
+        let blue = hash & 0xFF
+        let badge = DocumentBadge(
+            text: displayName,
+            color: DocumentBadgeColor(red: Int32(red), green: Int32(green), blue: Int32(blue))
+        )
+        return [ badge ]
     }
-
+    
     func addSelfsignedMdoc(
         documentType: DocumentType,
         displayName: String,
@@ -250,7 +330,9 @@ class ViewModel {
             cardArt: UIImage(named: cardArtResourceName)!.pngData()!.toByteString(),
             issuerLogo: nil,
             authorizationData: nil,
+            appData: nil,
             created: now.toKotlinInstant(),
+            readerIdentifiers: [],
             metadata: nil
         )
         let _ = try! await documentType.createMdocCredentialWithSampleData(
@@ -259,7 +341,7 @@ class ViewModel {
             createKeySettings: CreateKeySettings(
                 algorithm: Algorithm.esp256,
                 nonce: ByteStringBuilder(initialCapacity: 3).appendString(string: "123").toByteString(),
-                userAuthenticationRequired: getIsRunningOnSimulator() ? false : true,
+                userAuthenticationRequired: true,
                 userAuthenticationTimeout: 0,
                 validFrom: nil,
                 validUntil: nil
@@ -273,8 +355,11 @@ class ViewModel {
             validFrom: validFrom.toKotlinInstant().truncateToWholeSeconds(),
             validUntil: validUntil.toKotlinInstant().truncateToWholeSeconds(),
             expectedUpdate: nil,
-            domain: "mdoc",
-            randomProvider: KotlinRandom.companion
+            domain: "mdoc_user_auth",
+            randomProvider: KotlinRandom.companion,
+            includeElement: { _, _ in KotlinBoolean(value: true) },
+            deviceKeyAuthorizedNamespaces: [],
+            deviceKeyAuthorizedDataElements: [:]
         )
         try! await document.edit(editActionFn: { editor in
             editor.provisioned = true
@@ -287,29 +372,38 @@ class ViewModel {
             documentTypeRepository: documentTypeRepository,
             zkSystemRepository: nil,
             resolveTrustFn: { requester in
-                if let certChain = requester.certChain {
+                for requesterIdentity in requester.requesterIdentities {
+                    let certChain = requesterIdentity.certChain
                     let result = try! await self.readerTrustManager.verify(
                         chain: certChain.certificates,
-                        atTime: KotlinClockCompanion().getSystem().now()
+                        atTime: KotlinClockCompanion().getSystem().now(),
+                        validateCaValidity: true
                     )
-                    if result.isTrusted {
-                        return result.trustPoints.first?.metadata
+                    if result.isTrusted && result.trustPoints.first != nil {
+                        return TrustedRequesterIdentity(
+                            identity: requesterIdentity,
+                            trustMetadata: result.trustPoints.first!.metadata
+                        )
                     }
                 }
                 return nil
             },
-            showConsentPromptFn: { requester, trustMetadata, credentialPresentmentData, preselectedDocuments, onDocumentsInFocus in
+            showConsentPromptFn: { requester, trustedRequesterIdentity, consentData, preselectedDocuments, onDocumentsInFocus in
                 try! await promptModelRequestConsent(
                     requester: requester,
-                    trustMetadata: trustMetadata,
-                    credentialPresentmentData: credentialPresentmentData,
+                    trustedRequesterIdentity: trustedRequesterIdentity,
+                    consentData: consentData,
                     preselectedDocuments: preselectedDocuments,
                     onDocumentsInFocus: { documents in onDocumentsInFocus(documents) }
                 )
             },
             preferSignatureToKeyAgreement: false,
-            domainMdocSignature: "mdoc",
+            domainsMdocSignature: ["mdoc_user_auth", "mdoc_no_user_auth"],
+            domainsMdocKeyAgreement: [],
+            domainsKeylessSdJwt: ["sdjwt_keyless"],
+            domainsKeyBoundSdJwt: ["sdjwt_user_auth", "sdjwt_no_user_auth"]
         )
     }
 }
 
+    

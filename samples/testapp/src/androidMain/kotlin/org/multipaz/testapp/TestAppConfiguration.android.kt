@@ -1,8 +1,9 @@
 package org.multipaz.testapp
 
+import android.app.PendingIntent
+import android.content.ComponentName
+import android.content.Intent
 import android.content.pm.PackageManager
-import android.os.Build
-import android.widget.Toast
 import com.jakewharton.processphoenix.ProcessPhoenix
 import io.ktor.client.engine.HttpClientEngineFactory
 import io.ktor.client.engine.android.Android
@@ -11,14 +12,27 @@ import org.multipaz.securearea.AndroidKeystoreSecureArea
 import multipazproject.samples.testapp.generated.resources.Res
 import multipazproject.samples.testapp.generated.resources.app_icon
 import multipazproject.samples.testapp.generated.resources.app_icon_red
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import org.bouncycastle.jce.provider.BouncyCastleProvider
 import org.multipaz.compose.notifications.NotificationManagerAndroid
+import org.multipaz.compose.prompt.PresentmentActivity
 import org.multipaz.digitalcredentials.getAppOrigin
-import org.multipaz.nfc.NfcTagReader
-import org.multipaz.prompt.AndroidPromptModel
-import org.multipaz.prompt.PromptDialogModel
-import org.multipaz.prompt.PromptModel
-import org.multipaz.testapp.externalnfc.nfcTagReaderUsbCheck
+import org.multipaz.document.Document
+import org.multipaz.document.DocumentBadge
+import org.multipaz.presentment.PresentmentSource
 import org.multipaz.util.Logger
 import java.net.NetworkInterface
 import java.security.Security
@@ -32,39 +46,6 @@ actual object TestAppConfiguration {
         Res.drawable.app_icon_red
     } else {
         Res.drawable.app_icon
-    }
-
-    actual val promptModel: PromptModel by lazy {
-        AndroidPromptModel.Builder(::uiLauncher).apply { addCommonDialogs() }.build()
-    }
-
-    private suspend fun uiLauncher(dialogModel: PromptDialogModel<*, *>) {
-        // This is how we could start an activity:
-        /*
-    val intent = Intent(
-        applicationContext,
-        TestAppMdocNfcPresentmentActivity::class.java
-    )
-    intent.addFlags(
-        Intent.FLAG_ACTIVITY_NEW_TASK or
-                Intent.FLAG_ACTIVITY_NO_HISTORY or
-                Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS or
-                Intent.FLAG_ACTIVITY_NO_ANIMATION
-    )
-    Logger.i(TAG, "startActivity on $intent")
-    applicationContext.startActivity(intent)
-    // Poll waiting for the activity to launch (this works for an arbitrary activity).
-    // TODO: we should be able to eliminate this polling by making bound property a flow
-    //  (basically making it listenable).
-    repeat(200) {
-        if (dialogModel.bound) {
-            Logger.i(TAG, "Activity is bound to PromptModel UI")
-            return
-        }
-        delay(20.milliseconds)
-    }
-    Logger.i(TAG, "Failed to bind to PromptModel UI")
-     */
     }
 
     actual val platform = TestAppPlatform.ANDROID
@@ -98,7 +79,7 @@ actual object TestAppConfiguration {
                 if (!inetAddress.isLoopbackAddress) {
                     val address = inetAddress.hostAddress
                     if (address != null && address.indexOf(':') < 0) {
-                        address
+                        return@lazy address
                     }
                 }
             }
@@ -121,16 +102,63 @@ actual object TestAppConfiguration {
         return getAppOrigin(packageInfo.signatures!![0].toByteArray())
     }
 
-    actual suspend fun getExternalNfcTagReaders(): List<NfcTagReader> {
-        val externalNfcReader = nfcTagReaderUsbCheck()
-        if (externalNfcReader == null) {
-            return emptyList()
+    const val ACTION_VIEW_DOCUMENT = "org.multipaz.testapp.action.viewDocument"
+
+    fun getPendingIntentForLaunchingQuickAccessWallet(
+        source: PresentmentSource,
+        initiallySelectedDocumentId: String?,
+        onDocumentSelected: ((documentId: String?) -> Unit)? = { documentId ->
+            Logger.i(TAG, "Quick Access Wallet card selected: $documentId")
+        },
+        documentSelectedContent: (@Composable (documentId: String) -> Unit)? = @Composable { documentId ->
+            var dummyState by remember { mutableStateOf(true) }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Example option for document",
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.weight(1.0f)
+                )
+                Switch(
+                    checked = dummyState,
+                    onCheckedChange = { dummyState = it }
+                )
+            }
         }
-        Toast.makeText(
-            applicationContext,
-            "Using USB-connected NFC reader ${externalNfcReader.readerName}",
-            Toast.LENGTH_LONG
-        ).show()
-        return listOf(externalNfcReader)
+    ): PendingIntent {
+        return PresentmentActivity.getPendingIntent(
+            source = source,
+            initiallySelectedDocumentId = initiallySelectedDocumentId,
+            openWalletAppPendingIntentFn = { document ->
+                PendingIntent.getActivity(
+                    /* context = */ applicationContext,
+                    /* requestCode = */ 0,
+                    /* intent = */ Intent(applicationContext, MainActivity::class.java).apply {
+                        addFlags(
+                            Intent.FLAG_ACTIVITY_NEW_TASK or
+                                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                                    Intent.FLAG_ACTIVITY_SINGLE_TOP
+                        )
+                        action = ACTION_VIEW_DOCUMENT
+                        putExtra("documentId", document.identifier)
+                    },
+                    /* flags = */ PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+            },
+            preferredService = ComponentName(applicationContext, TestAppCombinedNfcService::class.java),
+            onDocumentSelected = onDocumentSelected,
+            documentSelectedContent = documentSelectedContent
+        )
+    }
+
+    actual suspend fun launchQuickAccessWallet(
+        source: PresentmentSource,
+        initiallySelectedDocumentId: String?
+    ) {
+        getPendingIntentForLaunchingQuickAccessWallet(source, initiallySelectedDocumentId).send()
     }
 }

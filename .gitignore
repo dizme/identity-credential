@@ -1,5 +1,6 @@
 .gradle
 .kotlin
+.build/
 *.iml
 .gradle**/build/
 xcuserdata
@@ -18,3 +19,6 @@ captures
 !*.xcworkspace/contents.xcworkspacedata
 **/xcshareddata/WorkspaceSettings.xcsettings
 samples/testapp/iosApp/DeveloperConfig.xcconfig
+
+# HSQLDB runtime files
+db.hsqldb.*

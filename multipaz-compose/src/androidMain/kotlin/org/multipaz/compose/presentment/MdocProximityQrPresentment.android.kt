@@ -18,21 +18,24 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.io.bytestring.ByteString
 import org.multipaz.cbor.Cbor
+import org.multipaz.cbor.DataItem
 import org.multipaz.cbor.Simple
+import org.multipaz.cbor.toDataItem
 import org.multipaz.compose.prompt.PresentmentActivity
 import org.multipaz.context.applicationContext
 import org.multipaz.crypto.Crypto
 import org.multipaz.crypto.EcCurve
 import org.multipaz.document.Document
+import org.multipaz.mdoc.engagement.Capability
 import org.multipaz.mdoc.engagement.buildDeviceEngagement
 import org.multipaz.mdoc.role.MdocRole
 import org.multipaz.mdoc.transport.MdocTransportFactory
 import org.multipaz.mdoc.transport.advertise
 import org.multipaz.mdoc.transport.waitForConnection
-import org.multipaz.presentment.model.Iso18013Presentment
-import org.multipaz.presentment.model.PresentmentCanceled
-import org.multipaz.presentment.model.PresentmentModel
-import org.multipaz.presentment.model.PresentmentSource
+import org.multipaz.presentment.Iso18013Presentment
+import org.multipaz.presentment.PresentmentCanceledException
+import org.multipaz.presentment.PresentmentModel
+import org.multipaz.presentment.PresentmentSource
 import org.multipaz.prompt.PromptModel
 import org.multipaz.util.toBase64Url
 
@@ -46,6 +49,7 @@ actual fun MdocProximityQrPresentment(
     showTransacting: @Composable (reset: () -> Unit) -> Unit,
     showCompleted: @Composable (error: Throwable?, reset: () -> Unit) -> Unit,
     preselectedDocuments: List<Document>,
+    capabilities: Map<Capability, DataItem>,
     eDeviceKeyCurve: EcCurve,
     transportFactory: MdocTransportFactory,
     disablePlatformSpecificImplementation: Boolean
@@ -60,6 +64,7 @@ actual fun MdocProximityQrPresentment(
             showTransacting = showTransacting,
             showCompleted = showCompleted,
             preselectedDocuments = preselectedDocuments,
+            capabilities = capabilities,
             eDeviceKeyCurve = eDeviceKeyCurve,
             transportFactory = transportFactory
         )
@@ -73,6 +78,7 @@ actual fun MdocProximityQrPresentment(
             showTransacting = showTransacting,
             showCompleted = showCompleted,
             preselectedDocuments = preselectedDocuments,
+            capabilities = capabilities,
             eDeviceKeyCurve = eDeviceKeyCurve,
             transportFactory = transportFactory
         )
@@ -98,8 +104,9 @@ private fun MdocProximityQrPresentmentAndroid(
     showTransacting: @Composable (reset: () -> Unit) -> Unit,
     showCompleted: @Composable (error: Throwable?, reset: () -> Unit) -> Unit,
     preselectedDocuments: List<Document>,
+    capabilities: Map<Capability, DataItem>,
     eDeviceKeyCurve: EcCurve,
-    transportFactory: MdocTransportFactory
+    transportFactory: MdocTransportFactory,
 ) {
     val coroutineScope = rememberCoroutineScope { PresentmentActivity.promptModel }
     var state by remember { mutableStateOf<StateAndroid>(StateAndroid.PREPARE_SETTINGS) }
@@ -128,6 +135,7 @@ private fun MdocProximityQrPresentmentAndroid(
                             )
                             val deviceEngagement = buildDeviceEngagement(eDeviceKey = eDeviceKey.publicKey) {
                                 advertisedTransports.forEach { addConnectionMethod(it.connectionMethod) }
+                                capabilities.forEach { (capability, value) -> addCapability(capability, value) }
                             }.toDataItem()
                             val encodedDeviceEngagement = ByteString(Cbor.encode(deviceEngagement))
                             qrCodeToShow = "mdoc:" + encodedDeviceEngagement.toByteArray().toBase64Url()
@@ -139,8 +147,7 @@ private fun MdocProximityQrPresentmentAndroid(
                             )
 
                             PresentmentActivity.presentmentModel.reset(
-                                documentStore = source.documentStore,
-                                documentTypeRepository = source.documentTypeRepository,
+                                source = source,
                                 preselectedDocuments = preselectedDocuments
                             )
                             val intent = Intent(applicationContext, PresentmentActivity::class.java)
@@ -179,10 +186,10 @@ private fun MdocProximityQrPresentmentAndroid(
                                 onSendingResponse = { PresentmentActivity.presentmentModel.setSending() }
                             )
                             PresentmentActivity.presentmentModel.setCompleted(null)
-                        } catch (e: Throwable) {
+                        } catch (e: Exception) {
                             if (e is CancellationException) {
                                 PresentmentActivity.presentmentModel.setCompleted(
-                                    PresentmentCanceled("Presentment was cancelled")
+                                    PresentmentCanceledException("Presentment was cancelled")
                                 )
                             } else {
                                 PresentmentActivity.presentmentModel.setCompleted(e)

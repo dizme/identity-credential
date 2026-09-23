@@ -1,5 +1,6 @@
 package org.multipaz.securearea.cloud
 
+import kotlinx.coroutines.CancellationException
 import org.multipaz.asn1.ASN1Integer
 import org.multipaz.asn1.OID
 import org.multipaz.cbor.Cbor
@@ -8,12 +9,15 @@ import org.multipaz.cose.CoseKey
 import org.multipaz.crypto.Algorithm
 import org.multipaz.crypto.Crypto
 import org.multipaz.crypto.EcCurve
+import org.multipaz.crypto.SecretKey
 import org.multipaz.crypto.X500Name
+import org.multipaz.crypto.secureZero
 import org.multipaz.crypto.X509Cert
 import org.multipaz.crypto.X509CertChain
 import org.multipaz.crypto.X509KeyUsage
 import org.multipaz.device.DeviceAttestation
 import org.multipaz.device.DeviceAttestationIos
+import org.multipaz.device.DeviceAttestationSoftware
 import org.multipaz.device.DeviceAttestationValidationData
 import org.multipaz.securearea.cloud.CloudSecureAreaProtocol.CreateKeyRequest0
 import org.multipaz.securearea.cloud.CloudSecureAreaProtocol.CreateKeyResponse1
@@ -22,6 +26,11 @@ import org.multipaz.securearea.cloud.CloudSecureAreaProtocol.E2EESetupRequest0
 import org.multipaz.securearea.cloud.CloudSecureAreaProtocol.E2EESetupRequest1
 import org.multipaz.securearea.cloud.CloudSecureAreaProtocol.E2EESetupResponse0
 import org.multipaz.securearea.cloud.CloudSecureAreaProtocol.E2EESetupResponse1
+import org.multipaz.securearea.cloud.CloudSecureAreaProtocol.KemDecapsulateRequest0
+import org.multipaz.securearea.cloud.CloudSecureAreaProtocol.KemDecapsulateRequest1
+import org.multipaz.securearea.cloud.CloudSecureAreaProtocol.KemDecapsulateResponse0
+import org.multipaz.securearea.cloud.CloudSecureAreaProtocol.KemDecapsulateResponse1
+
 import org.multipaz.securearea.cloud.CloudSecureAreaProtocol.RegisterRequest0
 import org.multipaz.securearea.cloud.CloudSecureAreaProtocol.RegisterRequest1
 import org.multipaz.securearea.cloud.CloudSecureAreaProtocol.RegisterResponse0
@@ -64,21 +73,22 @@ import kotlin.random.Random
  * This code is not intended for production use.
  *
  * @param serverSecureAreaBoundKey the secret key used to encrypt/decrypt state externally stored.
+ *   Must be 16, 24, or 32 bytes.
  * @param attestationKey the private key used to sign attestations for keys created by clients.
- * @param attestationKeyCertification a certification of the attestation key.
- * @param cloudRootAttestationKey the private key used to sign attestations for `CloudBindingKey`.
- * @param cloudRootAttestationKeyCertification a certification of the attestation key for `CloudBindingKey`.
+ * @param cloudRootAttestationKey the root key used for issuing `CloudBindingKey` certificates.
  * @param e2eeKeyLimitSeconds Re-keying interval for end-to-end encryption.
  * @param iosReleaseBuild Whether a release build is required on iOS. When `false`, both debug and release builds
  *   are accepted.
- * @param iosAppIdentifier iOS app identifier that consists of a team id followed by a dot and app bundle name. If
- *   `null`, any app identifier is accepted. It must not be `null` if [iosReleaseBuild] is `true`
+ * @param iosAppIdentifiers A list of iOS App Identifiers (e.g. `9B5CR87588.org.multipaz.testapp`)
+ *   to allow. If empty, allow any app.
  * @param androidGmsAttestation whether to require attestations made for local key on clients is using the Google root.
  * @param androidVerifiedBootGreen whether to require clients are in verified boot state green.
  * @param androidAppSignatureCertificateDigests the allowed list of applications that can use the
  *   service. Each element is the bytes of the SHA-256 of a signing certificate, see the
  *   [Signature](https://developer.android.com/reference/android/content/pm/Signature) class in
  *   the Android SDK for details. If empty, allow any app.
+ * @param androidAppPackageNames A list of Android package names to allow. If empty, allow any app.
+ * @param androidKeystoreSecurityLevel The minimum required Android Keystore security level.
  * @param openid4vciKeyAttestationIssuer The value to use for the `iss` field in OpenID4VCI attestations or `null` to
  *   not include this field.
  * @param openid4vciKeyAttestationKeyStorage The value to use for the `key_storage` field in OpenID4VCI attestations or
@@ -90,6 +100,8 @@ import kotlin.random.Random
  * @param openid4vciKeyAttestationCertification The value to use for the `certification` field in OpenID4VCI
  *   attestations or `null` to not include this field.
  * @param passphraseFailureEnforcer the [PassphraseFailureEnforcer] to use.
+ * @param allowSoftwareAttestation whether to allow software attestation.
+ * @param random the [Random] instance to use (defaults to [Crypto.secureRandom]).
  */
 class CloudSecureAreaServer(
     private val serverSecureAreaBoundKey: ByteArray,
@@ -108,14 +120,28 @@ class CloudSecureAreaServer(
     private val openid4vciKeyAttestationUserAuthentication: String?,
     private val openid4vciKeyAttestationUserAuthenticationNoPassphrase: String?,
     private val openid4vciKeyAttestationCertification: String?,
-    private val passphraseFailureEnforcer: PassphraseFailureEnforcer
-) {
+    private val passphraseFailureEnforcer: PassphraseFailureEnforcer,
+    private val allowSoftwareAttestation: Boolean = false,
+    private val random: Random = Crypto.secureRandom,
+) : AutoCloseable {
+    private val serverSecureAreaBoundSecretKey = SecretKey(serverSecureAreaBoundKey)
+
+    override fun close() {
+        serverSecureAreaBoundSecretKey.close()
+    }
+
+    private val stateEncryptionAlg: Algorithm get() = when (serverSecureAreaBoundSecretKey.size) {
+        16 -> Algorithm.A128GCM
+        24 -> Algorithm.A192GCM
+        32 -> Algorithm.A256GCM
+        else -> throw IllegalStateException("Unexpected key size: ${serverSecureAreaBoundSecretKey.size}")
+    }
     private suspend fun encryptState(plaintext: ByteArray): ByteArray {
         val counter = encryptionGcmCounter
         val iv = ByteBuffer.allocate(12)
         iv.putInt(0, 0x00000000)
         iv.putLong(counter)
-        val ciphertext = Crypto.encrypt(Algorithm.A128GCM, serverSecureAreaBoundKey, iv.array(), plaintext)
+        val ciphertext = Crypto.encrypt(stateEncryptionAlg, serverSecureAreaBoundSecretKey, iv.array(), plaintext)
         return iv.array() + ciphertext
     }
 
@@ -123,7 +149,7 @@ class CloudSecureAreaServer(
         require(cipherText.size >= 12) { "input too short" }
         val iv = cipherText.copyOfRange(0, 12)
         val encryptedData = cipherText.copyOfRange(12, cipherText.size)
-        val plaintext = Crypto.decrypt(Algorithm.A128GCM, serverSecureAreaBoundKey, iv, encryptedData)
+        val plaintext = Crypto.decrypt(stateEncryptionAlg, serverSecureAreaBoundSecretKey, iv, encryptedData)
         return plaintext
     }
 
@@ -155,8 +181,8 @@ class CloudSecureAreaServer(
         state.registrationComplete = false
         state.clientPassphraseSalt = byteArrayOf()
         state.clientSaltedPassphrase = byteArrayOf()
-        state.attestationChallenge = ByteString(Random.Default.nextBytes(32))
-        state.cloudChallenge = Random.Default.nextBytes(32)
+        state.attestationChallenge = ByteString(random.nextBytes(32))
+        state.cloudChallenge = random.nextBytes(32)
         val response0 = RegisterResponse0(
             attestationChallenge = state.attestationChallenge!!,
             cloudChallenge = state.cloudChallenge!!,
@@ -175,16 +201,19 @@ class CloudSecureAreaServer(
             request1.deviceAttestation.validate(
                 DeviceAttestationValidationData(
                     attestationChallenge = state.attestationChallenge!!,
+                    softwareAccepted = allowSoftwareAttestation,
+                    softwareSecrets = emptySet(),
                     iosReleaseBuild = iosReleaseBuild,
                     iosAppIdentifiers = iosAppIdentifiers.toSet(),
                     androidGmsAttestation = androidGmsAttestation,
                     androidVerifiedBootGreen = androidVerifiedBootGreen,
                     androidAppSignatureCertificateDigests = androidAppSignatureCertificateDigests.toSet(),
                     androidAppPackageNames = androidAppPackageNames.toSet(),
-                    androidRequiredKeyMintSecurityLevel = androidKeystoreSecurityLevel
+                    androidRequiredKeyMintSecurityLevel = androidKeystoreSecurityLevel,
                 )
             )
-        } catch (e: Throwable) {
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
             Logger.w(TAG, "$remoteHost: RegisterRequest1: Device Attestation did not validate", e)
             e.printStackTrace()
             return Pair(403, e.message!!.toByteArray())
@@ -193,7 +222,9 @@ class CloudSecureAreaServer(
 
         // iOS devices don't have key attestation for the locally created key but other platforms do, including
         // Android. So we check that the attestation is valid and matches what we requested.
-        if (state.deviceAttestation !is DeviceAttestationIos) {
+        if (state.deviceAttestation !is DeviceAttestationIos &&
+            !(allowSoftwareAttestation && state.deviceAttestation is DeviceAttestationSoftware)
+        ) {
             try {
                 validateAndroidKeyAttestation(
                     chain = request1.deviceBindingKeyAttestation!!,
@@ -207,7 +238,8 @@ class CloudSecureAreaServer(
                 // Check that device created the key without user authentication.
                 val attestation = AndroidAttestationExtensionParser(request1.deviceBindingKeyAttestation!!.certificates[0])
                 check(attestation.getUserAuthenticationType() == 0L)
-            } catch (e: Throwable) {
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
                 Logger.w(TAG, "$remoteHost: RegisterRequest1: Android Keystore attestation did not validate", e)
                 return Pair(403, e.message!!.toByteArray())
             }
@@ -254,6 +286,7 @@ class CloudSecureAreaServer(
             cloudBindingKeyAttestation,
             state.encrypt()
         )
+        cloudBindingKey.close()
         Logger.d(TAG, "$remoteHost: RegisterRequest1: Client successfully registered")
         return Pair(200, response1.toCbor())
     }
@@ -280,7 +313,7 @@ class CloudSecureAreaServer(
                                             remoteHost: String): Pair<Int, ByteArray> {
         val state = E2EEState()
         state.context = RegisterState.decrypt(request0.registrationContext)
-        state.cloudNonce = Random.Default.nextBytes(32)
+        state.cloudNonce = random.nextBytes(32)
         val response0 = E2EESetupResponse0(
             state.cloudNonce!!,
             state.encrypt()
@@ -318,14 +351,18 @@ class CloudSecureAreaServer(
                 add(request1.deviceNonce)
             }
         )
-        val signature = Crypto.sign(
-            state.context!!.cloudBindingKey!!.ecPrivateKey,
-            Algorithm.ES256,
-            dataToSign
-        )
+        val signature = state.context!!.cloudBindingKey!!.ecPrivateKey.use {
+            Crypto.sign(
+                it,
+                Algorithm.ES256,
+                dataToSign
+            )
+        }
 
         // Also derive SKDevice and SKCloud, and stash in state since we're going to need this later
         val zab = Crypto.keyAgreement(eCloudKey, request1.eDeviceKey.ecPublicKey)
+        val eCloudKeyPublicCose = eCloudKey.publicKey.toCoseKey()
+        eCloudKey.close()
         val salt = Crypto.digest(Algorithm.SHA256,
             Cbor.encode(
                 buildCborArray {
@@ -334,25 +371,27 @@ class CloudSecureAreaServer(
                 }
             )
         )
-        state.skDevice = Hkdf.deriveKey(
-            Algorithm.HMAC_SHA256,
-            zab,
-            salt,
-            "SKDevice".toByteArray(),
-            32
-        )
-        state.skCloud = Hkdf.deriveKey(
-            Algorithm.HMAC_SHA256,
-            zab,
-            salt,
-            "SKCloud".toByteArray(),
-            32
-        )
+        zab.use {
+            state.skDevice = Hkdf.deriveKey(
+                Algorithm.HMAC_SHA256,
+                it,
+                salt,
+                "SKDevice".toByteArray(),
+                32
+            ).use { key -> key.encoded }
+            state.skCloud = Hkdf.deriveKey(
+                Algorithm.HMAC_SHA256,
+                it,
+                salt,
+                "SKCloud".toByteArray(),
+                32
+            ).use { key -> key.encoded }
+        }
         state.encryptedCounter = 1
         state.decryptedCounter = 1
         state.derivationTimestamp = System.currentTimeMillis()
         val response1 = E2EESetupResponse1(
-            eCloudKey.publicKey.toCoseKey(),
+            eCloudKeyPublicCose,
             signature,
             state.encrypt()
         )
@@ -371,7 +410,7 @@ class CloudSecureAreaServer(
             return Pair(403, "Registration stage 2 already completed".toByteArray())
         }
         e2eeState.context!!.registrationComplete = true
-        e2eeState.context!!.clientPassphraseSalt = Random.Default.nextBytes(32)
+        e2eeState.context!!.clientPassphraseSalt = random.nextBytes(32)
         e2eeState.context!!.clientSaltedPassphrase = Crypto.digest(
             Algorithm.SHA256,
             e2eeState.context!!.clientPassphraseSalt + request0.passphrase.encodeToByteArray()
@@ -423,7 +462,7 @@ class CloudSecureAreaServer(
     ): Pair<Int, ByteArray> {
         val state = CreateKeyState()
         state.challenge = request0.challenge
-        state.cloudChallenge = Random.Default.nextBytes(32)
+        state.cloudChallenge = random.nextBytes(32)
         state.algorithm = Algorithm.fromName(request0.algorithm)
         state.validFromMillis = request0.validFromMillis
         state.validUntilMillis = request0.validUntilMillis
@@ -451,7 +490,9 @@ class CloudSecureAreaServer(
 
         // iOS devices don't have key attestation for the locally created key but other platforms do, including
         // Android. So we check that the attestation is valid and matches what we requested.
-        if (e2eeState.context!!.deviceAttestation !is DeviceAttestationIos) {
+        if (e2eeState.context!!.deviceAttestation !is DeviceAttestationIos &&
+            !(allowSoftwareAttestation && e2eeState.context!!.deviceAttestation is DeviceAttestationSoftware)
+        ) {
             try {
                 validateAndroidKeyAttestation(
                     chain = request1.localKeyAttestation!!,
@@ -473,7 +514,8 @@ class CloudSecureAreaServer(
                 } else {
                     check(attestation.getUserAuthenticationType() == 0L)
                 }
-            } catch (e: Throwable) {
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
                 throw IllegalStateException("doCreateKeyRequest1: Android Keystore attestation did not validate", e)
             }
         }
@@ -502,13 +544,15 @@ class CloudSecureAreaServer(
         )
             .includeSubjectKeyIdentifier()
             .setAuthorityKeyIdentifierToCertificate(attestationKey.certChain.certificates[0])
-            .setKeyUsage(setOf(
-                if (keyInfo.algorithm.isSigning) {
-                    X509KeyUsage.DIGITAL_SIGNATURE
-                } else {
-                    X509KeyUsage.KEY_AGREEMENT
-                }
-            ))
+            .setKeyUsage(
+                setOf(
+                    when {
+                        keyInfo.algorithm.isSigning -> X509KeyUsage.DIGITAL_SIGNATURE
+                        keyInfo.algorithm.isKeyEncapsulation -> X509KeyUsage.KEY_ENCIPHERMENT
+                        else -> X509KeyUsage.KEY_AGREEMENT
+                    }
+                )
+            )
             .addExtension(
                 oid = OID.X509_EXTENSION_MULTIPAZ_EXTENSION.oid,
                 critical = false,
@@ -542,7 +586,7 @@ class CloudSecureAreaServer(
     ): Pair<Int, ByteArray> {
         val state = CreateKeyState()
         state.challenge = request0.challenge
-        state.cloudChallenge = Random.Default.nextBytes(32)
+        state.cloudChallenge = random.nextBytes(32)
         state.algorithm = Algorithm.fromName(request0.algorithm)
         state.validFromMillis = request0.validFromMillis
         state.validUntilMillis = request0.validUntilMillis
@@ -570,7 +614,9 @@ class CloudSecureAreaServer(
 
         // iOS devices don't have key attestation for the locally created key but other platforms do, including
         // Android. So we check that the attestation is valid and matches what we requested.
-        if (e2eeState.context!!.deviceAttestation !is DeviceAttestationIos) {
+        if (e2eeState.context!!.deviceAttestation !is DeviceAttestationIos &&
+            !(allowSoftwareAttestation && e2eeState.context!!.deviceAttestation is DeviceAttestationSoftware)
+        ) {
             for (localKeyAttestation in request1.localKeyAttestations) {
                 try {
                     validateAndroidKeyAttestation(
@@ -593,7 +639,8 @@ class CloudSecureAreaServer(
                     } else {
                         check(attestation.getUserAuthenticationType() == 0L)
                     }
-                } catch (e: Throwable) {
+                } catch (e: Exception) {
+                    if (e is CancellationException) throw e
                     throw IllegalStateException("doBatchCreateKeyRequest1: Android Keystore attestation did not validate", e)
                 }
             }
@@ -629,10 +676,10 @@ class CloudSecureAreaServer(
                 .setAuthorityKeyIdentifierToCertificate(attestationKey.certChain.certificates[0])
                 .setKeyUsage(
                     setOf(
-                        if (keyInfo.algorithm.isSigning) {
-                            X509KeyUsage.DIGITAL_SIGNATURE
-                        } else {
-                            X509KeyUsage.KEY_AGREEMENT
+                        when {
+                            keyInfo.algorithm.isSigning -> X509KeyUsage.DIGITAL_SIGNATURE
+                            keyInfo.algorithm.isKeyEncapsulation -> X509KeyUsage.KEY_ENCIPHERMENT
+                            else -> X509KeyUsage.KEY_AGREEMENT
                         }
                     )
                 )
@@ -725,7 +772,7 @@ class CloudSecureAreaServer(
         val state = SignState()
         state.keyContext = decryptCreateKeyState(request0.keyContext)
         state.dataToSign = request0.dataToSign
-        state.cloudNonce = Random.Default.nextBytes(32)
+        state.cloudNonce = random.nextBytes(32)
         val response0 = CloudSecureAreaProtocol.SignResponse0(
             state.cloudNonce!!,
             encryptSignState(state)
@@ -812,7 +859,8 @@ class CloudSecureAreaServer(
                 e2eeState.encrypt()
             )
             return Pair(200, encryptedResponse1.toCbor())
-        } catch (e: Throwable) {
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
             throw IllegalStateException(e)
         }
     }
@@ -865,7 +913,7 @@ class CloudSecureAreaServer(
         val state = KeyAgreementState()
         state.keyContext = decryptCreateKeyState(request0.keyContext)
         state.otherPublicKey = request0.otherPublicKey
-        state.cloudNonce = Random.Default.nextBytes(32)
+        state.cloudNonce = random.nextBytes(32)
         val response0 = CloudSecureAreaProtocol.KeyAgreementResponse0(
             state.cloudNonce!!,
             state.encrypt()
@@ -941,21 +989,152 @@ class CloudSecureAreaServer(
             val storage = EphemeralStorage.deserialize(
                 ByteString(state.keyContext!!.cloudKeyStorage!!))
             val secureArea = SoftwareSecureArea.create(storage)
-            val Zab = secureArea.keyAgreement(
-                    "CloudKey",
-                    state.otherPublicKey!!.ecPublicKey,
-                )
+            val zabBytes = secureArea.keyAgreement(
+                "CloudKey",
+                state.otherPublicKey!!.ecPublicKey,
+            ).use { it.encoded }
             Logger.d(TAG, "$remoteHost: KeyAgreementRequest1: Calculated Zab")
-            val response1 = CloudSecureAreaProtocol.KeyAgreementResponse1(
-                CloudSecureAreaProtocol.RESULT_OK,
-                Zab,
-                0L)
+            val response1Cbor = try {
+                val response1 = CloudSecureAreaProtocol.KeyAgreementResponse1(
+                    CloudSecureAreaProtocol.RESULT_OK,
+                    zabBytes,
+                    0L
+                )
+                response1.toCbor()
+            } finally {
+                zabBytes.secureZero()
+            }
             val encryptedResponse1 = E2EEResponse(
-                encryptToDevice(e2eeState, response1.toCbor()),
+                encryptToDevice(e2eeState, response1Cbor),
                 e2eeState.encrypt()
             )
             return Pair(200, encryptedResponse1.toCbor())
-        } catch (e: Throwable) {
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            throw IllegalStateException(e)
+        }
+    }
+
+    @CborSerializable
+    data class KemDecapsulateState(
+        var keyContext: CreateKeyState? = null,
+        var ciphertext: ByteArray? = null,
+        var cloudNonce: ByteArray? = null,
+    ) {
+        companion object
+    }
+
+    private suspend fun KemDecapsulateState.encrypt(): ByteArray = encryptState(toCbor())
+
+    private suspend fun KemDecapsulateState.Companion.decrypt(encryptedState: ByteArray) =
+        fromCbor(decryptState(encryptedState))
+
+    private suspend fun doKemDecapsulateRequest0(
+        request0: CloudSecureAreaProtocol.KemDecapsulateRequest0,
+        remoteHost: String,
+        e2eeState: E2EEState
+    ): Pair<Int, ByteArray> {
+        val state = KemDecapsulateState()
+        state.keyContext = decryptCreateKeyState(request0.keyContext)
+        state.ciphertext = request0.ciphertext
+        state.cloudNonce = random.nextBytes(32)
+        val response0 = CloudSecureAreaProtocol.KemDecapsulateResponse0(
+            state.cloudNonce!!,
+            state.encrypt()
+        )
+        val encryptedResponse0 = E2EEResponse(
+            encryptToDevice(e2eeState, response0.toCbor()),
+            e2eeState.encrypt()
+        )
+        Logger.d(TAG, "$remoteHost: KemDecapsulateRequest0: Sending nonce to client")
+        return Pair(200, encryptedResponse0.toCbor())
+    }
+
+    private suspend fun doKemDecapsulateRequest1(
+        request1: CloudSecureAreaProtocol.KemDecapsulateRequest1,
+        remoteHost: String,
+        e2eeState: E2EEState
+    ): Pair<Int, ByteArray> {
+        try {
+            val state = KemDecapsulateState.decrypt(request1.serverState)
+            val dataThatWasSignedLocally = Cbor.encode(
+                buildCborArray {
+                    add(state.cloudNonce!!)
+                }
+            )
+            Crypto.checkSignature(
+                state.keyContext!!.localKey!!.ecPublicKey,
+                dataThatWasSignedLocally,
+                Algorithm.ES256,
+                request1.signature
+            )
+
+            if (state.keyContext!!.passphraseRequired) {
+                val lockedOutDuration =
+                    passphraseFailureEnforcer.isLockedOut(e2eeState.context!!.clientId!!)
+                if (lockedOutDuration != null) {
+                    Logger.i(
+                        TAG, "$remoteHost: KemDecapsulateRequest1: Too many wrong passphrase attempts, " +
+                                "locked out for $lockedOutDuration"
+                    )
+                    val response1 = CloudSecureAreaProtocol.KemDecapsulateResponse1(
+                        CloudSecureAreaProtocol.RESULT_TOO_MANY_PASSPHRASE_ATTEMPTS,
+                        null,
+                        lockedOutDuration.inWholeMilliseconds
+                    )
+                    val encryptedResponse1 = E2EEResponse(
+                        encryptToDevice(e2eeState, response1.toCbor()),
+                        e2eeState.encrypt()
+                    )
+                    return Pair(200, encryptedResponse1.toCbor())
+                }
+
+                if (!checkPassphrase(
+                        remoteHost,
+                        request1.passphrase,
+                        e2eeState.context!!,
+                    )
+                ) {
+                    Logger.d(TAG, "$remoteHost: KemDecapsulateRequest1: Error checking passphrase")
+                    val response1 = CloudSecureAreaProtocol.KemDecapsulateResponse1(
+                        CloudSecureAreaProtocol.RESULT_WRONG_PASSPHRASE,
+                        null,
+                        0L
+                    )
+                    val encryptedResponse1 = E2EEResponse(
+                        encryptToDevice(e2eeState, response1.toCbor()),
+                        e2eeState.encrypt()
+                    )
+                    return Pair(200, encryptedResponse1.toCbor())
+                }
+            }
+
+            val storage = EphemeralStorage.deserialize(
+                ByteString(state.keyContext!!.cloudKeyStorage!!)
+            )
+            val secureArea = SoftwareSecureArea.create(storage)
+            val sharedSecretBytes = secureArea.kemDecapsulate(
+                "CloudKey",
+                state.ciphertext!!,
+            ).use { it.encoded }
+            Logger.d(TAG, "$remoteHost: KemDecapsulateRequest1: Decapsulated shared secret")
+            val response1Cbor = try {
+                val response1 = CloudSecureAreaProtocol.KemDecapsulateResponse1(
+                    CloudSecureAreaProtocol.RESULT_OK,
+                    sharedSecretBytes,
+                    0L
+                )
+                response1.toCbor()
+            } finally {
+                sharedSecretBytes.secureZero()
+            }
+            val encryptedResponse1 = E2EEResponse(
+                encryptToDevice(e2eeState, response1Cbor),
+                e2eeState.encrypt()
+            )
+            return Pair(200, encryptedResponse1.toCbor())
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
             throw IllegalStateException(e)
         }
     }
@@ -1006,7 +1185,9 @@ class CloudSecureAreaServer(
         val ivIdentifier = 0x00000000
         iv.putInt(4, ivIdentifier)
         iv.putInt(8, e2eeState.encryptedCounter++)
-        return Crypto.encrypt(Algorithm.A128GCM, e2eeState.skCloud!!, iv.array(), messagePlaintext)
+        return SecretKey(e2eeState.skCloud!!).use { key ->
+            Crypto.encrypt(Algorithm.A256GCM, key, iv.array(), messagePlaintext)
+        }
     }
 
     private suspend fun doE2EERequest(
@@ -1031,11 +1212,14 @@ class CloudSecureAreaServer(
         iv.putInt(4, ivIdentifier)
         iv.putInt(8, e2eeState.decryptedCounter)
         val plainText = try {
-            Crypto.decrypt(
-                Algorithm.A128GCM,
-                e2eeState.skDevice!!,
-                iv.array(),
-                request.encryptedRequest)
+            SecretKey(e2eeState.skDevice!!).use { key ->
+                Crypto.decrypt(
+                    Algorithm.A256GCM,
+                    key,
+                    iv.array(),
+                    request.encryptedRequest
+                )
+            }
         } catch (e: IllegalStateException) {
             return Pair(400, "Decryption failed".toByteArray())
         }
@@ -1071,6 +1255,8 @@ class CloudSecureAreaServer(
             is CloudSecureAreaProtocol.SignRequest1 -> doSignRequest1(command, remoteHost, e2eeState!!)
             is CloudSecureAreaProtocol.KeyAgreementRequest0 -> doKeyAgreementRequest0(command, remoteHost, e2eeState!!)
             is CloudSecureAreaProtocol.KeyAgreementRequest1 -> doKeyAgreementRequest1(command, remoteHost, e2eeState!!)
+            is CloudSecureAreaProtocol.KemDecapsulateRequest0 -> doKemDecapsulateRequest0(command, remoteHost, e2eeState!!)
+            is CloudSecureAreaProtocol.KemDecapsulateRequest1 -> doKemDecapsulateRequest1(command, remoteHost, e2eeState!!)
             is CloudSecureAreaProtocol.CheckPassphraseRequest -> doCheckPassphraseRequest(command, remoteHost, e2eeState!!)
             else -> {
                 Logger.w(TAG, "$remoteHost: Unknown command ${command}, returning 404")

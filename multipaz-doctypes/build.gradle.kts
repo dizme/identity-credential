@@ -1,36 +1,50 @@
 @file:OptIn(ExperimentalWasmDsl::class)
 
+import org.gradle.kotlin.dsl.project
 import org.jetbrains.kotlin.gradle.ExperimentalWasmDsl
+import org.multipaz.lokalize.util.OutputFormat
 
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
+    alias(libs.plugins.androidLibrary)
+    alias(libs.plugins.ksp)
+    alias(libs.plugins.kotlinSerialization)
     id("maven-publish")
+    id("org.jetbrains.dokka") version "2.1.0"
+    id("org.multipaz.lokalize.convention")
 }
 
 val projectVersionCode: Int by rootProject.extra
 val projectVersionName: String by rootProject.extra
+
+val disableWebTargets = project.properties["disable.web.targets"]?.toString()?.toBoolean() ?: false
 
 kotlin {
     jvmToolchain(17)
 
     compilerOptions {
         optIn.add("kotlin.time.ExperimentalTime")
+        freeCompilerArgs.add("-Xexpect-actual-classes")
     }
+
+    androidTarget()
 
     jvm()
 
-    js {
-        outputModuleName = "multipaz-doctypes"
-        browser {
+    if (!disableWebTargets) {
+        js {
+            outputModuleName = "multipaz-doctypes"
+            browser {
+            }
+            binaries.executable()
         }
-        binaries.executable()
-    }
 
-    wasmJs {
-        outputModuleName = "multipaz-doctypes"
-        browser {
+        wasmJs {
+            outputModuleName = "multipaz-doctypes"
+            browser {
+            }
+            binaries.executable()
         }
-        binaries.executable()
     }
 
     listOf(
@@ -47,12 +61,18 @@ kotlin {
         it.binaries.all {
             linkerOpts(
                 "-L/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/${platform}/",
+                "-Wl,-rpath,/usr/lib/swift",
+                "-lsqlite3"
             )
         }
     }
 
+    // Apply default hierarchy template to automatically create webMain source set
+    applyDefaultHierarchyTemplate()
+
     sourceSets {
         val commonMain by getting {
+            kotlin.srcDir("build/generated/ksp/metadata/commonMain/kotlin")
             dependencies {
                 implementation(project(":multipaz"))
                 implementation(libs.kotlinx.datetime)
@@ -80,35 +100,116 @@ kotlin {
             }
         }
 
-        val jsTest by getting {
-            dependencies {
-                implementation(libs.kotlin.wrappers.web)
+        if (!disableWebTargets) {
+            val webMain by getting {
+                dependencies {
+                    implementation(libs.kotlinx.browser)
+                }
             }
-        }
-    }
-}
 
-group = "org.multipaz"
-version = projectVersionName
-
-publishing {
-    repositories {
-        maven {
-            url = uri("${rootProject.rootDir}/repo")
-        }
-    }
-    publications.withType(MavenPublication::class) {
-        pom {
-            licenses {
-                license {
-                    name = "Apache 2.0"
-                    url = "https://opensource.org/licenses/Apache-2.0"
+            val jsTest by getting {
+                dependencies {
+                    implementation(libs.kotlin.wrappers.web)
                 }
             }
         }
     }
 }
 
-subprojects {
-	apply(plugin = "org.jetbrains.dokka")
+dependencies {
+    add("kspCommonMainMetadata", project(":multipaz-cbor-rpc"))
+    add("kspJvmTest", project(":multipaz-cbor-rpc"))
 }
+
+tasks.all {
+    if (name == "compileDebugKotlinAndroid" || name == "compileReleaseKotlinAndroid" ||
+        name == "androidReleaseSourcesJar" || name == "iosArm64SourcesJar" ||
+        name == "iosSimulatorArm64SourcesJar" || name == "iosX64SourcesJar" ||
+        name == "jsSourcesJar" || name == "wasmJsSourcesJar"  || name == "jvmSourcesJar" || name == "sourcesJar") {
+        dependsOn("kspCommonMainKotlinMetadata")
+    }
+}
+
+tasks["compileKotlinIosX64"].dependsOn("kspCommonMainKotlinMetadata")
+tasks["compileKotlinIosArm64"].dependsOn("kspCommonMainKotlinMetadata")
+tasks["compileKotlinIosSimulatorArm64"].dependsOn("kspCommonMainKotlinMetadata")
+tasks["compileKotlinJvm"].dependsOn("kspCommonMainKotlinMetadata")
+if (!disableWebTargets) {
+    tasks["compileKotlinJs"].dependsOn("kspCommonMainKotlinMetadata")
+    tasks["compileKotlinWasmJs"].dependsOn("kspCommonMainKotlinMetadata")
+}
+
+group = "org.multipaz"
+
+android {
+    namespace = "org.multipaz.doctypes"
+    compileSdk = libs.versions.android.compileSdk.get().toInt()
+
+    defaultConfig {
+        minSdk = 26
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+}
+
+version = projectVersionName
+
+publishing {
+    repositories {
+        maven {
+            url = uri(rootProject.layout.buildDirectory.dir("staging-repo"))
+        }
+    }
+    publications.withType(MavenPublication::class) {
+        pom {
+            name.set("multipaz-doctypes")
+            description.set("Multipaz SDK doctypes module")
+            url.set("https://github.com/openwallet-foundation/multipaz")
+            licenses {
+                license {
+                    name.set("Apache-2.0")
+                    url.set("https://opensource.org/licenses/Apache-2.0")
+                    distribution.set("repo")
+                }
+            }
+            developers {
+                developer {
+                    id.set("zeuthen")
+                    name.set("David Zeuthen")
+                    email.set("zeuthen@google.com")
+                }
+            }
+            scm {
+                connection.set("scm:git:git://github.com/openwallet-foundation/multipaz.git")
+                developerConnection.set("scm:git:ssh://github.com/openwallet-foundation/multipaz.git")
+                url.set("https://github.com/openwallet-foundation/multipaz")
+            }
+        }
+    }
+}
+
+// Source strings live under src/commonMain/lokalize/ rather than src/commonMain/resources/
+// because KMP would auto-bundle the latter into the JVM JAR as Java resources at the
+// root (values-*/strings.json), which collides with any sibling module that does the
+// same — most notably multipaz-utopia — during Android's mergeJavaResource step in
+// downstream consumers (issue #1714). Nothing reads these JSONs at runtime: they're
+// build-time inputs to the lokalize plugin only; runtime translations are baked into
+// GeneratedTranslations as Kotlin constants.
+//
+// The Kotlin rendered from those JSONs is checked in under src/commonMain/generated/ rather than
+// generated into build/ on every compile, so that downstreams on non-Gradle build systems see a
+// source tree that compiles as-is (issue #1811). It is a pure function of the committed
+// values*/strings.json, and lokalizeCheckGenerated (wired into `check`) fails the build if the two
+// drift apart. After editing strings, run:
+//
+//     ./gradlew :multipaz-doctypes:generateMultipazStrings
+//
+lokalize {
+    outputFormat.set(OutputFormat.JSON)
+    resourcesDir.set("src/commonMain/lokalize")
+}
+

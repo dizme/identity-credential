@@ -1,0 +1,198 @@
+package org.multipaz.records.payment
+
+import io.ktor.utils.io.CancellationException
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.io.bytestring.ByteString
+import org.multipaz.cbor.annotation.CborSerializable
+import org.multipaz.documenttype.DocumentTypeRepository
+import org.multipaz.documenttype.knowntypes.PaymentTransaction
+import org.multipaz.mdoc.zkp.ZkSystemRepository
+import org.multipaz.rpc.annotation.RpcState
+import org.multipaz.rpc.backend.BackendEnvironment
+import org.multipaz.rpc.backend.getTable
+import org.multipaz.rpc.handler.InvalidRequestException
+import org.multipaz.rpc.handler.RpcAuthInspector
+import org.multipaz.rpc.handler.RpcAuthInspectorSignature
+import org.multipaz.server.enrollment.ServerIdentity
+import org.multipaz.server.enrollment.getLocalRootCertificate
+import org.multipaz.server.payment.PaymentProcessor
+import org.multipaz.server.payment.PaymentTransactionData
+import org.multipaz.server.payment.PaymentTransactionRequest
+import org.multipaz.verification.PresentmentRecord
+import org.multipaz.trustmanagement.TrustManagerInterface
+import org.multipaz.util.Logger
+import org.multipaz.util.truncateToWholeSeconds
+import org.multipaz.utopia.knowntypes.DigitalPaymentCredential
+import org.multipaz.verification.Iso18013PresentmentRecord
+import org.multipaz.verification.MdocVerifiedPresentation
+import org.multipaz.verification.OpenID4VPPresentmentRecord
+import org.multipaz.crypto.Crypto
+import kotlin.math.roundToLong
+import kotlin.time.Clock
+import kotlin.time.Duration.Companion.hours
+import kotlin.time.Duration.Companion.minutes
+import kotlin.time.Instant
+
+@RpcState(
+    endpoint = "payment",
+    creatable = true
+)
+@CborSerializable
+class PaymentProcessorImpl: PaymentProcessor, RpcAuthInspector by rpcAuth {
+    override suspend fun createTransaction(
+        request: PaymentTransactionRequest
+    ): PaymentTransactionData = try {
+        val paymentTable = BackendEnvironment.getTable(PaymentData.paymentsTableSpec)
+        val initial = PaymentData(
+            payeeAccount = request.payeeAccount,
+            payeeName = PaymentAccount.lookupAccountName(request.payeeAccount),
+            description = request.description,
+            amount = request.amount,
+            currency = request.currency,
+            time = Clock.System.now().truncateToWholeSeconds(),
+            nonce = ByteString(Crypto.secureRandom.nextBytes(15)),
+            payerAccount = null,
+            payerName = null,
+            presentmentRecord = null
+        )
+        val transactionId = paymentTable.insert(
+            key = null,
+            data = ByteString(initial.toCbor()),
+            expiration = Clock.System.now() + 20.minutes
+        )
+        PaymentTransactionData(
+            transactionId = transactionId,
+            payeeName = initial.payeeName,
+            nonce = initial.nonce
+        )
+    } catch (err: CancellationException) {
+        throw err
+    } catch (err: InvalidRequestException) {
+        throw err
+    } catch (err: Exception) {
+        Logger.e("PaymentProcessor", "Error in createTransaction", err)
+        throw InvalidRequestException("Error creating transaction: ${err.message}")
+    }
+
+    override suspend fun commitTransaction(
+        presentmentRecord: PresentmentRecord
+    ): String = try {
+        val now = Clock.System.now().truncateToWholeSeconds()
+        val documentTypeRepository =
+            BackendEnvironment.getInterface(DocumentTypeRepository::class)!!
+        val result = presentmentRecord.verify(
+            atTime = now,
+            documentTypeRepository = documentTypeRepository,
+            zkSystemRepository = BackendEnvironment.getInterface(ZkSystemRepository::class)
+        )
+        // Allow multiple documents being presented together with the payment itself
+        val payment = result.find {
+            it is MdocVerifiedPresentation && it.docType == DigitalPaymentCredential.CARD_DOCTYPE
+        } as? MdocVerifiedPresentation
+            ?: throw InvalidRequestException("Not a payment transaction")
+
+        check(payment.transactionData.size == 1)
+        val transactionData = payment.transactionData.first()
+        val transactionPayload = transactionData.payload as PaymentTransaction.Payload
+        val transactionId = transactionPayload.transactionId
+        val amount = transactionPayload.amount
+        val currency = transactionPayload.currency
+        val paymentTable = BackendEnvironment.getTable(PaymentData.paymentsTableSpec)
+        val data = paymentTable.get(transactionId)
+            ?: throw InvalidRequestException("Transaction '$transactionId' is invalid or expired")
+        val draft = PaymentData.fromCbor(data.toByteArray())
+
+        if (requiresNonceVerification(presentmentRecord)) {
+            presentmentRecord.verifyNonce(draft.nonce)
+        }
+
+        if ((amount * 100).roundToLong() != (draft.amount * 100).roundToLong() || currency != draft.currency) {
+            throw InvalidRequestException("Inconsistent transaction amount or currency")
+        }
+
+        val trustManager = BackendEnvironment.getInterface(TrustManagerInterface::class)!!
+        val trustResult = trustManager.verify(payment.documentSignerCertChain.certificates, now)
+        if (!trustResult.isTrusted) {
+            throw InvalidRequestException("Payment instrument is not issued by a trusted issuer")
+        }
+        val claims = payment.issuerSignedClaims
+        val payerAccount = claims.find { it.dataElementName == "payment_instrument_id" }!!.value.asTstr
+        val payerName = claims.find { it.dataElementName == "holder_name"}?.value?.asTstr
+        // We don't have transaction support in our simplistic storage interface; this lock
+        // prevents conflicts/inconsistencies on a single-machine server.
+        transactionLock.withLock {
+            if (draft.presentmentRecord != null) {
+                throw InvalidRequestException("Transaction '$transactionId' is already committed")
+            }
+            // First, extend transaction expiration time, without changing actual data, so that
+            // the second update command below never fails due to record expiring. This update
+            // command may fail, but it will not break data consistency.
+            paymentTable.update(
+                key = transactionId,
+                data = data,
+                expiration = now + 1.hours
+            )
+            val paymentData = PaymentData(
+                payeeAccount = draft.payeeAccount,
+                payeeName = draft.payeeName,
+                description = draft.description,
+                amount = amount,
+                currency = currency,
+                time = now,
+                nonce = draft.nonce,
+                payerAccount = payerAccount,
+                payerName = payerName,
+                presentmentRecord = presentmentRecord
+            )
+            // NB: applyPayment will fail if the transaction cannot be applied
+            PaymentAccount.applyPayment(transactionId, paymentData)
+            // This update must never fail, if it does, our storage becomes inconsistent
+            paymentTable.update(
+                key = transactionId,
+                data = ByteString(paymentData.toCbor()),
+                expiration = Instant.DISTANT_FUTURE  // TODO: maybe keep transactions for 30 days?
+            )
+            transactionId  // for now
+        }
+    } catch (err: CancellationException) {
+        throw err
+    } catch (err: InvalidRequestException) {
+        throw err
+    } catch (err: Exception) {
+        Logger.e("PaymentProcessor", "Error in commitTransaction", err)
+        err.printStackTrace()
+        throw InvalidRequestException("Error commiting transaction: ${err.message}")
+    }
+
+    companion object {
+        private val rpcAuth = RpcAuthInspectorSignature {
+            getLocalRootCertificate(ServerIdentity.PAYMENT_PROCESSOR, true)
+        }
+
+        private val transactionLock = Mutex()
+    }
+}
+
+/**
+ * Whether [record]'s verifier nonce must be checked before committing a payment.
+ *
+ * Nonce verification binds a presentment to a specific verifier challenge. It applies to DC-API /
+ * OpenID4VP flows, which carry the nonce out of band — in `encryptionInfo` + `origin` for ISO
+ * 18013-5 over the Digital Credentials API, or in the VP request for OpenID4VP. ISO 18013-5
+ * *proximity* presentations (NFC/BLE/QR) carry neither, so there is no verifier nonce to fold into
+ * the session transcript; the equivalent anti-replay guarantee comes from the transport instead: a
+ * fresh ephemeral reader key per session yields a unique `SessionTranscript`, so a captured
+ * `DeviceResponse` fails device-signature verification if replayed, and the single-use,
+ * server-minted `transactionId` in the device-signed `transaction_data` binds the presentment to
+ * exactly one pending transaction.
+ *
+ * Fails closed: only a proximity [Iso18013PresentmentRecord] (both `encryptionInfo` and `origin`
+ * absent) skips the check; [OpenID4VPPresentmentRecord] and DC-API ISO always verify. Because
+ * [PresentmentRecord] is sealed and this `when` is exhaustive, adding a new subtype is a compile
+ * error here — forcing an explicit nonce-handling decision rather than silently defaulting.
+ */
+internal fun requiresNonceVerification(record: PresentmentRecord): Boolean = when (record) {
+    is Iso18013PresentmentRecord -> record.encryptionInfo != null || record.origin != null
+    is OpenID4VPPresentmentRecord -> true
+}

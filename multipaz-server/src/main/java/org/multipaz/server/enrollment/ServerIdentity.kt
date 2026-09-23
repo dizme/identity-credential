@@ -42,12 +42,13 @@ import org.multipaz.securearea.SecureArea
 import org.multipaz.securearea.SecureAreaProvider
 import org.multipaz.securearea.SecureAreaRepository
 import org.multipaz.server.common.getBaseUrl
+import org.multipaz.server.payment.PaymentProcessor
 import org.multipaz.storage.StorageTableSpec
+import org.multipaz.crypto.Crypto
 import org.multipaz.util.Logger
 import org.multipaz.util.fromGlob
 import org.multipaz.util.truncateToWholeSeconds
 import java.lang.IllegalStateException
-import kotlin.random.Random
 import kotlin.time.Clock
 import kotlin.time.Duration.Companion.days
 import kotlin.time.Duration.Companion.hours
@@ -121,7 +122,20 @@ enum class ServerIdentity(
      *
      * Multipaz issuance servers use this to access the System of Record.
      */
-    RECORDS_CLIENT("System of Records Client");
+    RECORDS_CLIENT("System of Records Client"),
+
+    /**
+     * RPC authentication to access [PaymentProcessor] interface used by a verifier
+     * that can accept payment transactions.
+     */
+    PAYMENT_PROCESSOR("Payment Processor"),
+
+    /**
+     * An identity for reader root CA.
+     */
+    READER_ROOT("Reader Root")
+
+    ;
 
     /**
      * A name for the identity that is formatted for use in JSON and in URLs (lowercase,
@@ -158,8 +172,15 @@ enum class ServerIdentity(
  * The private key alias and the certificate chain are then stored in the database, so they can
  * be used in the future.
  */
-suspend fun getServerIdentity(serverIdentity: ServerIdentity): AsymmetricKey.X509Certified =
+suspend fun getServerIdentity(serverIdentity: ServerIdentity): AsymmetricKey =
     EnrollmentImpl.getServerIdentity(serverIdentity).await()
+
+/**
+ * Same as [getServerIdentity], but the returned key is required to have associated certificate
+ * chain.
+ */
+suspend fun getServerIdentityCertified(serverIdentity: ServerIdentity): AsymmetricKey.X509Certified =
+    getServerIdentity(serverIdentity) as AsymmetricKey.X509Certified
 
 private class CachedIdentity(val signingKey: AsymmetricKey)
 
@@ -177,7 +198,7 @@ suspend fun getLocalRootCertificate(
     serverIdentity: ServerIdentity,
     createOnRequest: Boolean
 ): X509Cert {
-    val certChain = getRootIdentity(serverIdentity, createOnRequest).certChain
+    val certChain = getLocalRootIdentity(serverIdentity, createOnRequest).certChain
     check(certChain.certificates.size == 1)
     return certChain.certificates.first()
 }
@@ -199,7 +220,7 @@ suspend fun getLocalRootCertificate(
  * @throws IllegalStateException if [createOnRequest] is `false` and requested identity does not
  *      exist in either configuration or database.
  */
-private suspend fun getRootIdentity(
+private suspend fun getLocalRootIdentity(
     serverIdentity: ServerIdentity,
     createOnRequest: Boolean
 ): AsymmetricKey.X509Certified =
@@ -214,8 +235,19 @@ private suspend fun getRootIdentity(
         val secureArea = BackendEnvironment.getInterface(SecureAreaProvider::class)!!.get()
         val rootSigningKeyDataTable = BackendEnvironment.getTable(rootSigningKeyDataTableSpec)
         val rootSigningKeyData = rootSigningKeyDataTable.get(serverIdentity.name)?.let {
-            Logger.i(TAG, "Loaded $serverIdentity root key and certificate")
-            SigningKeyData.fromCbor(it.toByteArray())
+            val keyData = SigningKeyData.fromCbor(it.toByteArray())
+            val cert = keyData.certChain.certificates.firstOrNull()
+            val expectedPathLen = if (serverIdentity == ServerIdentity.KEY_ATTESTATION
+                || serverIdentity == ServerIdentity.CLOUD_SECURE_AREA_BINDING) 1 else 0
+            val actualPathLen = cert?.basicConstraints?.second
+            if (cert?.basicConstraints?.first != true || (actualPathLen != null && actualPathLen < expectedPathLen)) {
+                Logger.w(TAG, "Root certificate for $serverIdentity in database has invalid pathLenConstraint ($actualPathLen < $expectedPathLen), regenerating...")
+                rootSigningKeyDataTable.delete(serverIdentity.name)
+                null
+            } else {
+                Logger.i(TAG, "Loaded $serverIdentity root key and certificate")
+                keyData
+            }
         } ?: run {
             if (!createOnRequest) {
                 throw IllegalStateException("$serverIdentity not available")
@@ -302,12 +334,10 @@ private suspend fun createRootIdentity(
         includeAuthorityKeyIdentifierAsSubjectKeyIdentifier()
         // For IACA mandated in 18013-5 table B.1
         setKeyUsage(setOf(X509KeyUsage.CRL_SIGN, X509KeyUsage.KEY_CERT_SIGN))
-        if (serverIdentity == ServerIdentity.VERIFIER
-            || serverIdentity == ServerIdentity.KEY_ATTESTATION) {
-            // Verifier root certificate is used to issue reader certificate, which is used to
-            // issue ephemeral key certificates, so there is one intermediate certificate required.
-            // Key attestation certificate is also use in CSA to generate additional certificate
-            // in the chain.
+        if (serverIdentity == ServerIdentity.KEY_ATTESTATION
+            || serverIdentity == ServerIdentity.CLOUD_SECURE_AREA_BINDING) {
+            // Key attestation and cloud secure are binding certificates are used to
+            // to generate additional certificate in the chain.
             setBasicConstraints(true, 1)
         } else {
             // For IACA mandated in 18013-5 table B.1: critical, CA=true, pathLenConstraint=0
@@ -354,6 +384,15 @@ private suspend fun createRootIdentity(
     )
 }
 
+/**
+ * Generates a leaf certificate for a server identity, signed by the local root CA.
+ *
+ * @param serverIdentity the type of identity to certify.
+ * @param enrollmentRequest the enrollment request containing the public key and subject info.
+ * @param now the certificate validity start time (defaults to the current time).
+ * @param expiration the certificate validity end time.
+ * @return a certificate chain consisting of the new leaf certificate followed by the root.
+ */
 suspend fun generateServerIdentityLeafCertificate(
     serverIdentity: ServerIdentity,
     enrollmentRequest: Enrollment.EnrollmentRequest,
@@ -379,7 +418,7 @@ suspend fun generateServerIdentityLeafCertificate(
             put(OID.ORGANIZATIONAL_UNIT_NAME.oid, ASN1String(it))
         }
     })
-    val signingKey = getRootIdentity(serverIdentity, createOnRequest = true)
+    val signingKey = getLocalRootIdentity(serverIdentity, createOnRequest = true)
     val certifyingChain = signingKey.certChain
     val issuerCert = certifyingChain.certificates.first()
     val certificate = buildX509Cert(
@@ -387,7 +426,7 @@ suspend fun generateServerIdentityLeafCertificate(
         signingKey = signingKey,
         serialNumber = IssuedCertificateData.recordIssuedCertificate(
             serverIdentity = serverIdentity,
-            publicKey = enrollmentRequest.keyAttestation.publicKey,
+            publicKey = enrollmentRequest.keyAttestation.ecPublicKey,
             subject = subject,
             expiration = expiration
         ),
@@ -399,22 +438,22 @@ suspend fun generateServerIdentityLeafCertificate(
         includeSubjectKeyIdentifier()
         setAuthorityKeyIdentifierToCertificate(issuerCert)
         when (serverIdentity) {
-            ServerIdentity.VERIFIER ->
-                // Reader certificate is used to issue ephemeral key certificates
-                setKeyUsage(setOf(X509KeyUsage.KEY_CERT_SIGN))
-            ServerIdentity.KEY_ATTESTATION ->
+            ServerIdentity.KEY_ATTESTATION, ServerIdentity.CLOUD_SECURE_AREA_BINDING -> {
                 // CSA issues additional certificate for the certified key, allow that
                 setKeyUsage(setOf(X509KeyUsage.KEY_CERT_SIGN, X509KeyUsage.DIGITAL_SIGNATURE))
+                setBasicConstraints(true, 0)
+            }
             else ->
                 // For DS mandated in 18013-5 table B.3: critical: digital signature bits set
                 setKeyUsage(setOf(X509KeyUsage.DIGITAL_SIGNATURE))
         }
-        // For DS mandated in 18013-5 table B.3: non-critical, Email or URL
-        addExtension(
-            OID.X509_EXTENSION_ISSUER_ALT_NAME.oid,
-            false,
-            issuerCert.getExtensionValue(OID.X509_EXTENSION_ISSUER_ALT_NAME.oid)!!
-        )
+        val issuerAltName = issuerCert.getExtensionValue(OID.X509_EXTENSION_ISSUER_ALT_NAME.oid)
+        if (issuerAltName == null) {
+            Logger.w(TAG, "No alt issuer name in the root certificate for $serverIdentity")
+        } else {
+            // For DS mandated in 18013-5 table B.3: non-critical, Email or URL
+            addExtension(OID.X509_EXTENSION_ISSUER_ALT_NAME.oid, false, issuerAltName)
+        }
         // For DS defined in 18013-5 table B.3: non-critical, The ‘reasons’ and ‘cRL Issuer’
         // fields shall not be used.
         addExtension(
@@ -438,7 +477,7 @@ suspend fun generateServerIdentityLeafCertificate(
                     )
                 )
 
-            ServerIdentity.VERIFIER ->
+            ServerIdentity.VERIFIER -> {
                 // 18013-5 table B.3: non-critical, Extended Key usage
                 addExtension(
                     OID.X509_EXTENSION_EXTENDED_KEY_USAGE.oid,
@@ -452,6 +491,22 @@ suspend fun generateServerIdentityLeafCertificate(
                         )
                     )
                 )
+                val dnsName = Url(enrollmentRequest.url).host
+                addExtension(
+                    OID.X509_EXTENSION_SUBJECT_ALT_NAME.oid,
+                    false,
+                    ASN1.encode(
+                        ASN1Sequence(listOf(
+                            ASN1TaggedObject(
+                                ASN1TagClass.CONTEXT_SPECIFIC,
+                                ASN1Encoding.PRIMITIVE,
+                                2, // dNSName
+                                dnsName.encodeToByteArray()
+                            )
+                        ))
+                    )
+                )
+            }
 
             else -> {}
         }
@@ -494,7 +549,7 @@ suspend fun enrollServer(
         exceptionMap = exceptionMap,
         rpcEndpointUrl = "$url/push",
         callingServerUrl = BackendEnvironment.getBaseUrl(),
-        signingKey = getRootIdentity(ServerIdentity.ENROLLMENT, createOnRequest = true)
+        signingKey = getLocalRootIdentity(ServerIdentity.ENROLLMENT, createOnRequest = true)
     )
     val enrollment = EnrollmentStub(
         endpoint = "enrollment",
@@ -504,7 +559,7 @@ suspend fun enrollServer(
     withContext(RpcAuthClientSession()) {
         val now = Clock.System.now().truncateToWholeSeconds()
         val expiration = now + CERTIFICATE_DURATION
-        val nonce = ByteString(Random.nextBytes(15))
+        val nonce = ByteString(Crypto.secureRandom.nextBytes(15))
         val enrollmentRequest = enrollment.request(requestId, serverIdentity, nonce, expiration)
         if (enrollmentRequest.url != url) {
             throw InvalidRequestException("Unexpected url in enrollment request: '${enrollmentRequest.url}'")
@@ -531,7 +586,7 @@ suspend fun getCrl(
     serverIdentity: ServerIdentity,
     createOnRequest: Boolean
 ): X509Crl {
-    val root = getRootIdentity(serverIdentity, createOnRequest)
+    val root = getLocalRootIdentity(serverIdentity, createOnRequest)
     val now = Clock.System.now().truncateToWholeSeconds()
     val builder = X509Crl.Builder(
         signingKey = root,
@@ -555,8 +610,12 @@ suspend fun getCrl(
 suspend fun checkServerTrust(url: String, settingName: String) {
     val parsedUrl = Url(url)
     val baseUrl = BackendEnvironment.getBaseUrl()
-    if (EnrollmentImpl.LOCALHOST.matchEntire(baseUrl) == null
-        && parsedUrl.protocol != URLProtocol.HTTPS) {
+    if (EnrollmentImpl.LOCALHOST.matchEntire(baseUrl) != null) {
+        // If running locally, trust other localhost servers
+        if (EnrollmentImpl.LOCALHOST.matchEntire(url) != null) {
+            return
+        }
+    } else if (parsedUrl.protocol != URLProtocol.HTTPS) {
         throw IllegalStateException("Only allow https servers")
     }
     val host = parsedUrl.host

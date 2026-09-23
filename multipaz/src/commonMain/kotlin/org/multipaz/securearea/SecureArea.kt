@@ -15,9 +15,12 @@
  */
 package org.multipaz.securearea
 
+import kotlinx.coroutines.CancellationException
 import org.multipaz.crypto.Algorithm
 import org.multipaz.crypto.EcPublicKey
-import org.multipaz.crypto.EcSignature
+import org.multipaz.crypto.SecretKey
+import org.multipaz.crypto.SecureByteString
+import org.multipaz.crypto.Signature
 import org.multipaz.prompt.Reason
 
 /**
@@ -64,7 +67,7 @@ interface SecureArea {
     /**
      * Creates a new key.
      *
-     * This creates an Elliptic Curve key-pair where the private part of the key
+     * This creates an asymmetric key-pair where the private part of the key
      * is never exposed to the user of this interface.
      *
      * The public part of the key is available in [KeyInfo.publicKey] and specific
@@ -78,9 +81,13 @@ interface SecureArea {
      *     a new unique alias is generated automatically
      * @param createKeySettings A [CreateKeySettings] object.
      * @throws IllegalArgumentException if the underlying Secure Area Implementation
-     * does not support the requested creation settings, for example the EC curve to use.
+     * does not support the requested creation settings, for example the algorithm or curve to use.
      * @return a [KeyInfo] with information about the key.
      */
+    @Throws(
+        IllegalArgumentException::class,
+        CancellationException::class
+    )
     suspend fun createKey(alias: String?, createKeySettings: CreateKeySettings): KeyInfo
 
     /**
@@ -94,7 +101,13 @@ interface SecureArea {
      *
      * @param numKeys number of keys to create.
      * @param createKeySettings the settings for the keys to create.
+     * @throws IllegalArgumentException if the underlying Secure Area Implementation
+     * does not support the requested creation settings, for example the algorithm or curve to use.
      */
+    @Throws(
+        IllegalArgumentException::class,
+        CancellationException::class
+    )
     suspend fun batchCreateKey(numKeys: Int, createKeySettings: CreateKeySettings): BatchCreateKeyResult {
         val keyInfos = mutableListOf<KeyInfo>()
         for (n in 1..numKeys) {
@@ -111,8 +124,9 @@ interface SecureArea {
      *
      * If the key to delete doesn't exist, this is a no-op.
      *
-     * @param alias The alias of the EC key to delete.
+     * @param alias The alias of the key to delete.
      */
+    @Throws(CancellationException::class)
     suspend fun deleteKey(alias: String)
 
     /**
@@ -121,27 +135,34 @@ interface SecureArea {
      * If the key needs unlocking before use (for example user authentication
      * in any shape or form) and `keyUnlockData` isn't set or doesn't contain
      * what's needed, [KeyLockedException] is thrown. Signature algorithm must be specified at key
-     * creation time using [CreateKeySettings.signingAlgorithm].
+     * creation time using [CreateKeySettings.algorithm].
      *
-     * @param alias The alias of the EC key to sign with.
+     * @param alias The alias of the key to sign with.
      * @param dataToSign the data to sign.
-     * @param keyUnlockData data used to unlock the key, `null`, or a [KeyUnlockInteractive] to
-     *     handle user authentication automatically.
+     * @param unlockReason the reason for unlocking.
      * @return the signature.
      * @throws IllegalArgumentException if there is no key with the given alias
-     * or the key wasn't created with purpose [KeyPurpose.SIGN].
+     * or the key wasn't created with a signing algorithm.
      * @throws IllegalArgumentException if the signature algorithm isn’t compatible with the key.
      * @throws KeyLockedException if the key needs unlocking.
      * @throws KeyInvalidatedException if the key is no longer usable.
      */
+    @Throws(
+        IllegalArgumentException::class,
+        KeyLockedException::class,
+        KeyInvalidatedException::class,
+        CancellationException::class
+    )
     suspend fun sign(
         alias: String,
         dataToSign: ByteArray,
         unlockReason: Reason = Reason.Unspecified
-    ): EcSignature
+    ): Signature
 
     /**
      * Performs Key Agreement.
+     *
+     * Key agreement is only supported for EC keys.
      *
      * If the key needs unlocking before use (for example user authentication
      * in any shape or form) and `keyUnlockData` isn't set or doesn't contain
@@ -149,38 +170,103 @@ interface SecureArea {
      *
      * @param alias the alias of the EC key to use.
      * @param otherKey The public EC key from the other party
-     * @param keyUnlockData data used to unlock the key, `null`, or a [KeyUnlockInteractive] to
-     *     handle user authentication automatically.
+     * @param unlockReason the reason for unlocking.
      * @return The shared secret.
-     * @throws IllegalArgumentException if the other key isn't the same curve.
+     * @throws IllegalArgumentException if the key is not an EC key or the other key isn't the same curve.
      * @throws IllegalArgumentException if there is no key with the given alias
-     * or the key wasn't created with purpose [KeyPurpose.AGREE_KEY].
+     * or the key wasn't created with a key agreement algorithm.
      * @throws KeyLockedException if the key needs unlocking.
      * @throws KeyInvalidatedException if the key is no longer usable.
      */
+    @Throws(
+        IllegalArgumentException::class,
+        KeyLockedException::class,
+        KeyInvalidatedException::class,
+        CancellationException::class
+    )
     suspend fun keyAgreement(
         alias: String,
         otherKey: EcPublicKey,
         unlockReason: Reason = Reason.Unspecified
-    ): ByteArray
+    ): SecureByteString
+
+    /**
+     * Performs Key Decapsulation.
+     *
+     * Key decapsulation is only supported for KEM keys (such as ML-KEM).
+     *
+     * If the key needs unlocking before use (for example user authentication
+     * in any shape or form) and `keyUnlockData` isn't set or doesn't contain
+     * what's needed, [KeyLockedException] is thrown.
+     *
+     * @param alias the alias of the KEM key to use.
+     * @param ciphertext The encapsulated ciphertext from the sender.
+     * @param unlockReason the reason for unlocking.
+     * @return The decapsulated shared secret as a [SecureByteString].
+     * @throws IllegalArgumentException if the key is not a KEM key.
+     * @throws IllegalArgumentException if there is no key with the given alias
+     * or the key wasn't created with a KEM algorithm.
+     * @throws KeyLockedException if the key needs unlocking.
+     * @throws KeyInvalidatedException if the key is no longer usable.
+     * @throws UnsupportedOperationException if this Secure Area does not support key decapsulation.
+     */
+    @Throws(
+        IllegalArgumentException::class,
+        KeyLockedException::class,
+        KeyInvalidatedException::class,
+        UnsupportedOperationException::class,
+        CancellationException::class
+    )
+    suspend fun kemDecapsulate(
+        alias: String,
+        ciphertext: ByteArray,
+        unlockReason: Reason = Reason.Unspecified
+    ): SecureByteString {
+        throw UnsupportedOperationException("Key decapsulation is not supported by this SecureArea")
+    }
 
     /**
      * Gets information about a key.
      *
      * This works even on keys that are invalidated.
      *
-     * @param alias the alias of the EC key to use.
+     * @param alias the alias of the key to use.
      * @return a [KeyInfo] object.
      * @throws IllegalArgumentException if there is no key with the given alias.
      */
+    @Throws(IllegalArgumentException::class, CancellationException::class)
     suspend fun getKeyInfo(alias: String): KeyInfo
 
     /**
      * Checks whether the key has been invalidated.
      *
-     * @param alias the alias of the EC key to check for.
+     * @param alias the alias of the key to check for.
      * @return `true` if the key has been invalidated, `false` otherwise.
      * @throws IllegalArgumentException if there is no key with the given alias.
      */
+    @Throws(IllegalArgumentException::class, CancellationException::class)
     suspend fun getKeyInvalidated(alias: String): Boolean
+
+    /**
+     * Unlocks a key requiring user authentication.
+     *
+     * Returns an empty list if user authentication is not required to unlock the key.
+     * Otherwise, it performs user authentication and returns a list of [KeyUnlockData] objects
+     * which can be stored in a [KeyUnlockDataProvider] and returned as appropriate.
+     *
+     * @param alias the alias of the key to unlock.
+     * @param unlockReason the reason for unlocking.
+     * @return a list of [KeyUnlockData] objects if user authentication was required and performed, or empty list if not required.
+     * @throws IllegalArgumentException if there is no key with the given alias.
+     * @throws KeyLockedException if user authentication was canceled or failed.
+     */
+    @Throws(
+        IllegalArgumentException::class,
+        KeyLockedException::class,
+        CancellationException::class
+    )
+    suspend fun unlockKey(
+        alias: String,
+        unlockReason: Reason = Reason.Unspecified
+    ): List<KeyUnlockData>
 }

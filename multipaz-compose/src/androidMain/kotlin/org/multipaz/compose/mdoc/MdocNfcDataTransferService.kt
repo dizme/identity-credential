@@ -1,6 +1,7 @@
 package org.multipaz.compose.mdoc
 
-import android.nfc.cardemulation.HostApduService
+import android.content.Context
+import kotlinx.coroutines.CancellationException
 import android.os.Bundle
 import org.multipaz.mdoc.transport.NfcTransportMdoc
 import org.multipaz.util.Logger
@@ -11,9 +12,13 @@ import org.multipaz.util.Logger
  * Applications should subclass this and include the appropriate stanzas in its manifest
  * for binding to the mdoc NFC data transfer AID (A0000002480400).
  *
- * See the [MpzCmpWallet](https://github.com/davidz25/MpzCmpWallet) sample for an example.
+ * @property applicationContext the [Context], passed by [CombinedNfcService].
+ * @property sendResponse a function to send a response APDU via [CombinedNfcService].
  */
-open class MdocNfcDataTransferService: HostApduService() {
+open class MdocNfcDataTransferService(
+    applicationContext: Context,
+    sendResponse: (ByteArray) -> Unit
+) : NfcApduService(applicationContext, sendResponse) {
     companion object {
         private val TAG = "MdocNfcDataTransferService"
     }
@@ -35,7 +40,8 @@ open class MdocNfcDataTransferService: HostApduService() {
                 commandApdu = commandApdu,
                 sendResponse = { responseApdu -> sendResponseApdu(responseApdu) }
             )
-        } catch (e: Throwable) {
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
             Logger.e(TAG, "processCommandApdu", e)
             e.printStackTrace()
         }

@@ -1,5 +1,18 @@
 package org.multipaz.mdoc.request
 
+import kotlinx.io.bytestring.ByteString
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArrayBuilder
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.add
+import kotlinx.serialization.json.addJsonArray
+import kotlinx.serialization.json.addJsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
+import kotlinx.serialization.json.putJsonObject
 import org.multipaz.cbor.Bstr
 import org.multipaz.cbor.Cbor
 import org.multipaz.cbor.DataItem
@@ -11,19 +24,43 @@ import org.multipaz.cbor.buildCborMap
 import org.multipaz.cbor.putCborArray
 import org.multipaz.cbor.putCborMap
 import org.multipaz.cbor.toDataItem
+import org.multipaz.claim.Claim
+import org.multipaz.claim.findMatchingClaim
 import org.multipaz.cose.Cose
 import org.multipaz.cose.CoseLabel
 import org.multipaz.cose.CoseNumberLabel
 import org.multipaz.cose.CoseSign1
 import org.multipaz.cose.toCoseLabel
+import org.multipaz.credential.Credential
 import org.multipaz.crypto.Algorithm
-import org.multipaz.crypto.SignatureVerificationException
 import org.multipaz.crypto.AsymmetricKey
+import org.multipaz.crypto.EcCurve
+import org.multipaz.crypto.SignatureVerificationException
 import org.multipaz.crypto.X509CertChain
+import org.multipaz.documenttype.DocumentTypeRepository
+import org.multipaz.documenttype.ISO_18013_TRANSACTION_DATA_NAMESPACE
+import org.multipaz.mdoc.credential.MdocCredential
+import org.multipaz.mdoc.response.Iso18015ResponseException
 import org.multipaz.mdoc.util.mdocVersionCompareTo
-import org.multipaz.securearea.KeyUnlockData
-import org.multipaz.securearea.SecureArea
+import org.multipaz.mdoc.zkp.ZkSystemSpec
+import org.multipaz.openid.dcql.DcqlQuery
+import org.multipaz.presentment.CredentialMatchSourceIso18013
+import org.multipaz.presentment.CredentialQueryResult
+import org.multipaz.presentment.CredentialPresentmentSet
+import org.multipaz.presentment.CredentialPresentmentSetOption
+import org.multipaz.presentment.CredentialPresentmentSetOptionMember
+import org.multipaz.presentment.CredentialPresentmentSetOptionMemberMatch
+import org.multipaz.presentment.PresentmentSource
+import org.multipaz.presentment.TransactionData
+import org.multipaz.request.Iso18013RequesterIdentity
+import org.multipaz.request.JsonRequestedClaim
+import org.multipaz.request.MdocRequestedClaim
+import org.multipaz.request.RequestedClaim
+import org.multipaz.request.RequesterIdentity
+import org.multipaz.sdjwt.credential.KeyBoundSdJwtVcCredential
+import org.multipaz.sdjwt.credential.SdJwtVcCredential
 import org.multipaz.util.Logger
+import org.multipaz.util.toBase64Url
 import kotlin.coroutines.cancellation.CancellationException
 
 /**
@@ -80,8 +117,8 @@ data class DeviceRequest private constructor(
                 }
                 if (deviceRequestInfo != null) {
                     add(Tagged(
-                            tagNumber = Tagged.ENCODED_CBOR,
-                            taggedItem = Bstr(Cbor.encode(deviceRequestInfo.toDataItem()))
+                        tagNumber = Tagged.ENCODED_CBOR,
+                        taggedItem = Bstr(Cbor.encode(deviceRequestInfo.dataItem))
                     ))
                 } else {
                     add(Simple.NULL)
@@ -100,13 +137,15 @@ data class DeviceRequest private constructor(
                             CoseNumberLabel(Cose.COSE_LABEL_ALG)
                         ]!!.asNumber.toInt()
                     )
+                    certChain.validate()
                     Cose.coseSign1Check(
-                        publicKey = certChain.certificates.first().ecPublicKey,
+                        publicKey = certChain.certificates.first().publicKey,
                         detachedData = readerAuthenticationAllBytes,
                         signature = readerAuthAllSignature,
                         signatureAlgorithm = alg
                     )
-                } catch (e: Throwable) {
+                } catch (e: Exception) {
+                    if (e is kotlinx.coroutines.CancellationException) throw e
                     throw SignatureVerificationException(
                         message = "Error verifying ReaderAuthAll at index $readerAuthAllIndex",
                         cause = e
@@ -127,12 +166,13 @@ data class DeviceRequest private constructor(
                     val readerAuthenticationBytes =
                         Cbor.encode(Tagged(Tagged.ENCODED_CBOR, Bstr(Cbor.encode(readerAuthentication))))
                     Cose.coseSign1Check(
-                        publicKey = docRequest.readerAuthCertChain!!.certificates.first().ecPublicKey,
+                        publicKey = docRequest.readerAuthCertChain!!.certificates.first().publicKey,
                         detachedData = readerAuthenticationBytes,
                         signature = docRequest.readerAuth_,
                         signatureAlgorithm = docRequest.readerAuthAlgorithm!!
                     )
-                } catch (e: Throwable) {
+                } catch (e: Exception) {
+                    if (e is CancellationException) throw e
                     throw SignatureVerificationException(
                         message = "Error verifying reader authentication for DocRequest at index $docRequestIndex",
                         cause = e
@@ -141,6 +181,37 @@ data class DeviceRequest private constructor(
             }
             docRequest.readerAuthVerified = true
         }
+    }
+
+    /**
+     * Compares two [DeviceRequest] instances and checks if they are similar in structure,
+     * including signing structure (protected headers and unprotected header keys), ignoring
+     * session-transcript-dependent signatures and ephemeral differences (such as certificate
+     * chains when the reader uses single-use keys).
+     *
+     * This is used to check if two requests from different sessions (either 18013-5 proximity
+     * or 18013-7 Annex A or C) are the same.
+     *
+     * @param otherDeviceRequest the other [DeviceRequest] to compare against.
+     * @return `true` if the requests are structurally equivalent, `false` otherwise.
+     */
+    fun isStructurallyEquivalent(otherDeviceRequest: DeviceRequest): Boolean {
+        if (version != otherDeviceRequest.version) return false
+        if (deviceRequestInfo != otherDeviceRequest.deviceRequestInfo) return false
+        if (docRequests.size != otherDeviceRequest.docRequests.size) return false
+        for (i in docRequests.indices) {
+            if (!docRequests[i].isStructurallyEquivalent(otherDeviceRequest.docRequests[i])) {
+                return false
+            }
+        }
+        if (readerAuthAll_.size != otherDeviceRequest.readerAuthAll_.size) return false
+        for (i in readerAuthAll_.indices) {
+            val auth1 = readerAuthAll_[i]
+            val auth2 = otherDeviceRequest.readerAuthAll_[i]
+            if (auth1.protectedHeaders != auth2.protectedHeaders) return false
+            if (auth1.unprotectedHeaders.keys != auth2.unprotectedHeaders.keys) return false
+        }
+        return true
     }
 
     /**
@@ -158,7 +229,7 @@ data class DeviceRequest private constructor(
         deviceRequestInfo?.let {
             put("deviceRequestInfo", Tagged(
                 tagNumber = Tagged.ENCODED_CBOR,
-                taggedItem = Bstr(Cbor.encode(it.toDataItem()))
+                taggedItem = Bstr(Cbor.encode(it.dataItem))
             ))
         }
         if (readerAuthAll_.isNotEmpty()) {
@@ -181,12 +252,15 @@ data class DeviceRequest private constructor(
          */
         fun fromDataItem(dataItem: DataItem): DeviceRequest {
             val version = dataItem["version"].asTstr
-            val docRequests = dataItem["docRequests"].asArray.map {
-                DocRequest.fromDataItem(it)
+            val docRequests = dataItem["docRequests"].asArray.mapIndexed { index, docRequestDataItem ->
+                DocRequest.fromDataItem(
+                    dataItem = docRequestDataItem,
+                    docRequestId = index
+                )
             }
             val deviceRequestInfo = dataItem.getOrNull("deviceRequestInfo")?.let {
                 if (version.mdocVersionCompareTo("1.1") >= 0) {
-                    DeviceRequestInfo.fromDataItem(it.asTaggedEncodedCbor)
+                    DeviceRequestInfo(it.asTaggedEncodedCbor)
                 } else {
                     Logger.w(TAG, "Ignoring deviceRequestInfo field since version is less than 1.1")
                     null
@@ -217,9 +291,9 @@ data class DeviceRequest private constructor(
      * @property version the version to use or `null` to automatically determine which version to use.
      */
     class Builder(
-        val sessionTranscript: DataItem,
-        val deviceRequestInfo: DeviceRequestInfo? = null,
-        val version: String? = null,
+        private val sessionTranscript: DataItem,
+        private var deviceRequestInfo: DeviceRequestInfo? = null,
+        private val version: String? = null,
     ) {
         private val docRequests = mutableListOf<DocRequest>()
         private val readerAuthAll = mutableListOf<CoseSign1>()
@@ -235,7 +309,7 @@ data class DeviceRequest private constructor(
         fun addDocRequest(
             docType: String,
             nameSpaces: Map<String, Map<String, Boolean>>,
-            docRequestInfo: DocRequestInfo?,
+            docRequestInfo: DocRequestInfo? = null,
         ): Builder {
             check(readerAuthAll.isEmpty()) {
                 "Cannot call addDocRequest() after addReaderAuthAll()"
@@ -264,6 +338,7 @@ data class DeviceRequest private constructor(
                     docType = docType,
                     nameSpaces = nameSpaces,
                     docRequestInfo = docRequestInfo,
+                    docRequestId = docRequests.size,
                     readerAuth_ = null,
                     itemsRequestBytes = itemsRequestBytes
                 )
@@ -274,17 +349,22 @@ data class DeviceRequest private constructor(
         /**
          * Adds a document request to the builder.
          *
+         * If reader authentication is used, the certificate chain has more than one certificate,
+         * and the last certificate is a root certificate (self-signed), it is excluded.
+         *
          * @param docType the document type to request.
          * @param nameSpaces the namespaces, data elements, and intent-to-retain values.
          * @param docRequestInfo a [DocRequestInfo] with additional information or `null`.
-         * @param readerKey the key to sign with and its certificate chain
+         * @param readerKey the key to sign with and its certificate chain or `null` to not use reader auth.
+         *   If the certificate chain has more than one certificate, and the last certificate is a root
+         *   certificate (self-signed), it is excluded.
          * @return the builder.
          */
         suspend fun addDocRequest(
             docType: String,
             nameSpaces: Map<String, Map<String, Boolean>>,
-            docRequestInfo: DocRequestInfo?,
-            readerKey: AsymmetricKey.X509Compatible,
+            docRequestInfo: DocRequestInfo? = null,
+            readerKey: AsymmetricKey.X509Compatible? = null,
         ): Builder {
             check(readerAuthAll.isEmpty()) {
                 "Cannot call addDocRequest() after addReaderAuthAll()"
@@ -309,45 +389,68 @@ data class DeviceRequest private constructor(
             }
             val itemsRequestBytes = Tagged(Tagged.ENCODED_CBOR, Bstr(Cbor.encode(itemsRequest)))
 
-            val readerAuthentication = buildCborArray {
-                add("ReaderAuthentication")
-                add(sessionTranscript)
-                add(itemsRequestBytes)
+            val readerAuth = readerKey?.let { readerKey ->
+                val readerAuthentication = buildCborArray {
+                    add("ReaderAuthentication")
+                    add(sessionTranscript)
+                    add(itemsRequestBytes)
+                }
+                val readerAuthenticationBytes =
+                    Cbor.encode(Tagged(Tagged.ENCODED_CBOR, Bstr(Cbor.encode(readerAuthentication))))
+                // TODO: include x5chain in protected header for v1.1?
+                val protectedHeaders = mutableMapOf<CoseLabel, DataItem>()
+                // ISO 18013-5 requires use of non-fully-specified algorithms, e.g. -7 instead of -9
+                val signatureAlgorithm = readerKey.algorithm.curve!!.defaultSigningAlgorithm
+                protectedHeaders[Cose.COSE_LABEL_ALG.toCoseLabel] = signatureAlgorithm.coseAlgorithmIdentifier!!.toDataItem()
+                val unprotectedHeaders = mutableMapOf<CoseLabel, DataItem>()
+                readerKey.certChain?.let {
+                    unprotectedHeaders.put(Cose.COSE_LABEL_X5CHAIN.toCoseLabel, it.toCoseX5Chain(excludeRoot = true))
+                }
+                Cose.coseSign1Sign(
+                    signingKey = readerKey,
+                    message = readerAuthenticationBytes,
+                    includeMessageInPayload = false,
+                    protectedHeaders = protectedHeaders,
+                    unprotectedHeaders = unprotectedHeaders,
+                )
             }
-            val readerAuthenticationBytes =
-                Cbor.encode(Tagged(Tagged.ENCODED_CBOR, Bstr(Cbor.encode(readerAuthentication))))
-            // TODO: include x5chain in protected header for v1.1?
-            val protectedHeaders = mutableMapOf<CoseLabel, DataItem>()
-            // ISO 18013-5 requires use of non-fully-specified algorithms, e.g. -7 instead of -9
-            val signatureAlgorithm = readerKey.algorithm.curve!!.defaultSigningAlgorithm
-            protectedHeaders.put(Cose.COSE_LABEL_ALG.toCoseLabel, signatureAlgorithm.coseAlgorithmIdentifier!!.toDataItem())
-            val unprotectedHeaders = mutableMapOf<CoseLabel, DataItem>()
-            readerKey.certChain?.let {
-                unprotectedHeaders.put(Cose.COSE_LABEL_X5CHAIN.toCoseLabel, it.toDataItem())
-            }
-            val readerAuth = Cose.coseSign1Sign(
-                signingKey = readerKey,
-                message = readerAuthenticationBytes,
-                includeMessageInPayload = false,
-                protectedHeaders = protectedHeaders,
-                unprotectedHeaders = unprotectedHeaders,
-            )
             docRequests.add(DocRequest(
                 docType = docType,
                 nameSpaces = nameSpaces,
                 docRequestInfo = docRequestInfo,
+                docRequestId = docRequests.size,
                 readerAuth_ = readerAuth,
-                itemsRequestBytes = itemsRequestBytes
+                itemsRequestBytes = itemsRequestBytes,
             ))
+            return this
+        }
+
+        /**
+         * Sets [DeviceRequestInfo] to use.
+         *
+         * This overrides the [DeviceRequestInfo] set in the [DeviceRequest.Builder] constructor.
+         *
+         * @param deviceRequestInfo the [DeviceRequestInfo] to use or `null` to not use a [DeviceRequestInfo].
+         */
+        fun setDeviceRequestInfo(deviceRequestInfo: DeviceRequestInfo? = null): Builder {
+            check(readerAuthAll.isEmpty()) {
+                "Cannot call setDeviceRequestInfo() after addReaderAuthAll()"
+            }
+            this.deviceRequestInfo = deviceRequestInfo
             return this
         }
 
         /**
          * Adds a signature over the entire request.
          *
+         * If the certificate chain has more than one certificate, and the last certificate is a root
+         * certificate (self-signed), it is excluded.
+         *
          * After calling this, [addDocRequest] must not be called.
          *
-         * @param readerKey the key to sign with and its certificate chain.
+         * @param readerKey the key to sign with and its certificate chain. If the certificate chain
+         *   has more than one certificate, and the last certificate is a root certificate
+         *   (self-signed), it is excluded.
          * @return the builder.
          */
         suspend fun addReaderAuthAll(readerKey: AsymmetricKey.X509Compatible): Builder {
@@ -359,25 +462,26 @@ data class DeviceRequest private constructor(
                         add(it.itemsRequestBytes)
                     }
                 }
-                if (deviceRequestInfo != null) {
+                deviceRequestInfo?.let {
                     add(Tagged(
                         tagNumber = Tagged.ENCODED_CBOR,
-                        taggedItem = Bstr(Cbor.encode(deviceRequestInfo.toDataItem()))
+                        taggedItem = Bstr(Cbor.encode(it.dataItem))
                     ))
-                } else {
-                    add(Simple.NULL)
-                }
+                } ?: add(Simple.NULL)
             }
-            val readerAuthenticationAllBytes =
-                Cbor.encode(Tagged(Tagged.ENCODED_CBOR, Bstr(Cbor.encode(readerAuthenticationAll))))
+            val readerAuthenticationAllBytes = Cbor.encode(item = Tagged(
+                tagNumber = Tagged.ENCODED_CBOR,
+                taggedItem = Bstr(Cbor.encode(readerAuthenticationAll)
+                ))
+            )
             // TODO: include x5chain in protected header for v1.1?
             val protectedHeaders = mutableMapOf<CoseLabel, DataItem>()
             // ISO 18013-5 requires use of non-fully-specified algorithms, e.g. -7 instead of -9
             val signatureAlgorithm = readerKey.algorithm.curve!!.defaultSigningAlgorithm
-            protectedHeaders.put(Cose.COSE_LABEL_ALG.toCoseLabel, signatureAlgorithm.coseAlgorithmIdentifier!!.toDataItem())
+            protectedHeaders[Cose.COSE_LABEL_ALG.toCoseLabel] = signatureAlgorithm.coseAlgorithmIdentifier!!.toDataItem()
             val unprotectedHeaders = mutableMapOf<CoseLabel, DataItem>()
             readerKey.certChain?.let {
-                unprotectedHeaders.put(Cose.COSE_LABEL_X5CHAIN.toCoseLabel, it.toDataItem())
+                unprotectedHeaders.put(Cose.COSE_LABEL_X5CHAIN.toCoseLabel, it.toCoseX5Chain(excludeRoot = true))
             }
             val signature = Cose.coseSign1Sign(
                 signingKey = readerKey,
@@ -418,6 +522,814 @@ data class DeviceRequest private constructor(
             return deviceRequest
         }
     }
+
+    private data class DocRequestMatch(
+        val credential: Credential,
+        val claims: Map<RequestedClaim, Claim>,
+        val docRequest: DocRequest,
+        val transactionData: List<TransactionData<*>>
+    )
+
+    private data class DocRequestResult(
+        val docRequest: DocRequest,
+        val matches: List<DocRequestMatch>,
+        val failureReason: String? = null,
+    )
+
+    private data class ClaimMatchResult(
+        val match: DocRequestMatch?,
+        val failureReason: String? = null,
+    )
+
+    /**
+     * Executes the ISO 18013-5 request against a [PresentmentSource].
+     *
+     * If successful, this returns a [CredentialQueryResult] which can be used in
+     * an user interface for the user to select which combination of credentials to return, see
+     * [Consent] composable in `multipaz-compose` and [Consent] view in `multipaz-swift` for examples
+     * of how to do this.
+     *
+     * If the query cannot be satisfied, [Iso18015ResponseException] is thrown.
+     *
+     * @param presentmentSource the [PresentmentSource] to use as a source of truth for presentment.
+     * @param keyAgreementPossible if non-empty, a credential using Key Agreement may be returned provided
+     *   its private key is using one of the given curves.
+     * @param requesterIdentities additional identities of the requester used for matching reader identifiers, if any.
+     * @return the resulting [CredentialQueryResult] if the query was successful.
+     * @throws [Iso18015ResponseException] if it's not possible satisfy the query.
+     */
+    @Throws(Iso18015ResponseException::class, CancellationException::class)
+    suspend fun execute(
+        presentmentSource: PresentmentSource,
+        keyAgreementPossible: List<EcCurve> = emptyList(),
+        requesterIdentities: List<RequesterIdentity> = emptyList(),
+    ): CredentialQueryResult {
+        // First find all matches for all DocRequests
+        val docRequestResults = docRequests.map { docRequest ->
+            findMatchesForDocRequest(
+                docRequest = docRequest,
+                presentmentSource = presentmentSource,
+                keyAgreementPossible = keyAgreementPossible,
+                requesterIdentities = requesterIdentities,
+            )
+        }
+
+        val credentialSets = mutableListOf<CredentialPresentmentSet>()
+
+        if (deviceRequestInfo == null || deviceRequestInfo.useCases.isEmpty()) {
+            // If useCases isn't set, treat as 18013-5:2021 request. In this case it's undefined
+            // what it means if multiple document requests are included (return both documents
+            // or one of them?) so just consider the first one
+            if (docRequests.isEmpty()) {
+                throw Iso18015ResponseException("No DocRequests in request")
+            }
+            // As per 18013-5:2021 we only look at the first DocRequest.
+            val result = docRequestResults[0]
+            if (result.matches.isEmpty()) {
+                val detail = result.failureReason?.let { ": $it" } ?: ""
+                throw Iso18015ResponseException("No matching credentials for first DocRequest$detail")
+            }
+
+            // Create a single set, with a single option, containing matches for the first DocRequest.
+            val memberMatches = result.matches.map { match ->
+                CredentialPresentmentSetOptionMemberMatch(
+                    credential = match.credential,
+                    claims = match.claims,
+                    source = CredentialMatchSourceIso18013(docRequest = match.docRequest),
+                    transactionData = match.transactionData
+                )
+            }
+            val member = CredentialPresentmentSetOptionMember(memberMatches)
+            val option = CredentialPresentmentSetOption(listOf(member))
+            credentialSets.add(
+                CredentialPresentmentSet(
+                    optional = false,
+                    options = listOf(option)
+                )
+            )
+        } else {
+            // Handle ISO 18013-5 Second Edition UseCases (similar to DCQL credential sets)
+            for (useCase in deviceRequestInfo.useCases) {
+                val options = mutableListOf<CredentialPresentmentSetOption>()
+                var satisfied = false
+
+                // A UseCase has multiple DocumentSets (which act as options).
+                // Each DocumentSet is a list of DocRequestIDs (references to docRequests).
+                for (documentSet in useCase.documentSets) {
+                    // A DocumentSet is satisfied if ALL referenced DocRequests have at least one match.
+                    val docRequestIds = documentSet.docRequestIds
+                    val allRequestsSatisfied = docRequestIds.all { id ->
+                        id >= 0 && id < docRequestResults.size && docRequestResults[id].matches.isNotEmpty()
+                    }
+
+                    if (allRequestsSatisfied) {
+                        // Create a member for each DocRequest in this set
+                        val members = docRequestIds.map { id ->
+                            val matches = docRequestResults[id].matches.map { match ->
+                                CredentialPresentmentSetOptionMemberMatch(
+                                    credential = match.credential,
+                                    claims = match.claims,
+                                    source = CredentialMatchSourceIso18013(docRequest = match.docRequest),
+                                    transactionData = match.transactionData
+                                )
+                            }
+                            CredentialPresentmentSetOptionMember(matches)
+                        }
+                        options.add(CredentialPresentmentSetOption(members))
+                        satisfied = true
+                    }
+                }
+
+                if (!satisfied && useCase.mandatory) {
+                    val reasons = useCase.documentSets
+                        .flatMap { it.docRequestIds }
+                        .filter { id -> id >= 0 && id < docRequestResults.size }
+                        .mapNotNull { id -> docRequestResults[id].failureReason }
+                        .distinct()
+                    val detail = if (reasons.isNotEmpty()) ": ${reasons.joinToString("; ")}" else ""
+                    throw Iso18015ResponseException("No credentials match required UseCase$detail")
+                }
+
+                if (options.isNotEmpty()) {
+                    credentialSets.add(
+                        CredentialPresentmentSet(
+                            optional = !useCase.mandatory,
+                            options = options
+                        )
+                    )
+                }
+            }
+        }
+
+        return CredentialQueryResult(credentialSets)
+    }
+
+    private suspend fun findMatchesForDocRequest(
+        docRequest: DocRequest,
+        presentmentSource: PresentmentSource,
+        keyAgreementPossible: List<EcCurve>,
+        requesterIdentities: List<RequesterIdentity>,
+    ): DocRequestResult {
+        // Find credentials matching the requested DocType
+        val candidates = mutableListOf<Credential>()
+        for (documentId in presentmentSource.documentStore.listDocumentIds()) {
+            val document = presentmentSource.documentStore.lookupDocument(documentId) ?: continue
+            val docFormat = docRequest.docRequestInfo?.docFormat ?: "mso_mdoc"
+            val credential = when (docFormat) {
+                "mso_mdoc" -> {
+                    document.getCertifiedCredentials().find {
+                        it is MdocCredential && it.docType == docRequest.docType
+                    }
+                }
+                "dc+sd-jwt" -> {
+                    document.getCertifiedCredentials().find {
+                        it is KeyBoundSdJwtVcCredential && it.vct == docRequest.docType
+                    }
+                }
+                else -> null
+            }
+            if (credential != null) {
+                candidates.add(credential)
+            }
+        }
+
+        // Zero-Knowledge Proofs (via Longfellow) currently only support ECDSA, so key agreement (MACing) cannot be used.
+        val effectiveKeyAgreementPossible = if (docRequest.docRequestInfo?.zkRequest != null) {
+            emptyList()
+        } else {
+            keyAgreementPossible
+        }
+
+        val matches = mutableListOf<DocRequestMatch>()
+        val failures = mutableListOf<String>()
+        // Sort by displayName to ensure deterministic order
+        for (cred in candidates.sortedBy { it.document.displayName }) {
+            val result = findBestMatchingClaims(
+                cred = cred,
+                docRequest = docRequest,
+                presentmentSource = presentmentSource,
+                keyAgreementPossible = effectiveKeyAgreementPossible,
+                requesterIdentities = requesterIdentities,
+            )
+            if (result.match != null) {
+                matches.add(result.match)
+            } else if (result.failureReason != null) {
+                failures.add(result.failureReason)
+            }
+        }
+        val failureReason = if (matches.isEmpty() && failures.isNotEmpty()) {
+            failures.distinct().joinToString("; ")
+        } else {
+            null
+        }
+        return DocRequestResult(docRequest, matches, failureReason)
+    }
+
+    private fun remapClaim(
+        cred: Credential,
+        reqClaim: MdocRequestedClaim,
+        docRequest: DocRequest
+    ): RequestedClaim? {
+        return when (cred) {
+            is MdocCredential -> reqClaim
+            is KeyBoundSdJwtVcCredential -> {
+                if (reqClaim.namespaceName != "_") {
+                    null
+                } else {
+                    val jsonReqClaimPath = docRequest.docRequestInfo?.dataElementIdentifierMapping?.get(reqClaim.dataElementName)
+                    jsonReqClaimPath?.let {
+                        JsonRequestedClaim(
+                            vctValues = listOf(docRequest.docType),
+                            claimPath = it
+                        )
+                    }
+                }
+            }
+            else -> null
+        }
+    }
+
+    /**
+     * Checks if a credential satisfies a DocRequest, considering alternative data elements.
+     * Returns the selected Credential and the map of matching claims if satisfied, along with
+     * any failure reason if not.
+     *
+     * This logic generates all valid permutations of claims (base vs alternatives) and selects
+     * the one with the highest preference (lowest score).
+     */
+    private suspend fun findBestMatchingClaims(
+        cred: Credential,
+        docRequest: DocRequest,
+        presentmentSource: PresentmentSource,
+        keyAgreementPossible: List<EcCurve>,
+        requesterIdentities: List<RequesterIdentity>,
+    ): ClaimMatchResult {
+        val readerIdentifiers = cred.document.readerIdentifiers
+        if (readerIdentifiers.isNotEmpty()) {
+            val readerCertChains = getReaderCertChains(docRequest, requesterIdentities)
+            if (readerCertChains.isEmpty()) {
+                return ClaimMatchResult(null, null)
+            }
+            val requiredReaderIdentifiers = readerIdentifiers.toSet()
+            val matchFound = readerCertChains.any { certChain ->
+                certChain.certificates.any { cert ->
+                    cert.authorityKeyIdentifier?.let { aki ->
+                        requiredReaderIdentifiers.contains(ByteString(aki))
+                    } ?: false
+                }
+            }
+            if (!matchFound) {
+                return ClaimMatchResult(null, null)
+            }
+        }
+
+        val issuerIdentifiers = docRequest.docRequestInfo?.issuerIdentifiers
+        if (!issuerIdentifiers.isNullOrEmpty()) {
+            val certChain = when (cred) {
+                is MdocCredential -> cred.issuerCertChain
+                is SdJwtVcCredential -> cred.getIssuerCertChain()
+                else -> null
+            }
+            if (certChain == null) {
+                return ClaimMatchResult(null, null)
+            }
+            val requiredIssuerIdentifiers = issuerIdentifiers.toSet()
+            val matchFound = certChain.certificates.any { cert ->
+                cert.authorityKeyIdentifier?.let { aki ->
+                    requiredIssuerIdentifiers.contains(ByteString(aki))
+                } ?: false
+            }
+            if (!matchFound) {
+                return ClaimMatchResult(null, null)
+            }
+        }
+
+        val claimsInCredential = cred.getClaims(documentTypeRepository = presentmentSource.documentTypeRepository)
+
+        // 1. Build Logical Requirements
+        // Each requested element in 'nameSpaces' creates a requirement.
+        // A requirement has a list of Options. Option 0 is the base request.
+        // If 'alternativeDataElements' covers this element, it provides additional Options.
+        val logicalRequirements = mutableListOf<List<List<MdocRequestedClaim>>>()
+
+        docRequest.nameSpaces.forEach { (namespace, dataElements) ->
+            dataElements.forEach { (elementName, intentToRetain) ->
+                // Base Option (Index 0)
+                val baseClaim = MdocRequestedClaim(
+                    id = null, // ID not strictly needed for internal logic
+                    docType = docRequest.docType,
+                    namespaceName = namespace,
+                    dataElementName = elementName,
+                    intentToRetain = intentToRetain,
+                    values = null
+                )
+                val optionsForThisField = mutableListOf(listOf(baseClaim))
+
+                // Check for alternatives
+                val alternatives = docRequest.docRequestInfo?.alternativeDataElements?.find {
+                    it.requestedElement.namespace == namespace &&
+                            it.requestedElement.dataElement == elementName
+                }
+
+                alternatives?.alternativeElementSets?.forEach { altSet ->
+                    val altOptionClaims = altSet.map { altElement ->
+                        MdocRequestedClaim(
+                            id = null,
+                            docType = docRequest.docType,
+                            namespaceName = altElement.namespace,
+                            dataElementName = altElement.dataElement,
+                            intentToRetain = intentToRetain, // Inherit intent from base request
+                            values = null
+                        )
+                    }
+                    optionsForThisField.add(altOptionClaims)
+                }
+                logicalRequirements.add(optionsForThisField)
+            }
+        }
+
+
+        val isVersion10 = version.mdocVersionCompareTo("1.1") < 0
+        if (isVersion10) {
+            val matchingClaimValues = mutableMapOf<RequestedClaim, Claim>()
+            val requestedClaimsRemapped = mutableListOf<RequestedClaim>()
+            val selectedTransactions = mutableListOf<TransactionData<*>>()
+            val missingElements = mutableListOf<String>()
+            var transactionFailureReason: String? = null
+
+            for (fieldOptions in logicalRequirements) {
+                val baseClaim = fieldOptions[0][0]
+                if (baseClaim.namespaceName == ISO_18013_TRANSACTION_DATA_NAMESPACE) {
+                    val applicableTx = findApplicableTransaction(
+                        cred = cred,
+                        reqClaim = baseClaim,
+                        docRequest = docRequest,
+                        documentTypeRepository = presentmentSource.documentTypeRepository
+                    )
+                    if (applicableTx != null) {
+                        selectedTransactions.add(applicableTx)
+                    } else {
+                        if (docRequest.docRequestInfo?.transactionData?.data?.containsKey(baseClaim.dataElementName) == true) {
+                            if (transactionFailureReason == null) {
+                                transactionFailureReason = "transaction ${baseClaim.dataElementName} is not applicable"
+                            }
+                        }
+                        missingElements.add("'${baseClaim.dataElementName}' in namespace '${baseClaim.namespaceName}'")
+                    }
+                } else {
+                    val remapped = remapClaim(cred, baseClaim, docRequest)
+                    val foundClaim = remapped?.let { claimsInCredential.findMatchingClaim(it) }
+                    if (remapped != null && foundClaim != null) {
+                        matchingClaimValues[baseClaim] = foundClaim
+                        requestedClaimsRemapped.add(remapped)
+                    } else {
+                        missingElements.add("'${baseClaim.dataElementName}' in namespace '${baseClaim.namespaceName}'")
+                    }
+                }
+            }
+
+            if (transactionFailureReason != null) {
+                return ClaimMatchResult(null, transactionFailureReason)
+            }
+
+            // In ISO 18013-5:2021 (v1.0), the request is satisfied if at least one requested element is present
+            if ((logicalRequirements.isNotEmpty() && matchingClaimValues.isEmpty() && selectedTransactions.isEmpty()) ||
+                logicalRequirements.isEmpty()) {
+                val reason = if (missingElements.size == 1) {
+                    "missing data element ${missingElements[0]}"
+                } else {
+                    "missing data elements: ${missingElements.joinToString(", ")}"
+                }
+                return ClaimMatchResult(null, reason)
+            }
+
+            val selectedCred = presentmentSource.selectCredential(
+                document = cred.document,
+                requestedClaims = requestedClaimsRemapped,
+                keyAgreementPossible = keyAgreementPossible
+            )
+            if (selectedCred != null) {
+                return ClaimMatchResult(
+                    match = DocRequestMatch(
+                        credential = selectedCred,
+                        claims = matchingClaimValues,
+                        docRequest = docRequest,
+                        transactionData = selectedTransactions
+                    ),
+                    failureReason = null
+                )
+            }
+            return ClaimMatchResult(null, null)
+        }
+
+        // For Version 1.1+: all requested data elements (or alternatives) must be present
+        // Check if all logical requirements can be satisfied by the credential
+        val missingElements = mutableListOf<String>()
+        var transactionFailureReason: String? = null
+        for (fieldOptions in logicalRequirements) {
+            val anyOptionSatisfied = fieldOptions.any { optionClaims ->
+                optionClaims.all { reqClaim ->
+                    isClaimSatisfied(
+                        cred = cred,
+                        reqClaim = reqClaim,
+                        docRequest = docRequest,
+                        claimsInCredential = claimsInCredential,
+                        documentTypeRepository = presentmentSource.documentTypeRepository
+                    )
+                }
+            }
+            if (!anyOptionSatisfied) {
+                val baseClaim = fieldOptions[0][0]
+                if (baseClaim.namespaceName == ISO_18013_TRANSACTION_DATA_NAMESPACE) {
+                    if (transactionFailureReason == null) {
+                        transactionFailureReason = "transaction ${baseClaim.dataElementName} is not applicable"
+                    }
+                }
+                missingElements.add("'${baseClaim.dataElementName}' in namespace '${baseClaim.namespaceName}'")
+            }
+        }
+
+        if (missingElements.isNotEmpty()) {
+            val reason = if (transactionFailureReason != null && missingElements.size == 1) {
+                transactionFailureReason
+            } else if (missingElements.size == 1) {
+                "missing data element ${missingElements[0]}"
+            } else {
+                "missing data elements: ${missingElements.joinToString(", ")}"
+            }
+            return ClaimMatchResult(null, reason)
+        }
+
+        // 2. Generate Permutations (Cartesian Product of Options)
+        // Score = Sum of indices of chosen options. Lower is better.
+        // Result is Pair<List<RequestedClaim>, Score>
+        fun generatePermutations(
+            depth: Int,
+            currentClaims: List<MdocRequestedClaim>,
+            currentScore: Int
+        ): List<Pair<List<MdocRequestedClaim>, Int>> {
+            if (depth == logicalRequirements.size) {
+                return listOf(currentClaims to currentScore)
+            }
+
+            val results = mutableListOf<Pair<List<MdocRequestedClaim>, Int>>()
+            val fieldOptions = logicalRequirements[depth]
+
+            fieldOptions.forEachIndexed { optionIndex, optionClaims ->
+                val newScore = currentScore + optionIndex
+                val newClaims = currentClaims + optionClaims
+                results.addAll(generatePermutations(depth + 1, newClaims, newScore))
+            }
+            return results
+        }
+
+        // Generate and sort by preference
+        val allPermutations = generatePermutations(0, emptyList(), 0)
+            .sortedBy { it.second }
+
+        // 3. Find the first permutation that the credential satisfies
+        for ((requestedClaims, _) in allPermutations) {
+            val matchingClaimValues = mutableMapOf<RequestedClaim, Claim>()
+            val requestedClaimsRemapped = mutableListOf<RequestedClaim>()
+            val selectedTransactions = mutableListOf<TransactionData<*>>()
+            var didNotMatch = false
+
+            for (reqClaim in requestedClaims) {
+                if (reqClaim.namespaceName == ISO_18013_TRANSACTION_DATA_NAMESPACE) {
+                    val applicableTx = findApplicableTransaction(
+                        cred = cred,
+                        reqClaim = reqClaim,
+                        docRequest = docRequest,
+                        documentTypeRepository = presentmentSource.documentTypeRepository
+                    )
+                    if (applicableTx == null) {
+                        didNotMatch = true
+                        break
+                    }
+                    selectedTransactions.add(applicableTx)
+                } else {
+                    val reqClaimRemapped = remapClaim(cred, reqClaim, docRequest)
+                    if (reqClaimRemapped == null) {
+                        didNotMatch = true
+                        break
+                    }
+                    requestedClaimsRemapped.add(reqClaimRemapped)
+
+                    val foundClaim = claimsInCredential.findMatchingClaim(reqClaimRemapped)
+                    if (foundClaim != null) {
+                        matchingClaimValues[reqClaim] = foundClaim
+                    } else {
+                        didNotMatch = true
+                        break
+                    }
+                }
+            }
+
+            if (!didNotMatch) {
+                // Success! Select the credential with these specific claims
+                val selectedCred = presentmentSource.selectCredential(
+                    document = cred.document,
+                    requestedClaims = requestedClaimsRemapped,
+                    keyAgreementPossible = keyAgreementPossible
+                )
+                if (selectedCred != null) {
+                    return ClaimMatchResult(
+                        match = DocRequestMatch(
+                            credential = selectedCred,
+                            claims = matchingClaimValues,
+                            docRequest = docRequest,
+                            transactionData = selectedTransactions
+                        ),
+                        failureReason = null
+                    )
+                }
+            }
+        }
+
+        return ClaimMatchResult(null, null)
+    }
+
+    private suspend fun findApplicableTransaction(
+        cred: Credential,
+        reqClaim: MdocRequestedClaim,
+        docRequest: DocRequest,
+        documentTypeRepository: DocumentTypeRepository?,
+    ): TransactionData<*>? {
+        if (reqClaim.namespaceName != ISO_18013_TRANSACTION_DATA_NAMESPACE) {
+            return null
+        }
+        val txData = docRequest.docRequestInfo?.transactionData ?: return null
+        val serialized = txData.data[reqClaim.dataElementName] ?: return null
+        val txType = documentTypeRepository?.transactionTypes?.find {
+            it.iso18013RequestInfoIdentifier == reqClaim.dataElementName
+        } ?: return null
+        val parsed = txType.parseCbor(serialized)
+        return if (parsed.isApplicable(cred)) parsed else null
+    }
+
+    private suspend fun isClaimSatisfied(
+        cred: Credential,
+        reqClaim: MdocRequestedClaim,
+        docRequest: DocRequest,
+        claimsInCredential: List<Claim>,
+        documentTypeRepository: DocumentTypeRepository?,
+    ): Boolean {
+        return if (reqClaim.namespaceName == ISO_18013_TRANSACTION_DATA_NAMESPACE) {
+            findApplicableTransaction(cred, reqClaim, docRequest, documentTypeRepository) != null
+        } else {
+            val remapped = remapClaim(cred, reqClaim, docRequest)
+            remapped != null && claimsInCredential.findMatchingClaim(remapped) != null
+        }
+    }
+
+    private fun getReaderCertChains(
+        docRequest: DocRequest,
+        requesterIdentities: List<RequesterIdentity>
+    ): List<X509CertChain> = buildList {
+        docRequest.readerAuthCertChain?.let { add(it) }
+        readerAuthAll_.forEach { coseSign1 ->
+            val certChain = (coseSign1.protectedHeaders[Cose.COSE_LABEL_X5CHAIN.toCoseLabel]
+                ?: coseSign1.unprotectedHeaders[Cose.COSE_LABEL_X5CHAIN.toCoseLabel])?.asX509CertChain
+            if (certChain != null) {
+                add(certChain)
+            }
+        }
+        requesterIdentities.forEach { add(it.certChain) }
+    }
+
+    /**
+     * Get the list of identities used to sign this request, one for each signature.
+     *
+     * NB: [RequesterIdentity.clientId] is not used for ISO 18013 protocols and is set to null.
+     *
+     * @return list of [RequesterIdentity] objects representing the request signatures.
+     */
+    fun getRequesterIdentities(): List<RequesterIdentity> {
+        if (readerAuthAll.isNotEmpty()) {
+            return readerAuthAll.map {
+                Iso18013RequesterIdentity(
+                    certChain = (it.protectedHeaders[Cose.COSE_LABEL_X5CHAIN.toCoseLabel]
+                        ?: it.unprotectedHeaders[Cose.COSE_LABEL_X5CHAIN.toCoseLabel]
+                    )!!.asX509CertChain
+                )
+            }
+        }
+        for (docRequest in docRequests) {
+            docRequest.readerAuth?.let {
+                return listOf(Iso18013RequesterIdentity(
+                    certChain = (it.protectedHeaders[Cose.COSE_LABEL_X5CHAIN.toCoseLabel]
+                    ?: it.unprotectedHeaders[Cose.COSE_LABEL_X5CHAIN.toCoseLabel]
+                        )!!.asX509CertChain
+                ))
+            }
+        }
+        return emptyList()
+    }
+
+    /**
+     * Converts the credential query part of a ISO/IEC 18013-5 DeviceRequest to a DCQL query.
+     *
+     * @return a [JsonObject] with the DCQL query.
+     */
+    fun toDcql(): JsonObject = buildJsonObject {
+        putJsonArray("credentials") {
+            docRequests.forEachIndexed { index, docRequest ->
+                addDcqlCredentialRequest(docRequest, "cred${index}")
+            }
+        }
+        if (deviceRequestInfo?.useCases?.isNotEmpty() == true) {
+            putJsonArray("credential_sets") {
+                deviceRequestInfo.useCases.forEach { useCase ->
+                    addJsonObject {
+                        put("required", useCase.mandatory)
+                        putJsonArray("options") {
+                            useCase.documentSets.forEach { documentSet ->
+                                addJsonArray {
+                                    documentSet.docRequestIds.forEach { docRequestId ->
+                                        add("cred${docRequestId}")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun JsonArrayBuilder.addDcqlCredentialRequest(docRequest: DocRequest, credId: String) {
+    addJsonObject {
+        put("id", credId)
+        val docFormat = docRequest.docRequestInfo?.docFormat
+        if (docFormat == null || docFormat == "mso_mdoc") {
+            if (docRequest.docRequestInfo?.zkRequest != null) {
+                put("format", "mso_mdoc_zk")
+            } else {
+                put("format", "mso_mdoc")
+            }
+        } else if (docFormat == "dc+sd-jwt") {
+            put("format", "dc+sd-jwt")
+        }
+        when (docFormat) {
+            null, "mso_mdoc", "mso_mdoc_zk" -> {
+                putJsonObject("meta") {
+                    put("doctype_value", docRequest.docType)
+                    if (docRequest.docRequestInfo?.zkRequest != null) {
+                        putJsonArray("zk_system_type") {
+                            docRequest.docRequestInfo.zkRequest.systemSpecs.forEach { spec ->
+                                addJsonObject {
+                                    put("system", spec.system)
+                                    put("id", spec.id)
+                                    spec.params.forEach { param ->
+                                        put(param.key, param.value.toJson())
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            "dc+sd-jwt" -> {
+                putJsonObject("meta") {
+                    putJsonArray("vct_values") {
+                        add(docRequest.docType)
+                    }
+                }
+            }
+            else -> {
+                throw IllegalStateException("No support for docFormat $docFormat")
+            }
+        }
+
+        if (!docRequest.docRequestInfo?.issuerIdentifiers.isNullOrEmpty()) {
+            putJsonArray("trusted_authorities") {
+                addJsonObject {
+                    put("type", "aki")
+                    putJsonArray("values") {
+                        docRequest.docRequestInfo.issuerIdentifiers.forEach { aki ->
+                            add(aki.toByteArray().toBase64Url())
+                        }
+                    }
+                }
+            }
+        }
+
+        // Registry: Track unique claims to ensure every claim (base or alternative)
+        // - gets a unique ID and is only listed once in the 'claims' array.
+        // - Map Key: "namespace/elementName" -> Map Value: Claim ID (e.g. "claim0")
+        val claimIdRegistry = mutableMapOf<String, String>()
+        val claimDefinitions = mutableListOf<JsonObject>()
+        var claimCounter = 0
+
+        // Helper to register a claim if strictly new
+        fun registerClaim(namespace: String, element: String, intentToRetain: Boolean): String {
+            val key = "$namespace/$element"
+            return claimIdRegistry.getOrPut(key) {
+                val id = "claim${claimCounter++}"
+                claimDefinitions.add(buildJsonObject {
+                    put("id", id)
+                    if (namespace == "_") {
+                        val path = docRequest.docRequestInfo?.dataElementIdentifierMapping[element]
+                            ?: throw IllegalStateException("No value in dataElementIdentifierMapping for $element")
+                        put("path", path)
+                        // TODO: what about intent_to_retain?
+                    } else {
+                        putJsonArray("path") {
+                            add(namespace)
+                            add(element)
+                        }
+                        put("intent_to_retain", intentToRetain)
+                    }
+                })
+                id
+            }
+        }
+
+        // Build Logical Requirements:
+        // - A list where each item represents a required field.
+        // - Each item contains a list of Options (ordered by preference).
+        // - Each Option contains a list of Claim IDs (since an alternative can involve multiple claims).
+        val logicalRequirements = mutableListOf<List<List<String>>>()
+
+        docRequest.nameSpaces.forEach { (namespace, dataElements) ->
+            if (namespace == ISO_18013_TRANSACTION_DATA_NAMESPACE) {
+                return@forEach
+            }
+            dataElements.forEach { (elementName, intentToRetain) ->
+
+                // Start with Option 0: The base requested element
+                val baseClaimId = registerClaim(namespace, elementName, intentToRetain)
+                val optionsForThisField = mutableListOf(listOf(baseClaimId))
+
+                // Check for alternatives
+                val alternatives = docRequest.docRequestInfo?.alternativeDataElements?.find {
+                    it.requestedElement.namespace == namespace &&
+                            it.requestedElement.dataElement == elementName
+                }
+
+                // If alternatives exist, add them as subsequent options (Option 1, Option 2...)
+                alternatives?.alternativeElementSets?.forEach { altSet ->
+                    val altOptionClaimIds = altSet.mapNotNull { altElement ->
+                        if (altElement.namespace == ISO_18013_TRANSACTION_DATA_NAMESPACE) {
+                            null
+                        } else {
+                            // Register alternative claims using the intent of the original requirement
+                            registerClaim(altElement.namespace, altElement.dataElement, intentToRetain)
+                        }
+                    }
+                    if (altOptionClaimIds.isNotEmpty()) {
+                        optionsForThisField.add(altOptionClaimIds)
+                    }
+                }
+
+                logicalRequirements.add(optionsForThisField)
+            }
+        }
+
+        putJsonArray("claims") {
+            claimDefinitions.forEach { add(it) }
+        }
+
+        // Only necessary if we actually have alternatives (options > 1 for any requirement)
+        if (logicalRequirements.any { it.size > 1 }) {
+            putJsonArray("claim_sets") {
+
+                // Helper to generate Cartesian product of all options
+                // Returns pairs of (List<ClaimID>, Score), where Score = sum of option indices.
+                // Lower score = higher preference (closer to the original request).
+                fun generatePermutations(
+                    depth: Int,
+                    currentClaims: List<String>,
+                    currentScore: Int
+                ): List<Pair<List<String>, Int>> {
+                    if (depth == logicalRequirements.size) {
+                        return listOf(currentClaims to currentScore)
+                    }
+
+                    val results = mutableListOf<Pair<List<String>, Int>>()
+                    val fieldOptions = logicalRequirements[depth]
+
+                    fieldOptions.forEachIndexed { optionIndex, optionClaimIds ->
+                        val newScore = currentScore + optionIndex
+                        val newClaims = currentClaims + optionClaimIds
+                        results.addAll(generatePermutations(depth + 1, newClaims, newScore))
+                    }
+                    return results
+                }
+
+                // Generate and sort by score (ascending) to honor Verifier preference
+                val allSets = generatePermutations(0, emptyList(), 0)
+                    .sortedBy { it.second }
+
+                allSets.forEach { (claimSet, _) ->
+                    addJsonArray {
+                        claimSet.forEach { add(it) }
+                    }
+                }
+            }
+        }
+    }
 }
 
 /**
@@ -442,4 +1354,340 @@ inline fun buildDeviceRequest(
     )
     builder.builderAction()
     return builder.build()
+}
+
+/**
+ * Builds a [DeviceRequest] from a [DcqlQuery].
+ *
+ * This performs the inverse transformation of [DeviceRequest.toDcql].
+ *
+ * @param sessionTranscript the `SessionTranscript` CBOR.
+ * @param dcql the DCQL query to convert.
+ * @param otherInfo other request info to go into [DeviceRequestInfo].
+ * @param transactions transaction data to add to [DocRequestInfo].
+ * @param defaultIntentToRetain the intent to retain to use when requesting transactions in ISO 18013-5 namespace.
+ * @param version the version to use or `null` to automatically determine which version to use.
+ * @param builderAction optional builder action to configure the request (e.g. add reader authentication).
+ * @return the configured [DeviceRequest].
+ * @throws IllegalArgumentException if [dcql] contains features not supported by [DeviceRequest], for
+ *   example a request for credentials that aren't ISO mdocs.
+ */
+@Throws(IllegalArgumentException::class, CancellationException::class)
+inline fun buildDeviceRequestFromDcql(
+    sessionTranscript: DataItem,
+    dcql: JsonObject,
+    otherInfo: Map<String, DataItem> = emptyMap(),
+    transactions: Map<String, TransactionsInfo> = emptyMap(),
+    defaultIntentToRetain: Boolean = false,
+    version: String? = null,
+    builderAction: DeviceRequest.Builder.() -> Unit = {}
+): DeviceRequest {
+    val dcqlQuery = DcqlQuery.fromJson(dcql)
+    val isVersion10 = version != null && version.mdocVersionCompareTo("1.1") < 0
+    val deviceRequestInfo = if (isVersion10) null else deviceRequestCalcDeviceRequestInfo(dcqlQuery, otherInfo)
+    val builder = DeviceRequest.Builder(
+        sessionTranscript = sessionTranscript,
+        deviceRequestInfo = deviceRequestInfo,
+        version = version,
+    )
+    deviceRequestAddQueries(dcqlQuery, transactions, builder, defaultIntentToRetain)
+    builder.builderAction()
+    return builder.build()
+}
+
+/**
+ * Builds a [DeviceRequest] from a [DcqlQuery].
+ *
+ * This performs the inverse transformation of [DeviceRequest.toDcql].
+ *
+ * @param sessionTranscript the `SessionTranscript` CBOR.
+ * @param dcqlString a string with the DCQL query to convert.
+ * @param otherInfo other request info to go into [DeviceRequestInfo].
+ * @param transactions transaction data to add to [DocRequestInfo].
+ * @param defaultIntentToRetain the intent to retain to use when requesting transactions in ISO 18013-5 namespace.
+ * @param version the version to use or `null` to automatically determine which version to use.
+ * @param builderAction optional builder action to configure the request (e.g. add reader authentication).
+ * @return the configured [DeviceRequest].
+ * @throws IllegalArgumentException if [dcqlString] contains features not supported by [DeviceRequest], for
+ *   example a request for credentials that aren't ISO mdocs.
+ */
+@Throws(IllegalArgumentException::class, CancellationException::class)
+inline fun buildDeviceRequestFromDcql(
+    sessionTranscript: DataItem,
+    dcqlString: String,
+    otherInfo: Map<String, DataItem> = emptyMap(),
+    transactions: Map<String, TransactionsInfo> = emptyMap(),
+    defaultIntentToRetain: Boolean = false,
+    version: String? = null,
+    builderAction: DeviceRequest.Builder.() -> Unit = {}
+): DeviceRequest {
+    return buildDeviceRequestFromDcql(
+        sessionTranscript = sessionTranscript,
+        dcql = Json.decodeFromString<JsonObject>(dcqlString),
+        otherInfo = otherInfo,
+        transactions = transactions,
+        defaultIntentToRetain = defaultIntentToRetain,
+        version = version,
+        builderAction = builderAction
+    )
+}
+
+@PublishedApi
+internal fun deviceRequestCalcDeviceRequestInfo(
+    dcqlQuery: DcqlQuery,
+    otherInfo: Map<String, DataItem>
+): DeviceRequestInfo? {
+    val useCases = dcqlQuery.credentialSetQueries.map { csq ->
+        UseCase(
+            mandatory = csq.required,
+            documentSets = csq.options.map { option ->
+                // Map the credential IDs back to indices in the docRequests list.
+                // We assume the order of credentialQueries matches the docRequests order.
+                // The IDs in DCQL are arbitrary strings, but our generator uses "credN".
+                // We'll rely on the index in the list.
+                val indices = option.credentialIds.mapNotNull { credId ->
+                    dcqlQuery.credentialQueries.indexOfFirst { it.id == credId }.takeIf { it >= 0 }
+                }
+                DocumentSet(indices)
+            },
+            purposeHints = emptyMap() // DCQL doesn't currently carry purpose hints structure directly
+        )
+    }
+
+    return if (useCases.isNotEmpty()) {
+        DeviceRequestInfo.fromValues(
+            useCases = useCases,
+            otherInfo = otherInfo
+        )
+    } else {
+        // TODO: UseCases is optional even in a 1.1 request but iOS 26 currently assumes it's set.
+        //   This has been reported to Apple so this can be removed once their bug-fix is out.
+        DeviceRequestInfo.fromValues(
+            useCases = listOf(
+                UseCase(
+                    mandatory = true,
+                    documentSets = listOf(
+                        DocumentSet(
+                            docRequestIds = listOf(0)
+                        )
+                    ),
+                    purposeHints = emptyMap()
+                )
+            ),
+            otherInfo = otherInfo
+        )
+    }
+}
+
+@PublishedApi
+internal fun deviceRequestAddQueries(
+    dcqlQuery: DcqlQuery,
+    transactions: Map<String, TransactionsInfo>,
+    builder: DeviceRequest.Builder,
+    defaultIntentToRetain: Boolean = false
+) {
+    for (credQuery in dcqlQuery.credentialQueries) {
+        if (!(credQuery.format == "mso_mdoc" || credQuery.format == "mso_mdoc_zk" ||
+                credQuery.format == "dc+sd-jwt")) {
+            throw IllegalArgumentException("Credential format ${credQuery.format} is not supported")
+        }
+
+        val docType = when (credQuery.format) {
+            "mso_mdoc", "mso_mdoc_zk" -> {
+                credQuery.mdocDocType
+                    ?: throw IllegalArgumentException("Missing docType in DCQL query ${credQuery.id}")
+            }
+            "dc+sd-jwt" -> {
+                credQuery.vctValues?.get(0)
+                    ?: throw IllegalArgumentException("Missing vctValues in DCQL query ${credQuery.id}")
+            }
+            else -> throw IllegalStateException("Unexpected format")
+        }
+
+        // Reconstruct Namespaces and Base Claims
+        // In our generation logic, the "base" claim is the one used in the first claim set
+        // (or just the claim itself if no sets). To be safe, we collect all claims that appear
+        // in *any* claim set (or the claims list) and organize them by namespace.
+        // However, strictly speaking, ISO 18013-5 structure requires a 'primary' request
+        // and then alternatives. We'll pick the first claim definition for a given (ns, element)
+        // as the primary.
+
+        val nameSpaces = mutableMapOf<String, MutableMap<String, Boolean>>()
+        val dataElementIdentifierMapping = mutableMapOf<String, kotlinx.serialization.json.JsonArray>()
+
+        // Identify which claims are 'base' (primary).
+        // If claim_sets exists, the first set usually represents the primary preference.
+        // If not, all claims are primary.
+        val primaryClaimIds = if (credQuery.claimSets.isNotEmpty()) {
+            credQuery.claimSets.first().claimIdentifiers.toSet()
+        } else {
+            // FIX: If no claim_sets, use all claim IDs from the 'claims' list.
+            // Some claims might not have an ID if they were parsed from a simple request,
+            // so we might need to handle claims without IDs if your parser allows them.
+            // Assuming your parser generates IDs or we iterate the list directly.
+            credQuery.claims.mapNotNull { it.id }.toSet()
+        }
+
+        credQuery.claims.forEach { requestedClaim ->
+            // We include it in the main request if it's in the primary set
+            // OR if there are no sets (meaning primaryClaimIds includes everything).
+            if (primaryClaimIds.isEmpty() || primaryClaimIds.contains(requestedClaim.id)) {
+                when (requestedClaim) {
+                    is MdocRequestedClaim -> {
+                        val nsMap = nameSpaces.getOrPut(requestedClaim.namespaceName) { mutableMapOf() }
+                        nsMap[requestedClaim.dataElementName] = requestedClaim.intentToRetain
+                    }
+                    is JsonRequestedClaim -> {
+                        val nsMap = nameSpaces.getOrPut("_") { mutableMapOf() }
+                        val elementId = "sdjwtkb_" + requestedClaim.claimPath.joinToString("_") {
+                            it.jsonPrimitive.content
+                        }
+                        nsMap[elementId] = false
+                        dataElementIdentifierMapping[elementId] = requestedClaim.claimPath
+                    }
+                }
+            }
+        }
+
+        // 2b. Reconstruct AlternativeDataElements from claim_sets
+        val alternativeDataElements = mutableListOf<AlternativeDataElementSet>()
+
+        if (credQuery.claimSets.size > 1) {
+            // This is complex because DCQL flattens the structure.
+            // A claim set is a list of ALL claims for the credential.
+            // ISO alternatives are per-element.
+
+            // We need to find the "diff" between the primary set (Set 0) and subsequent sets.
+            // Example:
+            // Set 0: [FamilyName, AgeOver18]
+            // Set 1: [FamilyName, BirthDate]
+            // Diff: AgeOver18 replaced by BirthDate.
+
+            val primarySet = credQuery.claimSets[0].claimIdentifiers
+
+            // We iterate over the primary claims to see if they are replaced in other sets.
+            primarySet.forEach { primaryClaimId ->
+                val primaryClaim = credQuery.claimIdToClaim[primaryClaimId]
+                    ?: return@forEach
+
+                val altSetsForThisElement = mutableListOf<List<ElementReference>>()
+
+                // Check other sets
+                for (i in 1 until credQuery.claimSets.size) {
+                    val currentSetIds = credQuery.claimSets[i].claimIdentifiers
+
+                    // If this set contains the primary claim, it's not an alternative for it.
+                    if (currentSetIds.contains(primaryClaimId)) continue
+
+                    // If it doesn't contain the primary claim, it must contain a replacement
+                    // (or it's a completely different disjoint set, which ISO doesn't strictly support per-field).
+                    // We identify the replacement by finding which claims in this set are NOT in the primary set.
+                    // NOTE: This assumes strict 1-to-1 or 1-to-many replacement logic aligns with ISO.
+
+                    val newClaims = currentSetIds.filter { !primarySet.contains(it) }
+
+                    // Construct the ISO alternative element set
+                    if (newClaims.isNotEmpty()) {
+                        val altRefs = newClaims.mapNotNull { id ->
+                            val claim = credQuery.claimIdToClaim[id]
+                            when (claim) {
+                                is MdocRequestedClaim -> {
+                                    ElementReference(claim.namespaceName, claim.dataElementName)
+                                }
+                                is JsonRequestedClaim -> {
+                                    val elementId = claim.claimPath.joinToString(".") {
+                                        it.jsonPrimitive.content
+                                    }
+                                    dataElementIdentifierMapping[elementId] = claim.claimPath
+                                    ElementReference("_", elementId)
+                                }
+                                else -> null
+                            }
+                        }
+                        if (altRefs.isNotEmpty()) {
+                            altSetsForThisElement.add(altRefs)
+                        }
+                    }
+                }
+
+                if (altSetsForThisElement.isNotEmpty()) {
+                    val requestedElement = when (primaryClaim) {
+                        is MdocRequestedClaim -> {
+                            ElementReference(
+                                primaryClaim.namespaceName,
+                                primaryClaim.dataElementName
+                            )
+                        }
+                        is JsonRequestedClaim -> {
+                            val elementId = primaryClaim.claimPath.joinToString(".") {
+                                it.jsonPrimitive.content
+                            }
+                            dataElementIdentifierMapping[elementId] = primaryClaim.claimPath
+                            ElementReference("_", elementId)
+                        }
+                    }
+                    alternativeDataElements.add(
+                        AlternativeDataElementSet(
+                            requestedElement = requestedElement,
+                            alternativeElementSets = altSetsForThisElement
+                        )
+                    )
+                }
+            }
+        }
+
+        val zkRequest = if (credQuery.format == "mso_mdoc_zk") {
+            val zkSpecs = mutableListOf<ZkSystemSpec>()
+            for (entry in credQuery.meta["zk_system_type"]!!.jsonArray) {
+                entry as JsonObject
+                val system = entry["system"]!!.jsonPrimitive.content
+                val id = entry["id"]!!.jsonPrimitive.content
+                val item = ZkSystemSpec(id, system)
+                for (param in entry) {
+                    if (param.key == "system" || param.key == "id") {
+                        continue
+                    }
+                    item.addParam(param.key, param.value)
+                }
+                zkSpecs.add(item)
+            }
+            ZkRequest(
+                systemSpecs = zkSpecs,
+                zkRequired = true
+            )
+        } else {
+            null
+        }
+
+        val docTransactions = transactions[credQuery.id]
+        if (docTransactions != null) {
+            val txElements = nameSpaces.getOrPut(ISO_18013_TRANSACTION_DATA_NAMESPACE) { mutableMapOf() }
+            for (typeId in docTransactions.data.keys) {
+                if (!txElements.containsKey(typeId)) {
+                    txElements[typeId] = defaultIntentToRetain
+                }
+            }
+        }
+        val docRequestInfo = if (alternativeDataElements.isNotEmpty()
+            || zkRequest != null || docTransactions != null || credQuery.format == "dc+sd-jwt"
+            || dataElementIdentifierMapping.isNotEmpty()
+            || credQuery.issuerIdentifiers.isNotEmpty()) {
+            DocRequestInfo(
+                alternativeDataElements = alternativeDataElements,
+                zkRequest = zkRequest,
+                docFormat = if (credQuery.format == "dc+sd-jwt") "dc+sd-jwt" else null,
+                dataElementIdentifierMapping = dataElementIdentifierMapping,
+                transactionData = docTransactions,
+                issuerIdentifiers = credQuery.issuerIdentifiers
+            )
+        } else {
+            null
+        }
+
+        builder.addDocRequest(
+            docType = docType,
+            nameSpaces = nameSpaces,
+            docRequestInfo = docRequestInfo
+        )
+    }
 }

@@ -6,10 +6,13 @@ plugins {
     alias(libs.plugins.kotlinMultiplatform)
     alias(libs.plugins.androidLibrary)
     id("maven-publish")
+    id("org.jetbrains.dokka") version "2.1.0"
 }
 
 val projectVersionCode: Int by rootProject.extra
 val projectVersionName: String by rootProject.extra
+
+val disableWebTargets = project.properties["disable.web.targets"]?.toString()?.toBoolean() ?: false
 
 kotlin {
     jvmToolchain(17)
@@ -28,17 +31,19 @@ kotlin {
         publishLibraryVariants("release")
     }
 
-    js {
-        outputModuleName = "multipaz-dcapi"
-        browser {
+    if (!disableWebTargets) {
+        js {
+            outputModuleName = "multipaz-dcapi"
+            browser {
+            }
+            binaries.executable()
         }
-        binaries.executable()
-    }
 
-    wasmJs {
-        browser {
+        wasmJs {
+            browser {
+            }
+            binaries.executable()
         }
-        binaries.executable()
     }
 
     listOf(
@@ -55,6 +60,8 @@ kotlin {
         it.binaries.all {
             linkerOpts(
                 "-L/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/${platform}/",
+                "-Wl,-rpath,/usr/lib/swift",
+                "-lsqlite3"
             )
         }
     }
@@ -82,12 +89,12 @@ kotlin {
         }
 
         val commonTest by getting {
-            kotlin.srcDir("build/generated/ksp/metadata/commonTest/kotlin")
             dependencies {
                 implementation(libs.kotlin.test)
                 implementation(libs.kotlinx.coroutines.test)
                 implementation(libs.ktor.client.mock)
                 implementation(project(":multipaz-doctypes"))
+                implementation(project(":multipaz-utopia"))
             }
         }
 
@@ -145,16 +152,32 @@ version = projectVersionName
 publishing {
     repositories {
         maven {
-            url = uri("${rootProject.rootDir}/repo")
+            url = uri(rootProject.layout.buildDirectory.dir("staging-repo"))
         }
     }
     publications.withType(MavenPublication::class) {
         pom {
+            name.set("multipaz-dcapi")
+            description.set("Multipaz SDK DC API module")
+            url.set("https://github.com/openwallet-foundation/multipaz")
             licenses {
                 license {
-                    name = "Apache 2.0"
-                    url = "https://opensource.org/licenses/Apache-2.0"
+                    name.set("Apache-2.0")
+                    url.set("https://opensource.org/licenses/Apache-2.0")
+                    distribution.set("repo")
                 }
+            }
+            developers {
+                developer {
+                    id.set("zeuthen")
+                    name.set("David Zeuthen")
+                    email.set("zeuthen@google.com")
+                }
+            }
+            scm {
+                connection.set("scm:git:git://github.com/openwallet-foundation/multipaz.git")
+                developerConnection.set("scm:git:ssh://github.com/openwallet-foundation/multipaz.git")
+                url.set("https://github.com/openwallet-foundation/multipaz")
             }
         }
     }

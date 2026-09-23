@@ -7,6 +7,7 @@ import DeviceCheck
 import CoreImage
 import CommonCrypto
 import IdentityDocumentServices
+import AuthenticationServices
 
 @objc public class SwiftBridge : NSObject {
     @objc(sha1:) public class func sha1(data: Data) -> Data {
@@ -88,6 +89,52 @@ import IdentityDocumentServices
             return nil
         }
     }
+
+    @objc(aesCbcEncrypt: : :) public class func aesCbcEncrypt(key: Data, plainText: Data, iv: Data) -> Data {
+        var outLength: Int = 0
+        let bufferSize = plainText.count + kCCBlockSizeAES128
+        var buffer = [UInt8](repeating: 0, count: bufferSize)
+        key.withUnsafeBytes { keyBytes in
+            iv.withUnsafeBytes { ivBytes in
+                plainText.withUnsafeBytes { dataBytes in
+                    CCCrypt(CCOperation(kCCEncrypt),
+                            CCAlgorithm(kCCAlgorithmAES),
+                            CCOptions(kCCOptionPKCS7Padding),
+                            keyBytes.baseAddress, key.count,
+                            ivBytes.baseAddress,
+                            dataBytes.baseAddress, plainText.count,
+                            &buffer, bufferSize,
+                            &outLength)
+                }
+            }
+        }
+        return Data(buffer.prefix(outLength))
+    }
+
+    @objc(aesCbcDecrypt: : :) public class func aesCbcDecrypt(key: Data, cipherText: Data, iv: Data) -> Data? {
+        var outLength: Int = 0
+        let bufferSize = cipherText.count
+        var buffer = [UInt8](repeating: 0, count: bufferSize)
+        var status: CCCryptorStatus = CCCryptorStatus(kCCSuccess)
+        key.withUnsafeBytes { keyBytes in
+            iv.withUnsafeBytes { ivBytes in
+                cipherText.withUnsafeBytes { dataBytes in
+                    status = CCCrypt(CCOperation(kCCDecrypt),
+                                     CCAlgorithm(kCCAlgorithmAES),
+                                     CCOptions(kCCOptionPKCS7Padding),
+                                     keyBytes.baseAddress, key.count,
+                                     ivBytes.baseAddress,
+                                     dataBytes.baseAddress, cipherText.count,
+                                     &buffer, bufferSize,
+                                     &outLength)
+                }
+            }
+        }
+        guard status == kCCSuccess, outLength < cipherText.count, outLength >= cipherText.count - kCCBlockSizeAES128 else {
+            return nil
+        }
+        return Data(buffer.prefix(outLength))
+    }
     
     static let CURVE_P256 = 1
     static let CURVE_P384 = 2
@@ -114,10 +161,7 @@ import IdentityDocumentServices
     static let ACCESS_CONTROL_BIOMETRY_ANY = 4
     static let ACCESS_CONTROL_USER_PRESENCE = 8
     
-    @objc(secureEnclaveCreateEcPrivateKey: :) public class func secureEnclaveCreateEcPrivateKey(isForKeyAgreement: Bool, accessControlCreateFlags: Int) -> Array<Data> {
-        
-        let authContext = LAContext()
-        
+    private class func createAccessControl(accessControlCreateFlags: Int) -> SecAccessControl? {
         var flags = SecAccessControlCreateFlags([.privateKeyUsage])
         if (accessControlCreateFlags & ACCESS_CONTROL_DEVICE_PASSCODE != 0) {
             flags.insert(.devicePasscode)
@@ -130,12 +174,17 @@ import IdentityDocumentServices
         }
         
         var error: Unmanaged<CFError>?
-        guard let accessControl = SecAccessControlCreateWithFlags(
+        return SecAccessControlCreateWithFlags(
             kCFAllocatorDefault,
             kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
             flags,
             &error
-        ) else {
+        )
+    }
+
+    @objc(secureEnclaveCreateEcPrivateKey: :) public class func secureEnclaveCreateEcPrivateKey(isForKeyAgreement: Bool, accessControlCreateFlags: Int) -> Array<Data> {
+        let authContext = LAContext()
+        guard let accessControl = createAccessControl(accessControlCreateFlags: accessControlCreateFlags) else {
             return []
         }
         
@@ -185,6 +234,119 @@ import IdentityDocumentServices
         } catch {
             return nil
         }
+    }
+
+    @objc(secureEnclaveCreateMlDsaPrivateKey: :) public class func secureEnclaveCreateMlDsaPrivateKey(
+        algorithm: String, accessControlCreateFlags: Int) -> Array<Data> {
+        if #available(iOS 26.0, macOS 26.0, *) {
+            let authContext = LAContext()
+            guard let accessControl = createAccessControl(accessControlCreateFlags: accessControlCreateFlags) else {
+                return []
+            }
+            if algorithm == "ML-DSA-65" {
+                guard let key = try? SecureEnclave.MLDSA65.PrivateKey(
+                    accessControl: accessControl,
+                    authenticationContext: authContext
+                ) else {
+                    return []
+                }
+                return [key.dataRepresentation, key.publicKey.rawRepresentation]
+            } else if algorithm == "ML-DSA-87" {
+                guard let key = try? SecureEnclave.MLDSA87.PrivateKey(
+                    accessControl: accessControl,
+                    authenticationContext: authContext
+                ) else {
+                    return []
+                }
+                return [key.dataRepresentation, key.publicKey.rawRepresentation]
+            }
+        }
+        return []
+    }
+
+    @objc(secureEnclaveMlDsaSign: : : :) public class func secureEnclaveMlDsaSign(
+        algorithm: String, keyBlob: Data, dataToSign: Data, authContext: LAContext?) -> Data? {
+        if #available(iOS 26.0, macOS 26.0, *) {
+            if algorithm == "ML-DSA-65" {
+                guard let key = try? SecureEnclave.MLDSA65.PrivateKey(
+                    dataRepresentation: keyBlob,
+                    authenticationContext: authContext
+                ) else {
+                    return nil
+                }
+                return try? key.signature(for: dataToSign)
+            } else if algorithm == "ML-DSA-87" {
+                guard let key = try? SecureEnclave.MLDSA87.PrivateKey(
+                    dataRepresentation: keyBlob,
+                    authenticationContext: authContext
+                ) else {
+                    return nil
+                }
+                return try? key.signature(for: dataToSign)
+            }
+        }
+        return nil
+    }
+
+    @objc(secureEnclaveCreateMlKemPrivateKey: :) public class func secureEnclaveCreateMlKemPrivateKey(
+        algorithm: String, accessControlCreateFlags: Int) -> Array<Data> {
+        if #available(iOS 26.0, macOS 26.0, *) {
+            let authContext = LAContext()
+            guard let accessControl = createAccessControl(accessControlCreateFlags: accessControlCreateFlags) else {
+                return []
+            }
+            if algorithm == "ML-KEM-768" {
+                guard let key = try? SecureEnclave.MLKEM768.PrivateKey(
+                    accessControl: accessControl,
+                    authenticationContext: authContext
+                ) else {
+                    return []
+                }
+                return [key.dataRepresentation, key.publicKey.rawRepresentation]
+            } else if algorithm == "ML-KEM-1024" {
+                guard let key = try? SecureEnclave.MLKEM1024.PrivateKey(
+                    accessControl: accessControl,
+                    authenticationContext: authContext
+                ) else {
+                    return []
+                }
+                return [key.dataRepresentation, key.publicKey.rawRepresentation]
+            }
+        }
+        return []
+    }
+
+    @objc(secureEnclaveMlKemDecapsulate: : : :) public class func secureEnclaveMlKemDecapsulate(
+        algorithm: String, keyBlob: Data, ciphertext: Data, authContext: LAContext?) -> Data? {
+        if #available(iOS 26.0, macOS 26.0, *) {
+            if algorithm == "ML-KEM-768" {
+                guard let key = try? SecureEnclave.MLKEM768.PrivateKey(
+                    dataRepresentation: keyBlob,
+                    authenticationContext: authContext
+                ),
+                let sharedSecret = try? key.decapsulate(ciphertext) else {
+                    return nil
+                }
+                return sharedSecret.withUnsafeBytes { Data($0) }
+            } else if algorithm == "ML-KEM-1024" {
+                guard let key = try? SecureEnclave.MLKEM1024.PrivateKey(
+                    dataRepresentation: keyBlob,
+                    authenticationContext: authContext
+                ),
+                let sharedSecret = try? key.decapsulate(ciphertext) else {
+                    return nil
+                }
+                return sharedSecret.withUnsafeBytes { Data($0) }
+            }
+        }
+        return nil
+    }
+
+    @objc(secureEnclaveIsPqcSupported) public class func secureEnclaveIsPqcSupported() -> Bool {
+        if #available(iOS 26.0, macOS 26.0, *) {
+            return true
+        }
+        return false
     }
 
     @objc(ecPublicKeyToPem: :) public class func ecPublicKeyToPem(curve: Int, rawRepresentation: Data) -> String? {
@@ -323,6 +485,101 @@ import IdentityDocumentServices
         }
     }
 
+    @objc(rsaCreatePrivateKey:) public class func rsaCreatePrivateKey(keySizeBits: Int) -> Array<Data> {
+        let attributes: [String: Any] = [
+            kSecAttrKeyType as String: kSecAttrKeyTypeRSA,
+            kSecAttrKeySizeInBits as String: keySizeBits
+        ]
+        var error: Unmanaged<CFError>?
+        guard let privateKey = SecKeyCreateRandomKey(attributes as CFDictionary, &error) else {
+            return []
+        }
+        guard let publicKey = SecKeyCopyPublicKey(privateKey) else {
+            return []
+        }
+        guard let privData = SecKeyCopyExternalRepresentation(privateKey, &error) as Data?,
+              let pubData = SecKeyCopyExternalRepresentation(publicKey, &error) as Data? else {
+            return []
+        }
+        return [privData, pubData]
+    }
+
+    @objc(rsaSign: : :) public class func rsaSign(
+        privateKeyPkcs1: Data,
+        algorithm: String,
+        dataToSign: Data
+    ) -> Data? {
+        let attributes: [String: Any] = [
+            kSecAttrKeyType as String: kSecAttrKeyTypeRSA,
+            kSecAttrKeyClass as String: kSecAttrKeyClassPrivate
+        ]
+        var error: Unmanaged<CFError>?
+        guard let privateKey = SecKeyCreateWithData(privateKeyPkcs1 as CFData, attributes as CFDictionary, &error) else {
+            return nil
+        }
+        let secKeyAlgorithm: SecKeyAlgorithm
+        switch algorithm {
+        case "RS256":
+            secKeyAlgorithm = .rsaSignatureMessagePKCS1v15SHA256
+        case "RS384":
+            secKeyAlgorithm = .rsaSignatureMessagePKCS1v15SHA384
+        case "RS512":
+            secKeyAlgorithm = .rsaSignatureMessagePKCS1v15SHA512
+        case "PS256":
+            secKeyAlgorithm = .rsaSignatureMessagePSSSHA256
+        case "PS384":
+            secKeyAlgorithm = .rsaSignatureMessagePSSSHA384
+        case "PS512":
+            secKeyAlgorithm = .rsaSignatureMessagePSSSHA512
+        default:
+            return nil
+        }
+        guard SecKeyIsAlgorithmSupported(privateKey, .sign, secKeyAlgorithm) else {
+            return nil
+        }
+        guard let signature = SecKeyCreateSignature(privateKey, secKeyAlgorithm, dataToSign as CFData, &error) else {
+            return nil
+        }
+        return signature as Data
+    }
+
+    @objc(rsaVerifySignature: : : :) public class func rsaVerifySignature(
+        publicKeyPkcs1: Data,
+        algorithm: String,
+        dataThatWasSigned: Data,
+        signature: Data
+    ) -> Bool {
+        let attributes: [String: Any] = [
+            kSecAttrKeyType as String: kSecAttrKeyTypeRSA,
+            kSecAttrKeyClass as String: kSecAttrKeyClassPublic
+        ]
+        var error: Unmanaged<CFError>?
+        guard let publicKey = SecKeyCreateWithData(publicKeyPkcs1 as CFData, attributes as CFDictionary, &error) else {
+            return false
+        }
+        let secKeyAlgorithm: SecKeyAlgorithm
+        switch algorithm {
+        case "RS256":
+            secKeyAlgorithm = .rsaSignatureMessagePKCS1v15SHA256
+        case "RS384":
+            secKeyAlgorithm = .rsaSignatureMessagePKCS1v15SHA384
+        case "RS512":
+            secKeyAlgorithm = .rsaSignatureMessagePKCS1v15SHA512
+        case "PS256":
+            secKeyAlgorithm = .rsaSignatureMessagePSSSHA256
+        case "PS384":
+            secKeyAlgorithm = .rsaSignatureMessagePSSSHA384
+        case "PS512":
+            secKeyAlgorithm = .rsaSignatureMessagePSSSHA512
+        default:
+            return false
+        }
+        guard SecKeyIsAlgorithmSupported(publicKey, .verify, secKeyAlgorithm) else {
+            return false
+        }
+        return SecKeyVerifySignature(publicKey, secKeyAlgorithm, dataThatWasSigned as CFData, signature as CFData, &error)
+    }
+
     @objc(x509CertGetKey:) public class func x509CertGetKey(encodedX509Cert: Data) -> Data? {
         let certificate = SecCertificateCreateWithData(nil, encodedX509Cert as CFData)
         if (certificate == nil) {
@@ -334,6 +591,106 @@ import IdentityDocumentServices
         }
         let data = SecKeyCopyExternalRepresentation(key!, nil)
         return data as Data?
+    }
+
+    @objc(mldsaCreatePrivateKey:) public class func mldsaCreatePrivateKey(algorithm: String) -> Array<Data> {
+        if #available(iOS 26.0, macOS 26.0, *) {
+            if algorithm == "ML-DSA-65" {
+                if let key = try? MLDSA65.PrivateKey() {
+                    return [key.seedRepresentation, key.publicKey.rawRepresentation]
+                }
+            } else if algorithm == "ML-DSA-87" {
+                if let key = try? MLDSA87.PrivateKey() {
+                    return [key.seedRepresentation, key.publicKey.rawRepresentation]
+                }
+            }
+        }
+        return []
+    }
+
+    @objc(mldsaSign::::) public class func mldsaSign(algorithm: String, seed: Data, pubKey: Data, message: Data) -> Data? {
+        if #available(iOS 26.0, macOS 26.0, *) {
+            if algorithm == "ML-DSA-65" {
+                if let pub = try? MLDSA65.PublicKey(rawRepresentation: pubKey),
+                   let priv = try? MLDSA65.PrivateKey(seedRepresentation: seed, publicKey: pub) {
+                    return try? priv.signature(for: message)
+                }
+            } else if algorithm == "ML-DSA-87" {
+                if let pub = try? MLDSA87.PublicKey(rawRepresentation: pubKey),
+                   let priv = try? MLDSA87.PrivateKey(seedRepresentation: seed, publicKey: pub) {
+                    return try? priv.signature(for: message)
+                }
+            }
+        }
+        return nil
+    }
+
+    @objc(mldsaVerifySignature::::) public class func mldsaVerifySignature(algorithm: String, pubKey: Data, message: Data, signature: Data) -> Bool {
+        if #available(iOS 26.0, macOS 26.0, *) {
+            if algorithm == "ML-DSA-65" {
+                if let pub = try? MLDSA65.PublicKey(rawRepresentation: pubKey) {
+                    return pub.isValidSignature(signature, for: message)
+                }
+            } else if algorithm == "ML-DSA-87" {
+                if let pub = try? MLDSA87.PublicKey(rawRepresentation: pubKey) {
+                    return pub.isValidSignature(signature, for: message)
+                }
+            }
+        }
+        return false
+    }
+
+    @objc(mlkemCreatePrivateKey:) public class func mlkemCreatePrivateKey(algorithm: String) -> Array<Data> {
+        if #available(iOS 26.0, macOS 26.0, *) {
+            if algorithm == "ML-KEM-768" {
+                if let key = try? MLKEM768.PrivateKey() {
+                    return [key.seedRepresentation, key.publicKey.rawRepresentation]
+                }
+            } else if algorithm == "ML-KEM-1024" {
+                if let key = try? MLKEM1024.PrivateKey() {
+                    return [key.seedRepresentation, key.publicKey.rawRepresentation]
+                }
+            }
+        }
+        return []
+    }
+
+    @objc(mlkemEncapsulate::) public class func mlkemEncapsulate(algorithm: String, pubKey: Data) -> Array<Data>? {
+        if #available(iOS 26.0, macOS 26.0, *) {
+            if algorithm == "ML-KEM-768" {
+                if let pub = try? MLKEM768.PublicKey(rawRepresentation: pubKey),
+                   let res = try? pub.encapsulate() {
+                    let secretData = res.sharedSecret.withUnsafeBytes { Data($0) }
+                    return [secretData, res.encapsulated]
+                }
+            } else if algorithm == "ML-KEM-1024" {
+                if let pub = try? MLKEM1024.PublicKey(rawRepresentation: pubKey),
+                   let res = try? pub.encapsulate() {
+                    let secretData = res.sharedSecret.withUnsafeBytes { Data($0) }
+                    return [secretData, res.encapsulated]
+                }
+            }
+        }
+        return nil
+    }
+
+    @objc(mlkemDecapsulate::::) public class func mlkemDecapsulate(algorithm: String, seed: Data, pubKey: Data, ciphertext: Data) -> Data? {
+        if #available(iOS 26.0, macOS 26.0, *) {
+            if algorithm == "ML-KEM-768" {
+                if let pub = try? MLKEM768.PublicKey(rawRepresentation: pubKey),
+                   let priv = try? MLKEM768.PrivateKey(seedRepresentation: seed, publicKey: pub),
+                   let secret = try? priv.decapsulate(ciphertext) {
+                    return secret.withUnsafeBytes { Data($0) }
+                }
+            } else if algorithm == "ML-KEM-1024" {
+                if let pub = try? MLKEM1024.PublicKey(rawRepresentation: pubKey),
+                   let priv = try? MLKEM1024.PrivateKey(seedRepresentation: seed, publicKey: pub),
+                   let secret = try? priv.decapsulate(ciphertext) {
+                    return secret.withUnsafeBytes { Data($0) }
+                }
+            }
+        }
+        return nil
     }
     
     @objc(generateDeviceAttestation::) public class func generateDeviceAttestation(
@@ -413,6 +770,10 @@ import IdentityDocumentServices
             algorithm = SecKeyAlgorithm.ecdsaSignatureMessageX962SHA512
         case "1.2.840.113549.1.1.11":
             algorithm = SecKeyAlgorithm.rsaSignatureMessagePKCS1v15SHA256
+        case "1.2.840.113549.1.1.12":
+            algorithm = SecKeyAlgorithm.rsaSignatureMessagePKCS1v15SHA384
+        case "1.2.840.113549.1.1.13":
+            algorithm = SecKeyAlgorithm.rsaSignatureMessagePKCS1v15SHA512
         default:
             return NSError(domain: "org.multipaz", code: 2, userInfo: [
                 "message": "unknown signature algorithm: " + signatureAlgorithmOid
@@ -452,18 +813,44 @@ import IdentityDocumentServices
         return nil
     }
 
-    @objc(docRegAdd:::) public class func docRegAdd(
-     documentIdentifier: String,
-     documentType: String,
+@objc public class DocRegInfo: NSObject {
+    @objc public let documentIdentifier: String
+    @objc public let documentType: String
+    @objc public let supportedAuthorityKeyIdentifiers: [Data]
+    @objc public let supportedIssuerAuthorityKeyIdentifiers: [Data]
+    @objc public let invalidationDate: Date?
+
+    @objc public init(
+        documentIdentifier: String,
+        documentType: String,
+        supportedAuthorityKeyIdentifiers: [Data],
+        supportedIssuerAuthorityKeyIdentifiers: [Data],
+        invalidationDate: Date?
+    ) {
+        self.documentIdentifier = documentIdentifier
+        self.documentType = documentType
+        self.supportedAuthorityKeyIdentifiers = supportedAuthorityKeyIdentifiers
+        self.supportedIssuerAuthorityKeyIdentifiers = supportedIssuerAuthorityKeyIdentifiers
+        self.invalidationDate = invalidationDate
+    }
+}
+
+    @objc(docRegAdd::::::) public class func docRegAdd(
+        documentIdentifier: String,
+        documentType: String,
+        supportedAuthorityKeyIdentifiers: [Data],
+        supportedIssuerAuthorityKeyIdentifiers: [Data],
+        invalidationDate: Date?
     ) async throws -> Bool {
         if #available(iOS 26.0, *) {
             let store = IdentityDocumentProviderRegistrationStore()
 
+            // TODO: pass supportedIssuerAuthorityKeyIdentifiers once we update to depend on the iOS 27 SDK or later.
             let registration = MobileDocumentRegistration(
                 mobileDocumentType: documentType,
-                supportedAuthorityKeyIdentifiers: [],  // TODO: param
+                supportedAuthorityKeyIdentifiers: supportedAuthorityKeyIdentifiers,
                 documentIdentifier: documentIdentifier,
-                invalidationDate: nil          // TODO: param
+                invalidationDate: invalidationDate
             )
             try await store.addRegistration(registration)
             return true
@@ -483,6 +870,135 @@ import IdentityDocumentServices
             return numRemoved
         }
         return 0
+    }
+
+    @objc(docRegGetAll:) public class func docRegGetAll() async throws -> [DocRegInfo] {
+        if #available(iOS 26.0, *) {
+            let store = IdentityDocumentProviderRegistrationStore()
+            let registrations = try await store.registrations
+            var ret: [DocRegInfo] = []
+            for registration in registrations {
+                if let mobileDocReg = registration as? MobileDocumentRegistration {
+                    // TODO: read supportedIssuerAuthorityKeyIdentifiers once we update to depend on the iOS 27 SDK or later.
+                    ret.append(DocRegInfo(
+                        documentIdentifier: mobileDocReg.documentIdentifier,
+                        documentType: mobileDocReg.mobileDocumentType,
+                        supportedAuthorityKeyIdentifiers: mobileDocReg.supportedAuthorityKeyIdentifiers,
+                        supportedIssuerAuthorityKeyIdentifiers: [],
+                        invalidationDate: mobileDocReg.invalidationDate
+                    ))
+                }
+            }
+            return ret
+        }
+        return []
+    }
+
+    @objc(docRegRemove::) public class func docRegRemove(documentIdentifier: String) async throws -> Bool {
+        if #available(iOS 26.0, *) {
+            let store = IdentityDocumentProviderRegistrationStore()
+            try await store.removeRegistration(forDocumentIdentifier: documentIdentifier)
+            return true
+        }
+        return false
+    }
+
+    @objc(docRegGetStatus:) public class func docRegGetStatus() async -> String {
+        if #available(iOS 26.0, *) {
+            let store = IdentityDocumentProviderRegistrationStore()
+            let status = await store.status
+            switch status {
+            case .authorized:
+                return "authorized"
+            case .notAuthorized:
+                return "notAuthorized"
+            case .notDetermined:
+                return "notDetermined"
+            case .notSupported:
+                return "notSupported"
+            @unknown default:
+                return "unknown"
+            }
+        }
+        return ""
+    }
+
+    // Launches ASWebAuthenticationSession with the iOS 17.4+ Callback API that supports
+    // HTTPS redirect URLs. Older iOS versions and the legacy callbackURLScheme-based API
+    // cannot intercept HTTPS redirects, so this bridge function is needed to access the
+    // newer Swift-only API from Kotlin/Native.
+    //
+    // Parameters:
+    //   urlString: the OAuth authorization page URL
+    //   callbackHost: the host component of the redirect URL (e.g. "apps.multipaz.org")
+    //   callbackPath: the path prefix of the redirect URL (e.g. "/landing/")
+    //   ephemeral: if false, shares cookies with Safari (needed for OpenID flows)
+    //   completionHandler: called with (redirectURL, error) when the session completes
+    @objc(launchOAuthSession:::::) public class func launchOAuthSession(
+        urlString: String,
+        callbackHost: String,
+        callbackPath: String,
+        ephemeral: Bool,
+        completionHandler: @escaping (String?, Error?) -> Void
+    ) -> Void {
+        NSLog("In launchOAuthSession: \(urlString), \(callbackHost), \(callbackPath)")
+        
+        guard let url = URL(string: urlString) else {
+            completionHandler(nil, NSError(
+                domain: "org.multipaz",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "Invalid URL: \(urlString)"]
+            ))
+            return
+        }
+        
+        if #available(iOS 17.4, *) {
+            DispatchQueue.main.async {
+                // presentationContextProvider is a weak property on
+                // ASWebAuthenticationSession, so we must hold a strong reference
+                // to prevent it from being deallocated before the session uses it.
+                let contextProvider = WebAuthContextProvider()
+                NSLog("Starting new ASWebAuthenticationSession")
+                let session = ASWebAuthenticationSession(
+                    url: url,
+                    callback: .https(host: callbackHost, path: callbackPath)
+                ) { callbackURL, error in
+                    // prevent contextProvider from being collected while session is active
+                    _ = contextProvider
+                    if let callbackURL = callbackURL {
+                        completionHandler(callbackURL.absoluteString, nil)
+                    } else if let error = error {
+                        NSLog("Encountered an error during OAuth session: \(error)")
+                        completionHandler(nil, error)
+                    } else {
+                        completionHandler(nil, NSError(
+                            domain: "org.multipaz",
+                            code: 3,
+                            userInfo: [NSLocalizedDescriptionKey: "No callback URL and no error"]
+                        ))
+                    }
+                }
+                session.prefersEphemeralWebBrowserSession = ephemeral
+                session.presentationContextProvider = contextProvider
+                session.start()
+            }
+        } else {
+            completionHandler(nil, NSError(
+                domain: "org.multipaz",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "HTTPS callback requires iOS 17.4+"]
+            ))
+        }
+    }
+}
+
+// Provides the presentation anchor (window) for ASWebAuthenticationSession.
+private class WebAuthContextProvider: NSObject, ASWebAuthenticationPresentationContextProviding {
+    func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
+        return UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap { $0.windows }
+            .first { $0.isKeyWindow } ?? ASPresentationAnchor()
     }
 }
 

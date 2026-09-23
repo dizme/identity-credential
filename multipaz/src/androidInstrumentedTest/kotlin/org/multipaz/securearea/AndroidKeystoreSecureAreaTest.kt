@@ -26,6 +26,8 @@ import org.multipaz.context.initializeApplication
 import org.multipaz.crypto.Algorithm
 import org.multipaz.crypto.Crypto
 import org.multipaz.crypto.EcCurve
+import org.multipaz.crypto.SecretKey
+import org.multipaz.crypto.SecureByteString
 import org.multipaz.storage.android.AndroidStorage
 import org.multipaz.util.AndroidAttestationExtensionParser
 import kotlinx.coroutines.test.runTest
@@ -38,6 +40,7 @@ import org.junit.Test
 import java.io.IOException
 import kotlin.time.Instant.Companion.fromEpochMilliseconds
 import kotlinx.io.bytestring.ByteString
+import org.multipaz.crypto.checkSignature
 import org.multipaz.device.AndroidKeystoreSecurityLevel
 import kotlin.test.assertEquals
 import kotlin.time.Duration.Companion.milliseconds
@@ -261,15 +264,15 @@ class AndroidKeystoreSecureAreaTest {
         }
     }
 
-    // Curve 25519 on Android is currently broken, see b/282063229 for details. Ignore test for now.
-    @Ignore
+    // Curve 25519 keystore signing was broken on older Android (b/282063229) and the test was
+    // @Ignore'd. It works where KeyMint actually implements Curve25519 (verified on Pixel 10 Pro /
+    // API 36); the remaining breakage was in this SecureArea's key reload + signature decoding,
+    // fixed below. Gated on the device capability, not an SDK version: KeyMint < 2.0 (e.g. many
+    // API 31/32 devices and vendors with NIST-only secure hardware) cannot create an ed25519 key.
     @Test
     fun testEcKeySigningEd25519() = runTest {
-        // ECDH is only available on Android 12 or later (only HW-backed on Keymint 1.0 or later)
-        //
-        // Also note it's not available on StrongBox.
-        //
-        Assume.assumeTrue(Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
+        Assume.assumeTrue(AndroidKeystoreSecureArea.Capabilities().curve25519Supported)
+        Assume.assumeFalse(TestUtil.isRunningOnEmulator)
         val ks = secureAreaProvider.get()
 
         val challenge = ByteString(1, 2, 3)
@@ -299,6 +302,28 @@ class AndroidKeystoreSecureAreaTest {
             Algorithm.EDDSA,
             signature
         )
+    }
+
+    // Exercises the getKey()-based reload path for an Ed25519 key separately from key
+    // creation: a fresh getKeyInfo() load must return the right metadata (hitting the
+    // EdDSA->EC KeyFactory fallback) and a healthy key must not be reported invalidated.
+    @Test
+    fun testEcKeyInfoReloadEd25519() = runTest {
+        Assume.assumeTrue(AndroidKeystoreSecureArea.Capabilities().curve25519Supported)
+        Assume.assumeFalse(TestUtil.isRunningOnEmulator)
+        val ks = secureAreaProvider.get()
+        ks.createKey(
+            "testKey",
+            AndroidKeystoreCreateKeySettings.Builder(ByteString(1, 2, 3))
+                .setAlgorithm(Algorithm.ED25519)
+                .build()
+        )
+        // Fresh load via getKey(), independent of createKey()'s own getKeyInfo() call.
+        val keyInfo = ks.getKeyInfo("testKey")
+        assertEquals(Algorithm.ED25519, keyInfo.algorithm)
+        assertEquals(EcCurve.ED25519, keyInfo.publicKey.curve)
+        // A healthy key must not be reported invalidated (loadKey -> getKey -> non-null).
+        Assert.assertFalse(ks.getKeyInvalidated("testKey"))
     }
 
     @Test
@@ -380,18 +405,20 @@ class AndroidKeystoreSecureAreaTest {
         Assert.assertNull(keyInfo.validUntil)
 
         // First do the ECDH from the perspective of our side...
-        val ourSharedSecret: ByteArray
-        ourSharedSecret = try {
+        val ourSharedSecret: SecureByteString = try {
             ks.keyAgreement("testKey", otherKey.publicKey)
         } catch (e: KeyLockedException) {
             throw AssertionError(e)
         }
 
         // ...now do it from the perspective of the other side...
-        val theirSharedSecret = Crypto.keyAgreement(otherKey, keyInfo.publicKey)
+        val theirSharedSecret = Crypto.keyAgreement(otherKey, keyInfo.ecPublicKey)
 
         // ... finally, check that both sides compute the same shared secret.
-        Assert.assertArrayEquals(theirSharedSecret, ourSharedSecret)
+        Assert.assertArrayEquals(theirSharedSecret.encoded, ourSharedSecret.encoded)
+        ourSharedSecret.close()
+        theirSharedSecret.close()
+        otherKey.close()
     }
 
     // Curve 25519 on Android is currently broken, see b/282063229 for details. Ignore test for now.
@@ -426,17 +453,20 @@ class AndroidKeystoreSecureAreaTest {
         Assert.assertNull(keyInfo.validUntil)
 
         // First do the ECDH from the perspective of our side...
-        val ourSharedSecret: ByteArray = try {
+        val ourSharedSecret: SecureByteString = try {
             ks.keyAgreement("testKey", otherKey.publicKey)
         } catch (e: KeyLockedException) {
             throw AssertionError(e)
         }
 
         // ...now do it from the perspective of the other side...
-        val theirSharedSecret = Crypto.keyAgreement(otherKey, keyInfo.publicKey)
+        val theirSharedSecret = Crypto.keyAgreement(otherKey, keyInfo.ecPublicKey)
 
         // ... finally, check that both sides compute the same shared secret.
-        Assert.assertArrayEquals(theirSharedSecret, ourSharedSecret)
+        Assert.assertArrayEquals(theirSharedSecret.encoded, ourSharedSecret.encoded)
+        ourSharedSecret.close()
+        theirSharedSecret.close()
+        otherKey.close()
     }
 
     @Test

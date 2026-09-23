@@ -25,15 +25,21 @@ import org.multipaz.claim.MdocClaim
 import org.multipaz.cose.Cose
 import org.multipaz.cose.CoseNumberLabel
 import org.multipaz.cose.CoseSign1
+import org.multipaz.cose.toCoseLabel
 import org.multipaz.credential.SecureAreaBoundCredential
+import org.multipaz.crypto.EcPrivateKey
 import org.multipaz.crypto.X509CertChain
 import org.multipaz.document.Document
 import org.multipaz.documenttype.DocumentTypeRepository
 import org.multipaz.mdoc.issuersigned.IssuerNamespaces
 import org.multipaz.mdoc.mso.MobileSecurityObject
+import org.multipaz.mpzpass.MpzPass
+import org.multipaz.mpzpass.MpzPassIsoMdoc
 import org.multipaz.sdjwt.credential.KeyBoundSdJwtVcCredential
 import org.multipaz.securearea.CreateKeySettings
+import org.multipaz.securearea.KeyUnlockData
 import org.multipaz.securearea.SecureArea
+import org.multipaz.securearea.software.SoftwareSecureArea
 import org.multipaz.util.Logger
 
 /**
@@ -251,6 +257,7 @@ class MdocCredential : SecureAreaBoundCredential {
                 val claim = MdocClaim(
                     displayName = mdocAttr?.attribute?.displayName ?: dataElementName,
                     attribute = mdocAttr?.attribute,
+                    docType = docType,
                     namespaceName = namespaceName,
                     dataElementName = dataElementName,
                     value = issuerSignedItem.dataElementValue
@@ -296,8 +303,31 @@ class MdocCredential : SecureAreaBoundCredential {
      * Convenience property for accessing the X.509 certificate chain for the issuer signature from [issuerAuth].
      */
     val issuerCertChain: X509CertChain by lazy {
-        issuerAuth.unprotectedHeaders[
-            CoseNumberLabel(Cose.COSE_LABEL_X5CHAIN)
-        ]!!.asX509CertChain
+        (issuerAuth.protectedHeaders[Cose.COSE_LABEL_X5CHAIN.toCoseLabel]
+            ?: issuerAuth.unprotectedHeaders[Cose.COSE_LABEL_X5CHAIN.toCoseLabel])!!.asX509CertChain
+    }
+
+    override suspend fun exportToMpzPass(keyUnlockData: KeyUnlockData?): MpzPass {
+        check(secureArea is SoftwareSecureArea) {
+            "You can only export a credential if it's using a SoftwareSecureArea"
+        }
+        val swSecureArea = secureArea as SoftwareSecureArea
+        val keyInfo = swSecureArea.getKeyInfo(alias)
+        val deviceKeyPrivate = swSecureArea.getPrivateKey(alias, keyUnlockData)
+        val issuerNamespaces = IssuerNamespaces.fromDataItem(issuerSigned["nameSpaces"])
+        val issuerAuth = issuerSigned["issuerAuth"].asCoseSign1
+        return MpzPass(
+            name = document.displayName,
+            typeName = document.typeDisplayName,
+            cardArt = document.cardArt,
+            userAuthenticationRequired = keyInfo.isUserAuthenticationRequired,
+            readerIdentifiers = document.readerIdentifiers,
+            isoMdoc = listOf(MpzPassIsoMdoc(
+                docType = docType,
+                deviceKeyPrivate = deviceKeyPrivate as EcPrivateKey,
+                issuerNamespaces = issuerNamespaces,
+                issuerAuth = issuerAuth
+            ))
+        )
     }
 }

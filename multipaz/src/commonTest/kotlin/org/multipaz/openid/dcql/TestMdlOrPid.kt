@@ -9,7 +9,8 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import org.multipaz.documenttype.knowntypes.DrivingLicense
 import org.multipaz.documenttype.knowntypes.EUPersonalID
-import org.multipaz.presentment.model.DocumentStoreTestHarness
+import org.multipaz.presentment.DocumentStoreTestHarness
+import org.multipaz.presentment.prettyPrint
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -125,12 +126,12 @@ class TestMdlOrPid {
                                     claim:
                                       nameSpace: org.iso.18013.5.1
                                       dataElement: given_name
-                                      displayName: Given Names
+                                      displayName: Given names
                                       value: Erika
                                     claim:
                                       nameSpace: org.iso.18013.5.1
                                       dataElement: family_name
-                                      displayName: Family Name
+                                      displayName: Family name
                                       value: Mustermann
             """.trimIndent().trim(),
             mdlOrPidQuery().execute(
@@ -161,11 +162,11 @@ class TestMdlOrPid {
                                   claims:
                                     claim:
                                       path: ["family_name"]
-                                      displayName: Family Name
+                                      displayName: Family name
                                       value: Mustermann
                                     claim:
                                       path: ["given_name"]
-                                      displayName: Given Names
+                                      displayName: Given names
                                       value: Erika
             """.trimIndent().trim(),
             mdlOrPidQuery().execute(
@@ -198,12 +199,12 @@ class TestMdlOrPid {
                                     claim:
                                       nameSpace: org.iso.18013.5.1
                                       dataElement: given_name
-                                      displayName: Given Names
+                                      displayName: Given names
                                       value: Erika
                                     claim:
                                       nameSpace: org.iso.18013.5.1
                                       dataElement: family_name
-                                      displayName: Family Name
+                                      displayName: Family name
                                       value: Mustermann
                       option:
                         members:
@@ -216,11 +217,11 @@ class TestMdlOrPid {
                                   claims:
                                     claim:
                                       path: ["family_name"]
-                                      displayName: Family Name
+                                      displayName: Family name
                                       value: Mustermann
                                     claim:
                                       path: ["given_name"]
-                                      displayName: Given Names
+                                      displayName: Given names
                                       value: Erika
             """.trimIndent().trim(),
             mdlOrPidQuery().execute(

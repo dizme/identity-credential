@@ -1,9 +1,6 @@
 package org.multipaz.compose.presentment
 
 import androidx.compose.animation.animateContentSize
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
@@ -12,25 +9,22 @@ import androidx.compose.material3.SheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.dp
 import coil3.ImageLoader
 import kotlinx.coroutines.launch
 import org.multipaz.document.Document
-import org.multipaz.presentment.CredentialPresentmentData
-import org.multipaz.presentment.CredentialPresentmentSelection
+import org.multipaz.presentment.CredentialSelection
+import org.multipaz.presentment.ConsentData
 import org.multipaz.request.Requester
-import org.multipaz.trustmanagement.TrustMetadata
-import org.multipaz.trustmanagement.TrustPoint
+import org.multipaz.request.TrustedRequesterIdentity
 
 /**
  * Bottom sheet used for obtaining consent when presenting one or more credentials.
  *
  * @param sheetState a [SheetState] for state.
  * @param requester the relying party which is requesting the data.
- * @param trustMetadata [TrustMetadata] conveying the level of trust in the requester, if any.
- * @param credentialPresentmentData the combinatinos of credentials and claims that the user can select.
+ * @param trustedRequesterIdentity conveys the level of trust in the requester, if any.
+ * @param consentData the combinations of credentials and claims that the user can select.
  * @param preselectedDocuments the list of documents the user may have preselected earlier (for
  *   example an OS-provided credential picker like Android's Credential Manager) or the empty list
  *   if the user didn't preselect.
@@ -46,13 +40,13 @@ import org.multipaz.trustmanagement.TrustPoint
 fun ConsentModalBottomSheet(
     sheetState: SheetState,
     requester: Requester,
-    trustMetadata: TrustMetadata?,
-    credentialPresentmentData: CredentialPresentmentData,
+    trustedRequesterIdentity: TrustedRequesterIdentity?,
+    consentData: ConsentData,
     preselectedDocuments: List<Document>,
     imageLoader: ImageLoader?,
     maxHeight: Dp? = null,
     onDocumentsInFocus: (documents: List<Document>) -> Unit,
-    onConfirm: (selection: CredentialPresentmentSelection) -> Unit,
+    onConfirm: (selection: CredentialSelection) -> Unit,
     onCancel: () -> Unit = {},
 ) {
     val coroutineScope = rememberCoroutineScope()
@@ -66,8 +60,8 @@ fun ConsentModalBottomSheet(
             modifier = (if (maxHeight != null) Modifier.heightIn(max = maxHeight) else Modifier)
                 .animateContentSize(),
             requester = requester,
-            trustMetadata = trustMetadata,
-            credentialPresentmentData = credentialPresentmentData,
+            trustedRequesterIdentity = trustedRequesterIdentity,
+            consentData = consentData,
             preselectedDocuments = preselectedDocuments,
             imageLoader = imageLoader,
             onDocumentsInFocus = onDocumentsInFocus,

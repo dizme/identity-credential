@@ -14,10 +14,16 @@ import org.multipaz.crypto.Algorithm
 import org.multipaz.crypto.Crypto
 import org.multipaz.crypto.EcPublicKey
 import org.multipaz.crypto.EcSignature
+import org.multipaz.crypto.MlDsaPublicKey
+import org.multipaz.crypto.MlDsaSignature
+import org.multipaz.crypto.MlKemPublicKey
+import org.multipaz.crypto.PublicKey
+import org.multipaz.crypto.RsaPublicKey
+import org.multipaz.crypto.RsaSignature
 import org.multipaz.crypto.SignatureVerificationException
 import org.multipaz.crypto.X509Cert
 import org.multipaz.crypto.X509CertChain
-import org.multipaz.crypto.X509KeyUsage
+import org.multipaz.crypto.X509CertChainValidationException
 import org.multipaz.rpc.backend.BackendEnvironment
 import org.multipaz.rpc.backend.Configuration
 import org.multipaz.rpc.backend.getTable
@@ -58,32 +64,37 @@ import kotlin.time.Instant
  *
  * [WebTokenCheck.CHALLENGE] defines the nonce/challenge check using the value of the specified property.
  * The value given to this key in [checks] map is used as a property name in the body part of the
- * JWT. That property must exist. Its value is passed to [Challenge.validateAndConsume] method.
+ * JWT. That property must exist. Its value is passed to [nonceValidator] function.
  *
  * @param jwt JWT to validate
  * @param jwtName name for the kind of JWT being validated, this is used to generate more meaningful
- *    exception messages
+ *  exception messages
  * @param publicKey public key to use to check signature, either publicKey or [WebTokenCheck.TRUST]
- *    must be used.
+ *  must be used.
  * @param checks validation checks to perform.
  * @param maxValidity when `exp` is not present determines expiration time based on `iat` claim;
- *     when `exp` claim is present, determines how far in the future it can be.
+ *  when `exp` claim is present, determines how far in the future it can be.
  * @param certificateChainValidator optional function to validate certificate chain in CWT; if
- *     the certificate chain is not valid it should throw [InvalidRequestException] exception,
- *     the returned value should indicate if the chain is trusted (in which case
- *     [WebTokenCheck.TRUST] check is not performed) or not ([WebTokenCheck.TRUST] still applies).
- * @param clock clock that determines current time to check for expiration.
+ *  the certificate chain is not valid it should throw [InvalidRequestException] exception,
+ *  the returned value should indicate if the chain is trusted (in which case
+ *  [WebTokenCheck.TRUST] check is not performed) or not ([WebTokenCheck.TRUST] still applies).
+ * @param atTime time instant for expiration check.
+ * @param nonceValidator function that must throw [ChallengeInvalidException] if nonce/challenge
+ *  is not valid; this is used with [WebTokenCheck.CHALLENGE] check.
  * @throws ChallengeInvalidException when nonce or challenge check fails (see [WebTokenCheck.CHALLENGE])
+ * @throws IllegalArgumentException with [SignatureVerificationException] as cause when signature
+ *  verification fails
  * @throws InvalidRequestException when any other validation fails
  */
 suspend fun validateJwt(
     jwt: String,
     jwtName: String,
-    publicKey: EcPublicKey? = null,
+    publicKey: PublicKey? = null,
     checks: Map<WebTokenCheck, String> = mapOf(),
     maxValidity: Duration = 10.hours,
     certificateChainValidator: (suspend (chain: X509CertChain, atTime: Instant) -> Boolean)? = null,
-    clock: Clock = Clock.System
+    atTime: Instant = Clock.System.now(),
+    nonceValidator: suspend (nonce: String) -> Unit = Challenge::validateAndConsume
 ): JsonObject {
     require(publicKey == null || certificateChainValidator == null)
     val parts = jwt.split('.')
@@ -97,34 +108,32 @@ suspend fun validateJwt(
         parts[1].fromBase64Url().decodeToString()
     ).jsonObject
 
-    val now = clock.now()
-
     val algorithm = header["alg"]?.jsonPrimitive?.content?.let {
         Algorithm.fromJoseAlgorithmIdentifier(it)
     }
 
     val expiration = body[WebTokenClaim.Exp] ?: run {
         if (maxValidity == Duration.INFINITE) {
-            now + 1.seconds
+            atTime + 1.seconds
         } else {
             val iat = body[WebTokenClaim.Iat]
                 ?: throw InvalidRequestException("$jwtName: either 'exp' or 'iat' is required")
-            if (iat > now) {
+            if (iat > atTime) {
                 // Allow no more than 5 seconds clock mismatch
-                if (iat > now + 5.seconds) {
+                if (iat > atTime + 5.seconds) {
                     throw InvalidRequestException("$jwtName: 'iat' is in future")
                 }
-                now + maxValidity
+                atTime + maxValidity
             } else {
                 iat + maxValidity
             }
         }
     }
 
-    if (expiration < now) {
+    if (expiration < atTime) {
         throw InvalidRequestException("$jwtName: expired")
     }
-    if (maxValidity != Duration.INFINITE && expiration > now + maxValidity) {
+    if (maxValidity != Duration.INFINITE && expiration > atTime + maxValidity) {
         throw InvalidRequestException("$jwtName: expiration is too far in the future")
     }
 
@@ -143,15 +152,24 @@ suspend fun validateJwt(
     val caValidated = try {
         certificateChain != null &&
             (certificateChainValidator ?: ::basicCertificateChainValidator)
-                .invoke(certificateChain, now)
+                .invoke(certificateChain, atTime)
     } catch (err: InvalidRequestException) {
         throw InvalidRequestException("$jwtName: ${err.message}")
     }
 
     val caName = checks[WebTokenCheck.TRUST]
     val key = if (caName == null) {
-        require(publicKey != null || caValidated)
-        publicKey ?: certificateChain!!.certificates.first().ecPublicKey
+        if (publicKey == null && !caValidated) {
+            throw InvalidRequestException("$jwtName: could not check signature, no public key found")
+        }
+        if (certificateChain == null || certificateChain.certificates.isEmpty()) {
+            publicKey!!
+        } else {
+            if (publicKey != null) {
+                certificateChain.certificates.last().verify(publicKey)
+            }
+            certificateChain.certificates.first().publicKey
+        }
     } else {
         val issuer = body["iss"]?.jsonPrimitive?.content
         if (certificateChain != null) {
@@ -179,24 +197,51 @@ suspend fun validateJwt(
                     throw InvalidRequestException("$jwtName: signature check failed: ${err.message}")
                 }
             }
-            first.ecPublicKey
+            first.publicKey
         } else {
             val kid = header["kid"]?.jsonPrimitive?.content
                 ?: throw InvalidRequestException(
                 "$jwtName: either 'iss' and 'kid' or 'x5c' must be specified")
-            caPublicKey("$issuer#$kid", caName)
+            if (issuer == null || issuer == kid) {
+                // self-issued
+                caPublicKey(kid, caName)
+            } else {
+                caPublicKey("$issuer#$kid", caName)
+            }
         }
     }
 
-    val signature = EcSignature.fromCoseEncoded(parts[2].fromBase64Url())
     try {
         val message = jwt.take(jwt.length - parts[2].length - 1)
-        Crypto.checkSignature(
-            publicKey = key,
-            message = message.encodeToByteArray(),
-            algorithm = algorithm ?: key.curve.defaultSigningAlgorithmFullySpecified,
-            signature = signature
-        )
+        val signatureBytes = parts[2].fromBase64Url()
+        when (key) {
+            is EcPublicKey -> {
+                val signature = EcSignature.fromCoseEncoded(signatureBytes)
+                Crypto.checkSignature(
+                    publicKey = key,
+                    message = message.encodeToByteArray(),
+                    algorithm = algorithm ?: key.curve.defaultSigningAlgorithmFullySpecified,
+                    signature = signature
+                )
+            }
+            is RsaPublicKey -> {
+                Crypto.checkSignature(
+                    publicKey = key,
+                    message = message.encodeToByteArray(),
+                    algorithm = algorithm ?: Algorithm.RS256,
+                    signature = RsaSignature(signatureBytes)
+                )
+            }
+            is MlDsaPublicKey -> {
+                Crypto.checkSignature(
+                    publicKey = key,
+                    message = message.encodeToByteArray(),
+                    algorithm = algorithm ?: key.algorithm,
+                    signature = MlDsaSignature(signatureBytes)
+                )
+            }
+            is MlKemPublicKey -> throw IllegalArgumentException("Cannot verify signature with ML-KEM key")
+        }
     } catch (e: SignatureVerificationException) {
         throw IllegalArgumentException("$jwtName: invalid JWT signature", e)
     }
@@ -208,7 +253,7 @@ suspend fun validateJwt(
         if (nonce !is JsonPrimitive || !nonce.isString) {
             throw InvalidRequestException("$jwtName: '$nonceName' is invalid")
         }
-        Challenge.validateAndConsume(nonce.content)
+        nonceValidator.invoke(nonce.content)
     }
 
     val jtiPartition = checks[WebTokenCheck.IDENT]
@@ -231,13 +276,13 @@ suspend fun validateJwt(
 }
 
 private val keyCacheLock = Mutex()
-private val keyCache = mutableMapOf<String, EcPublicKey>()
+private val keyCache = mutableMapOf<String, PublicKey>()
 private var cachedConfiguration: Configuration? = null
 
 internal suspend fun caPublicKey(
     issuer: String,
     caName: String
-): EcPublicKey {
+): PublicKey {
     val configuration = BackendEnvironment.getInterface(Configuration::class)
         ?: throw IllegalStateException("Configuration is required for WebTokenCheck.TRUST")
     val caPath = "$caName:$issuer"
@@ -252,9 +297,9 @@ internal suspend fun caPublicKey(
             }
             when (ca) {
                 is JsonPrimitive ->
-                    X509Cert(ByteString(ca.jsonPrimitive.content.fromBase64())).ecPublicKey
+                    X509Cert(ByteString(ca.jsonPrimitive.content.fromBase64())).publicKey
                 is JsonObject ->
-                    EcPublicKey.fromJwk(ca)
+                    PublicKey.fromJwk(ca)
                 else -> {
                     throw InvalidRequestException("CA not registered: $caPath")
                 }
@@ -264,16 +309,7 @@ internal suspend fun caPublicKey(
 }
 
 /**
- * Performs basic certificate chain validation.
- *
- * Specifically, these checks are performed:
- *  - every certificate in the chain is signed by the next one,
- *  - signer certificate's subject matches signed certificate's issuer,
- *  - certificates are not expired,
- *  - signer certificate have `CERT_SIGN` key usage
- *  - if the lst certificate is self-signed (root) and has basic constrains extension
- *    - CA flag is set to true
- *    - number of certificates in the chain satisfies path length constraint
+ * Performs basic certificate chain validation using [X509CertChain.validate].
  *
  * @return `false` (meaning this function cannot find the root certificate and establish trust)
  * @throws InvalidRequestException if the certificate chain is not valid
@@ -282,45 +318,34 @@ suspend fun basicCertificateChainValidator(
     certificateChain: X509CertChain,
     now: Instant
 ): Boolean {
-    if (!certificateChain.validate()) {
-        throw InvalidRequestException("invalid certificate chain")
-    }
-    var last: X509Cert? = null
-    for (certificate in certificateChain.certificates) {
-        if (last != null) {
-            if (last.issuer != certificate.subject) {
-                throw InvalidRequestException("subject/issuer mismatch")
-            }
-            if (!certificate.keyUsage.contains(X509KeyUsage.KEY_CERT_SIGN)) {
-                throw InvalidRequestException("missing CERT_SIGN usage")
-            }
-        }
-        last = certificate
-        if (certificate.validityNotAfter < now) {
-            throw InvalidRequestException("expired certificate")
-        }
-        if (certificate.validityNotBefore > now) {
-            throw InvalidRequestException("not-yet-valid certificate")
-        }
-    }
-    if (last != null && last.subject == last.issuer) {
-        val basicConstraints = last.basicConstraints
-        if (basicConstraints != null) {
-            if (!basicConstraints.first) {
-                throw InvalidRequestException("BasicConstrains CA is false on root certificate")
-            }
-            val maxPathLength = basicConstraints.second
-            if (maxPathLength != null) {
-                // the leaf and the root are not counted in path length constraints
-                val pathLength = certificateChain.certificates.size.toLong() - 2
-                if (pathLength > maxPathLength) {
-                    throw InvalidRequestException("BasicConstrains CA path length exceeded")
-                }
-            }
-        }
+    try {
+        certificateChain.validate(now)
+    } catch (err: X509CertChainValidationException) {
+        throw InvalidRequestException(err.message)
     }
     return false  // Certificate chain is valid, but no trust is established
 }
+
+/**
+ * Creates certificate chain validator that checks if the given certificate chain can be validated
+ * using given trusted root certificate.
+ *
+ * @param trustedRootCert trusted root certificate
+ * @return validator which is appropriate for use with [validateJwt] and [validateCwt]
+ *  functions as `certificateChainValidator` parameter
+ */
+fun trustedRootCertificateChainValidator(
+    trustedRootCert: X509Cert
+): suspend (certificateChain: X509CertChain, atTime: Instant) -> Boolean =
+    { certificateChain, atTime ->
+        val combinedChain = if (certificateChain.certificates.last() == trustedRootCert) {
+            certificateChain
+        } else {
+            X509CertChain(certificateChain.certificates + trustedRootCert)
+        }
+        basicCertificateChainValidator(combinedChain, atTime)
+        true  // valid and trusted
+    }
 
 private val jtiTableSpec = StorageTableSpec(
     name = "UsedJti",

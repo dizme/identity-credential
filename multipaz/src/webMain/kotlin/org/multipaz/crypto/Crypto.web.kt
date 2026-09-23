@@ -1,9 +1,19 @@
+@file:OptIn(ExperimentalWasmJsInterop::class)
+
 package org.multipaz.crypto
 
+import kotlin.math.min
+import kotlin.random.Random
 import js.array.jsArrayOf
 import js.buffer.toByteArray
 import js.objects.unsafeJso
+import js.promise.Promise
+import js.promise.await
+import js.typedarrays.Uint8Array
+import js.typedarrays.toUint8Array
 import kotlinx.browser.window
+import kotlinx.coroutines.CancellationException
+import kotlinx.io.bytestring.ByteString
 import org.multipaz.asn1.ASN1
 import org.multipaz.asn1.ASN1BitString
 import org.multipaz.asn1.ASN1ObjectIdentifier
@@ -12,6 +22,7 @@ import org.multipaz.asn1.OID
 import org.multipaz.util.fromBase64Url
 import org.multipaz.util.toBase64Url
 import org.multipaz.util.toBufferSource
+import web.crypto.AesCbcParams
 import web.crypto.AesGcmParams
 import web.crypto.CryptoKey
 import web.crypto.CryptoKeyPair
@@ -38,12 +49,76 @@ import web.crypto.sign
 import web.crypto.spki
 import web.crypto.verify
 import kotlin.js.ExperimentalWasmJsInterop
+import kotlin.js.JsAny
+import kotlin.js.JsException
+import kotlin.js.JsString
+import kotlin.js.js
 import kotlin.js.toJsString
 import kotlin.js.unsafeCast
 
 external interface XdhKeyDeriveParams : web.crypto.Algorithm {
     override var name: String
     var public: CryptoKey
+}
+
+@OptIn(ExperimentalWasmJsInterop::class)
+external interface RsaHashedKeyGenParams : web.crypto.Algorithm {
+    override var name: String
+    var modulusLength: Int
+    var publicExponent: Uint8Array<*>
+    var hash: JsAny
+}
+
+@OptIn(ExperimentalWasmJsInterop::class)
+external interface RsaPssParams : web.crypto.Algorithm {
+    override var name: String
+    var saltLength: Int
+}
+
+@OptIn(ExperimentalWasmJsInterop::class)
+external interface EncapsulatedBits : JsAny {
+    val sharedKey: js.buffer.ArrayBufferLike
+    val ciphertext: js.buffer.ArrayBufferLike
+}
+
+@OptIn(ExperimentalWasmJsInterop::class)
+private fun subtleEncapsulateBitsAsync(
+    subtle: web.crypto.SubtleCrypto,
+    algorithm: web.crypto.Algorithm,
+    key: CryptoKey
+): Promise<EncapsulatedBits> =
+    js("subtle.encapsulateBits(algorithm, key)")
+
+@OptIn(ExperimentalWasmJsInterop::class)
+private fun subtleDecapsulateBitsAsync(
+    subtle: web.crypto.SubtleCrypto,
+    algorithm: web.crypto.Algorithm,
+    key: CryptoKey,
+    ciphertext: js.buffer.BufferSource
+): Promise<js.buffer.ArrayBufferLike> =
+    js("subtle.decapsulateBits(algorithm, key, ciphertext)")
+
+@OptIn(ExperimentalWasmJsInterop::class)
+private fun checkSubtleSupports(operation: JsString, algorithm: JsString): Boolean =
+    js("((typeof SubtleCrypto !== 'undefined' && typeof SubtleCrypto.supports === 'function') ? SubtleCrypto.supports(operation, algorithm) : ((typeof crypto !== 'undefined' && typeof crypto.subtle !== 'undefined' && typeof crypto.subtle.supports === 'function') ? crypto.subtle.supports(operation, algorithm) : false))")
+
+@OptIn(ExperimentalWasmJsInterop::class)
+private fun hasSubtleSupports(): Boolean =
+    js("(typeof SubtleCrypto !== 'undefined' && typeof SubtleCrypto.supports === 'function') || (typeof crypto !== 'undefined' && typeof crypto.subtle !== 'undefined' && typeof crypto.subtle.supports === 'function')")
+
+@OptIn(ExperimentalWasmJsInterop::class)
+private fun hasSubtleEncapsulateBits(): Boolean =
+    js("typeof crypto !== 'undefined' && typeof crypto.subtle !== 'undefined' && typeof crypto.subtle.encapsulateBits === 'function'")
+
+@OptIn(ExperimentalWasmJsInterop::class)
+private fun isOperationSupported(operation: String, algorithm: String): Boolean {
+    if (hasSubtleSupports()) {
+        try {
+            return checkSubtleSupports(operation.toJsString(), algorithm.toJsString())
+        } catch (_: Throwable) {
+        }
+    }
+    return hasSubtleEncapsulateBits()
 }
 
 @OptIn(ExperimentalWasmJsInterop::class)
@@ -111,11 +186,36 @@ actual object Crypto {
             EcCurve.X25519,
         )
 
-    actual val supportedEncryptionAlgorithms = setOf(Algorithm.A128GCM, Algorithm.A256GCM)
+    actual val supportedEncryptionAlgorithms = setOf(
+        Algorithm.A128GCM,
+        Algorithm.A256GCM,
+        Algorithm.A128CBC,
+        Algorithm.A256CBC
+    )
+
+    actual val supportedMlDsaAlgorithms: Set<Algorithm>
+        get() = setOf(
+            Algorithm.ML_DSA_44 to "ML-DSA-44",
+            Algorithm.ML_DSA_65 to "ML-DSA-65",
+            Algorithm.ML_DSA_87 to "ML-DSA-87"
+        ).filter { isOperationSupported("sign", it.second) }
+            .map { it.first }
+            .toSet()
+
+    actual val supportedMlKemAlgorithms: Set<Algorithm>
+        get() = setOf(
+            Algorithm.ML_KEM_512 to "ML-KEM-512",
+            Algorithm.ML_KEM_768 to "ML-KEM-768",
+            Algorithm.ML_KEM_1024 to "ML-KEM-1024"
+        ).filter { isOperationSupported("encapsulateBits", it.second) }
+            .map { it.first }
+            .toSet()
 
     actual val provider: String by lazy {
         "Web Crypto (${window.navigator.userAgent})"
     }
+
+    actual val secureRandom: Random = WebSecureRandom()
 
     actual suspend fun digest(
         algorithm: Algorithm,
@@ -133,9 +233,10 @@ actual object Crypto {
 
     actual suspend fun mac(
         algorithm: Algorithm,
-        key: ByteArray,
+        key: SecretKey,
         message: ByteArray
     ): ByteArray {
+        key.checkNotDestroyed()
         val hashAlgName = when (algorithm) {
             Algorithm.HMAC_INSECURE_SHA1 -> "SHA-1"
             Algorithm.HMAC_SHA256 -> "SHA-256"
@@ -143,13 +244,15 @@ actual object Crypto {
             Algorithm.HMAC_SHA512 -> "SHA-512"
             else -> throw IllegalArgumentException("Unsupported algorithm $algorithm")
         }
+        val rawKey = key.data
+        val effectiveKey = if (rawKey.isEmpty()) byteArrayOf(0) else rawKey
         val hmacKey = crypto.subtle.importKey(
             format = KeyFormat.Companion.raw,
-            keyData = key.toBufferSource(),
+            keyData = effectiveKey.toBufferSource(),
             algorithm = unsafeJso<HmacImportParams> {
                 name = "HMAC"
                 hash = hashAlgName.toJsString()
-                length = key.size*8
+                length = effectiveKey.size*8
             },
             extractable = false,
             keyUsages = jsArrayOf(KeyUsage.sign, KeyUsage.verify)
@@ -164,58 +267,98 @@ actual object Crypto {
 
     actual suspend fun encrypt(
         algorithm: Algorithm,
-        key: ByteArray,
+        key: SecretKey,
         nonce: ByteArray,
         messagePlaintext: ByteArray,
         aad: ByteArray?
     ): ByteArray {
-        val algorithm = unsafeJso<AesGcmParams> {
-            name = "AES-GCM"
-            additionalData = (aad ?: byteArrayOf()).toBufferSource()
-            iv = nonce.toBufferSource()
-            tagLength = 128
+        key.checkNotDestroyed()
+        val rawKey = key.data
+        when (algorithm) {
+            Algorithm.A128GCM, Algorithm.A128CBC -> require(rawKey.size == 16) { "Key size must be 16 bytes" }
+            Algorithm.A192GCM, Algorithm.A192CBC -> require(rawKey.size == 24) { "Key size must be 24 bytes" }
+            Algorithm.A256GCM, Algorithm.A256CBC -> require(rawKey.size == 32) { "Key size must be 32 bytes" }
+            else -> throw IllegalArgumentException("Unsupported algorithm $algorithm")
         }
-        val key = crypto.subtle.importKey(
+        val (webAlgorithm, webImportAlgorithm) = when (algorithm) {
+            Algorithm.A128GCM, Algorithm.A192GCM, Algorithm.A256GCM -> {
+                val params = unsafeJso<AesGcmParams> {
+                    name = "AES-GCM"
+                    additionalData = (aad ?: byteArrayOf()).toBufferSource()
+                    iv = nonce.toBufferSource()
+                    tagLength = 128
+                }
+                Pair(params, params)
+            }
+            Algorithm.A128CBC, Algorithm.A192CBC, Algorithm.A256CBC -> {
+                val params = unsafeJso<AesCbcParams> {
+                    name = "AES-CBC"
+                    iv = nonce.toBufferSource()
+                }
+                Pair(params, params)
+            }
+            else -> throw IllegalArgumentException("Unsupported algorithm $algorithm")
+        }
+        val cryptoKey = crypto.subtle.importKey(
             format = KeyFormat.Companion.raw,
-            keyData = key.toBufferSource(),
-            algorithm = algorithm,
+            keyData = rawKey.toBufferSource(),
+            algorithm = webImportAlgorithm,
             extractable = false,
             keyUsages = jsArrayOf(KeyUsage.encrypt)
         )
         return crypto.subtle.encrypt(
-            algorithm = algorithm,
-            key = key,
+            algorithm = webAlgorithm,
+            key = cryptoKey,
             data = messagePlaintext.toBufferSource()
         ).toByteArray()
     }
 
+    @OptIn(ExperimentalWasmJsInterop::class)
     actual suspend fun decrypt(
         algorithm: Algorithm,
-        key: ByteArray,
+        key: SecretKey,
         nonce: ByteArray,
         messageCiphertext: ByteArray,
         aad: ByteArray?
     ): ByteArray {
-        val algorithm = unsafeJso<AesGcmParams> {
-            name = "AES-GCM"
-            additionalData = (aad ?: byteArrayOf()).toBufferSource()
-            iv = nonce.toBufferSource()
-            tagLength = 128
+        key.checkNotDestroyed()
+        val rawKey = key.data
+        val (webAlgorithm, webImportAlgorithm) = when (algorithm) {
+            Algorithm.A128GCM, Algorithm.A192GCM, Algorithm.A256GCM -> {
+                val params = unsafeJso<AesGcmParams> {
+                    name = "AES-GCM"
+                    additionalData = (aad ?: byteArrayOf()).toBufferSource()
+                    iv = nonce.toBufferSource()
+                    tagLength = 128
+                }
+                Pair(params, params)
+            }
+            Algorithm.A128CBC, Algorithm.A192CBC, Algorithm.A256CBC -> {
+                val params = unsafeJso<AesCbcParams> {
+                    name = "AES-CBC"
+                    iv = nonce.toBufferSource()
+                }
+                Pair(params, params)
+            }
+            else -> throw IllegalArgumentException("Unsupported algorithm $algorithm")
         }
-        val key = crypto.subtle.importKey(
+        val cryptoKey = crypto.subtle.importKey(
             format = KeyFormat.Companion.raw,
-            keyData = key.toBufferSource(),
-            algorithm = algorithm,
+            keyData = rawKey.toBufferSource(),
+            algorithm = webImportAlgorithm,
             extractable = false,
             keyUsages = jsArrayOf(KeyUsage.decrypt)
         )
         try {
             return crypto.subtle.decrypt(
-                algorithm = algorithm,
-                key = key,
+                algorithm = webAlgorithm,
+                key = cryptoKey,
                 data = messageCiphertext.toBufferSource()
             ).toByteArray()
-        } catch (e : Throwable) {
+        } catch (e : JsException) {
+            throw IllegalStateException("Error decrypting", e)
+        } catch (e : Exception) {
+            if (e is CancellationException) throw e
             throw IllegalStateException("Error decrypting", e)
         }
     }
@@ -287,6 +430,97 @@ actual object Crypto {
 
             EcCurve.X25519,
             EcCurve.X448 -> throw IllegalArgumentException("Unsupported algorithm $algorithm")
+        }
+    }
+
+    @OptIn(ExperimentalWasmJsInterop::class)
+    actual suspend fun checkSignature(
+        publicKey: RsaPublicKey,
+        message: ByteArray,
+        algorithm: Algorithm,
+        signature: RsaSignature
+    ) {
+        val (name, hashName, saltLength) = when (algorithm.joseAlgorithmIdentifier) {
+            "RS256" -> Triple("RSASSA-PKCS1-v1_5", "SHA-256", 0)
+            "RS384" -> Triple("RSASSA-PKCS1-v1_5", "SHA-384", 0)
+            "RS512" -> Triple("RSASSA-PKCS1-v1_5", "SHA-512", 0)
+            "PS256" -> Triple("RSA-PSS", "SHA-256", 32)
+            "PS384" -> Triple("RSA-PSS", "SHA-384", 48)
+            "PS512" -> Triple("RSA-PSS", "SHA-512", 64)
+            else -> throw IllegalArgumentException("Unsupported RSA algorithm $algorithm")
+        }
+        val importedKey = crypto.subtle.importKey(
+            format = KeyFormat.Companion.spki,
+            keyData = publicKey.toSubjectPublicKeyInfo().toBufferSource(),
+            algorithm = unsafeJso<RsaHashedImportParams> {
+                this.name = name
+                hash = hashName.toJsString()
+            },
+            extractable = false,
+            keyUsages = jsArrayOf(KeyUsage.verify)
+        )
+        val verificationAlgorithm: web.crypto.Algorithm = if (name == "RSA-PSS") {
+            unsafeJso<RsaPssParams> {
+                this.name = name
+                this.saltLength = saltLength
+            }
+        } else {
+            unsafeJso<web.crypto.Algorithm> {
+                this.name = name
+            }
+        }
+        if (!crypto.subtle.verify(
+                algorithm = verificationAlgorithm,
+                key = importedKey,
+                signature = signature.signature.toBufferSource(),
+                data = message.toBufferSource(),
+            )
+        ) {
+            throw SignatureVerificationException("Signature verification failed")
+        }
+    }
+
+    @OptIn(ExperimentalWasmJsInterop::class)
+    actual suspend fun checkSignature(
+        publicKey: MlDsaPublicKey,
+        message: ByteArray,
+        algorithm: Algorithm,
+        signature: MlDsaSignature
+    ) {
+        require(algorithm == publicKey.algorithm) {
+            "Signature algorithm $algorithm doesn't match key algorithm ${publicKey.algorithm}"
+        }
+        val algName = when (publicKey.algorithm) {
+            Algorithm.ML_DSA_44 -> "ML-DSA-44"
+            Algorithm.ML_DSA_65 -> "ML-DSA-65"
+            Algorithm.ML_DSA_87 -> "ML-DSA-87"
+            else -> throw IllegalArgumentException("Unsupported ML-DSA algorithm ${publicKey.algorithm}")
+        }
+        val importedKey = try {
+            crypto.subtle.importKey(
+                format = KeyFormat.Companion.spki,
+                keyData = publicKey.toSubjectPublicKeyInfo().toBufferSource(),
+                algorithm = unsafeJso<web.crypto.Algorithm> { this.name = algName },
+                extractable = false,
+                keyUsages = jsArrayOf(KeyUsage.verify)
+            )
+        } catch (_: Throwable) {
+            crypto.subtle.importKey(
+                format = KeyFormat.Companion.raw,
+                keyData = publicKey.encoded.toByteArray().toBufferSource(),
+                algorithm = unsafeJso<web.crypto.Algorithm> { this.name = algName },
+                extractable = false,
+                keyUsages = jsArrayOf(KeyUsage.verify)
+            )
+        }
+        val verified = crypto.subtle.verify(
+            algorithm = unsafeJso<web.crypto.Algorithm> { this.name = algName },
+            key = importedKey,
+            signature = signature.signature.toBufferSource(),
+            data = message.toBufferSource()
+        )
+        if (!verified) {
+            throw SignatureVerificationException("ML-DSA signature verification failed")
         }
     }
 
@@ -372,6 +606,130 @@ actual object Crypto {
         }
     }
 
+    @OptIn(ExperimentalWasmJsInterop::class)
+    actual suspend fun createRsaPrivateKey(keySizeBits: Int): RsaPrivateKey {
+        val key = crypto.subtle.generateKey(
+            algorithm = unsafeJso<RsaHashedKeyGenParams> {
+                name = "RSASSA-PKCS1-v1_5"
+                modulusLength = keySizeBits
+                publicExponent = byteArrayOf(1, 0, 1).toUint8Array()
+                hash = "SHA-256".toJsString()
+            },
+            extractable = true,
+            keyUsages = jsArrayOf(KeyUsage.sign, KeyUsage.verify)
+        ).unsafeCast<CryptoKeyPair>()
+        val pkcs8Bytes = crypto.subtle.exportKey(
+            format = "pkcs8".toJsString().unsafeCast<KeyFormat>(),
+            key = key.privateKey
+        ).unsafeCast<js.buffer.ArrayBufferLike>().toByteArray()
+        val spkiBytes = crypto.subtle.exportKey(
+            format = KeyFormat.Companion.spki,
+            key = key.publicKey
+        ).toByteArray()
+        val pubKey = RsaPublicKey.fromSubjectPublicKeyInfo(spkiBytes)
+        return RsaPrivateKey.fromPrivateKeyInfo(pkcs8Bytes, pubKey)
+    }
+
+    @OptIn(ExperimentalWasmJsInterop::class)
+    actual suspend fun createMlDsaPrivateKey(
+        algorithm: Algorithm
+    ): MlDsaPrivateKey {
+        val algName = when (algorithm) {
+            Algorithm.ML_DSA_44 -> "ML-DSA-44"
+            Algorithm.ML_DSA_65 -> "ML-DSA-65"
+            Algorithm.ML_DSA_87 -> "ML-DSA-87"
+            else -> throw IllegalArgumentException("Unsupported ML-DSA algorithm $algorithm")
+        }
+        val key = crypto.subtle.generateKey(
+            algorithm = unsafeJso<web.crypto.Algorithm> { this.name = algName },
+            extractable = true,
+            keyUsages = jsArrayOf(KeyUsage.sign, KeyUsage.verify)
+        ).unsafeCast<CryptoKeyPair>()
+        val pubKey = try {
+            val spkiBytes = crypto.subtle.exportKey(
+                format = KeyFormat.Companion.spki,
+                key = key.publicKey
+            ).toByteArray()
+            MlDsaPublicKey.fromSubjectPublicKeyInfo(spkiBytes)
+        } catch (_: Throwable) {
+            val rawBytes = crypto.subtle.exportKey(
+                format = KeyFormat.Companion.raw,
+                key = key.publicKey
+            ).toByteArray()
+            MlDsaPublicKey(algorithm, ByteString(rawBytes))
+        }
+        val privKey = try {
+            val pkcs8Bytes = crypto.subtle.exportKey(
+                format = "pkcs8".toJsString().unsafeCast<KeyFormat>(),
+                key = key.privateKey
+            ).unsafeCast<js.buffer.ArrayBufferLike>().toByteArray()
+            MlDsaPrivateKey.fromPrivateKeyInfo(pkcs8Bytes, pubKey)
+        } catch (_: Throwable) {
+            val rawBytes = crypto.subtle.exportKey(
+                format = KeyFormat.Companion.raw,
+                key = key.privateKey
+            ).toByteArray()
+            MlDsaPrivateKey(algorithm, ByteString(rawBytes), pubKey)
+        }
+        return privKey
+    }
+
+    @OptIn(ExperimentalWasmJsInterop::class)
+    actual suspend fun createMlKemPrivateKey(
+        algorithm: Algorithm
+    ): MlKemPrivateKey {
+        val algName = when (algorithm) {
+            Algorithm.ML_KEM_512 -> "ML-KEM-512"
+            Algorithm.ML_KEM_768 -> "ML-KEM-768"
+            Algorithm.ML_KEM_1024 -> "ML-KEM-1024"
+            else -> throw IllegalArgumentException("Unsupported ML-KEM algorithm $algorithm")
+        }
+        val encUsage = "encapsulateBits".toJsString().unsafeCast<KeyUsage>()
+        val decUsage = "decapsulateBits".toJsString().unsafeCast<KeyUsage>()
+        val key = try {
+            crypto.subtle.generateKey(
+                algorithm = unsafeJso<web.crypto.Algorithm> { this.name = algName },
+                extractable = true,
+                keyUsages = jsArrayOf(encUsage, decUsage)
+            ).unsafeCast<CryptoKeyPair>()
+        } catch (_: Throwable) {
+            val encKeyUsage = "encapsulateKey".toJsString().unsafeCast<KeyUsage>()
+            val decKeyUsage = "decapsulateKey".toJsString().unsafeCast<KeyUsage>()
+            crypto.subtle.generateKey(
+                algorithm = unsafeJso<web.crypto.Algorithm> { this.name = algName },
+                extractable = true,
+                keyUsages = jsArrayOf(encKeyUsage, decKeyUsage)
+            ).unsafeCast<CryptoKeyPair>()
+        }
+        val pubKey = try {
+            val spkiBytes = crypto.subtle.exportKey(
+                format = KeyFormat.Companion.spki,
+                key = key.publicKey
+            ).toByteArray()
+            MlKemPublicKey.fromSubjectPublicKeyInfo(spkiBytes)
+        } catch (_: Throwable) {
+            val rawBytes = crypto.subtle.exportKey(
+                format = KeyFormat.Companion.raw,
+                key = key.publicKey
+            ).toByteArray()
+            MlKemPublicKey(algorithm, ByteString(rawBytes))
+        }
+        val privKey = try {
+            val pkcs8Bytes = crypto.subtle.exportKey(
+                format = "pkcs8".toJsString().unsafeCast<KeyFormat>(),
+                key = key.privateKey
+            ).unsafeCast<js.buffer.ArrayBufferLike>().toByteArray()
+            MlKemPrivateKey.fromPrivateKeyInfo(pkcs8Bytes, pubKey)
+        } catch (_: Throwable) {
+            val rawBytes = crypto.subtle.exportKey(
+                format = KeyFormat.Companion.raw,
+                key = key.privateKey
+            ).toByteArray()
+            MlKemPrivateKey(algorithm, ByteString(rawBytes), pubKey)
+        }
+        return privKey
+    }
+
     actual suspend fun sign(
         key: EcPrivateKey,
         signatureAlgorithm: Algorithm,
@@ -436,12 +794,214 @@ actual object Crypto {
         return EcSignature(r, s)
     }
 
+    @OptIn(ExperimentalWasmJsInterop::class)
+    actual suspend fun sign(
+        key: RsaPrivateKey,
+        signatureAlgorithm: Algorithm,
+        message: ByteArray
+    ): RsaSignature {
+        val (name, hashName, saltLength) = when (signatureAlgorithm.joseAlgorithmIdentifier) {
+            "RS256" -> Triple("RSASSA-PKCS1-v1_5", "SHA-256", 0)
+            "RS384" -> Triple("RSASSA-PKCS1-v1_5", "SHA-384", 0)
+            "RS512" -> Triple("RSASSA-PKCS1-v1_5", "SHA-512", 0)
+            "PS256" -> Triple("RSA-PSS", "SHA-256", 32)
+            "PS384" -> Triple("RSA-PSS", "SHA-384", 48)
+            "PS512" -> Triple("RSA-PSS", "SHA-512", 64)
+            else -> throw IllegalArgumentException("Unsupported RSA signing algorithm $signatureAlgorithm")
+        }
+        val importedKey = crypto.subtle.importKey(
+            format = "pkcs8".toJsString().unsafeCast<KeyFormat>(),
+            keyData = key.toPrivateKeyInfo().toBufferSource(),
+            algorithm = unsafeJso<RsaHashedImportParams> {
+                this.name = name
+                hash = hashName.toJsString()
+            },
+            extractable = false,
+            keyUsages = jsArrayOf(KeyUsage.sign)
+        )
+        val signingAlgorithm: web.crypto.Algorithm = if (name == "RSA-PSS") {
+            unsafeJso<RsaPssParams> {
+                this.name = name
+                this.saltLength = saltLength
+            }
+        } else {
+            unsafeJso<web.crypto.Algorithm> {
+                this.name = name
+            }
+        }
+        return RsaSignature(
+            crypto.subtle.sign(
+                algorithm = signingAlgorithm,
+                key = importedKey,
+                data = message.toBufferSource()
+            ).toByteArray()
+        )
+    }
+
+    @OptIn(ExperimentalWasmJsInterop::class)
+    actual suspend fun sign(
+        key: MlDsaPrivateKey,
+        signatureAlgorithm: Algorithm,
+        message: ByteArray
+    ): MlDsaSignature {
+        require(signatureAlgorithm == key.algorithm) {
+            "Signature algorithm $signatureAlgorithm doesn't match key algorithm ${key.algorithm}"
+        }
+        val algName = when (key.algorithm) {
+            Algorithm.ML_DSA_44 -> "ML-DSA-44"
+            Algorithm.ML_DSA_65 -> "ML-DSA-65"
+            Algorithm.ML_DSA_87 -> "ML-DSA-87"
+            else -> throw IllegalArgumentException("Unsupported ML-DSA algorithm ${key.algorithm}")
+        }
+        val importedKey = try {
+            crypto.subtle.importKey(
+                format = "pkcs8".toJsString().unsafeCast<KeyFormat>(),
+                keyData = key.toPkcs8().toBufferSource(),
+                algorithm = unsafeJso<web.crypto.Algorithm> { this.name = algName },
+                extractable = false,
+                keyUsages = jsArrayOf(KeyUsage.sign)
+            )
+        } catch (_: Throwable) {
+            crypto.subtle.importKey(
+                format = KeyFormat.Companion.raw,
+                keyData = key.encoded.toByteArray().toBufferSource(),
+                algorithm = unsafeJso<web.crypto.Algorithm> { this.name = algName },
+                extractable = false,
+                keyUsages = jsArrayOf(KeyUsage.sign)
+            )
+        }
+        val sig = crypto.subtle.sign(
+            algorithm = unsafeJso<web.crypto.Algorithm> { this.name = algName },
+            key = importedKey,
+            data = message.toBufferSource()
+        ).toByteArray()
+        return MlDsaSignature(sig)
+    }
+
+    @OptIn(ExperimentalWasmJsInterop::class)
+    actual suspend fun kemEncapsulate(
+        recipientPublicKey: MlKemPublicKey
+    ): KemResult {
+        val algName = when (recipientPublicKey.algorithm) {
+            Algorithm.ML_KEM_512 -> "ML-KEM-512"
+            Algorithm.ML_KEM_768 -> "ML-KEM-768"
+            Algorithm.ML_KEM_1024 -> "ML-KEM-1024"
+            else -> throw IllegalArgumentException("Unsupported ML-KEM algorithm ${recipientPublicKey.algorithm}")
+        }
+        val encUsage = "encapsulateBits".toJsString().unsafeCast<KeyUsage>()
+        val importedKey = try {
+            crypto.subtle.importKey(
+                format = KeyFormat.Companion.spki,
+                keyData = recipientPublicKey.toSubjectPublicKeyInfo().toBufferSource(),
+                algorithm = unsafeJso<web.crypto.Algorithm> { this.name = algName },
+                extractable = false,
+                keyUsages = jsArrayOf(encUsage)
+            )
+        } catch (_: Throwable) {
+            try {
+                crypto.subtle.importKey(
+                    format = KeyFormat.Companion.raw,
+                    keyData = recipientPublicKey.encoded.toByteArray().toBufferSource(),
+                    algorithm = unsafeJso<web.crypto.Algorithm> { this.name = algName },
+                    extractable = false,
+                    keyUsages = jsArrayOf(encUsage)
+                )
+            } catch (_: Throwable) {
+                val encKeyUsage = "encapsulateKey".toJsString().unsafeCast<KeyUsage>()
+                try {
+                    crypto.subtle.importKey(
+                        format = KeyFormat.Companion.spki,
+                        keyData = recipientPublicKey.toSubjectPublicKeyInfo().toBufferSource(),
+                        algorithm = unsafeJso<web.crypto.Algorithm> { this.name = algName },
+                        extractable = false,
+                        keyUsages = jsArrayOf(encKeyUsage)
+                    )
+                } catch (_: Throwable) {
+                    crypto.subtle.importKey(
+                        format = KeyFormat.Companion.raw,
+                        keyData = recipientPublicKey.encoded.toByteArray().toBufferSource(),
+                        algorithm = unsafeJso<web.crypto.Algorithm> { this.name = algName },
+                        extractable = false,
+                        keyUsages = jsArrayOf(encKeyUsage)
+                    )
+                }
+            }
+        }
+        val alg = unsafeJso<web.crypto.Algorithm> { this.name = algName }
+        val encapBits = subtleEncapsulateBitsAsync(crypto.subtle, alg, importedKey).await()
+        val sharedSecretBytes = encapBits.sharedKey.toByteArray()
+        val sharedSecret = SecureByteString(sharedSecretBytes)
+        sharedSecretBytes.secureZero()
+        return KemResult(
+            sharedSecret = sharedSecret,
+            ciphertext = encapBits.ciphertext.toByteArray()
+        )
+    }
+
+    @OptIn(ExperimentalWasmJsInterop::class)
+    actual suspend fun kemDecapsulate(
+        key: MlKemPrivateKey,
+        ciphertext: ByteArray
+    ): SecureByteString {
+        val algName = when (key.algorithm) {
+            Algorithm.ML_KEM_512 -> "ML-KEM-512"
+            Algorithm.ML_KEM_768 -> "ML-KEM-768"
+            Algorithm.ML_KEM_1024 -> "ML-KEM-1024"
+            else -> throw IllegalArgumentException("Unsupported ML-KEM algorithm ${key.algorithm}")
+        }
+        val decUsage = "decapsulateBits".toJsString().unsafeCast<KeyUsage>()
+        val importedKey = try {
+            crypto.subtle.importKey(
+                format = "pkcs8".toJsString().unsafeCast<KeyFormat>(),
+                keyData = key.toPkcs8().toBufferSource(),
+                algorithm = unsafeJso<web.crypto.Algorithm> { this.name = algName },
+                extractable = false,
+                keyUsages = jsArrayOf(decUsage)
+            )
+        } catch (_: Throwable) {
+            try {
+                crypto.subtle.importKey(
+                    format = KeyFormat.Companion.raw,
+                    keyData = key.encoded.toByteArray().toBufferSource(),
+                    algorithm = unsafeJso<web.crypto.Algorithm> { this.name = algName },
+                    extractable = false,
+                    keyUsages = jsArrayOf(decUsage)
+                )
+            } catch (_: Throwable) {
+                val decKeyUsage = "decapsulateKey".toJsString().unsafeCast<KeyUsage>()
+                try {
+                    crypto.subtle.importKey(
+                        format = "pkcs8".toJsString().unsafeCast<KeyFormat>(),
+                        keyData = key.toPkcs8().toBufferSource(),
+                        algorithm = unsafeJso<web.crypto.Algorithm> { this.name = algName },
+                        extractable = false,
+                        keyUsages = jsArrayOf(decKeyUsage)
+                    )
+                } catch (_: Throwable) {
+                    crypto.subtle.importKey(
+                        format = KeyFormat.Companion.raw,
+                        keyData = key.encoded.toByteArray().toBufferSource(),
+                        algorithm = unsafeJso<web.crypto.Algorithm> { this.name = algName },
+                        extractable = false,
+                        keyUsages = jsArrayOf(decKeyUsage)
+                    )
+                }
+            }
+        }
+        val alg = unsafeJso<web.crypto.Algorithm> { this.name = algName }
+        val sharedKeyBuf = subtleDecapsulateBitsAsync(crypto.subtle, alg, importedKey, ciphertext.toBufferSource()).await()
+        val sharedKeyBytes = sharedKeyBuf.toByteArray()
+        val sharedSecret = SecureByteString(sharedKeyBytes)
+        sharedKeyBytes.secureZero()
+        return sharedSecret
+    }
+
     actual suspend fun keyAgreement(
         key: EcPrivateKey,
         otherKey: EcPublicKey
-    ): ByteArray {
+    ): SecureByteString {
         require(otherKey.curve == key.curve) { "Other key for ECDH is not ${key.curve.name}" }
-        return when (key.curve) {
+        val secretBytes = when (key.curve) {
             EcCurve.P256,
             EcCurve.P384,
             EcCurve.P521,
@@ -507,10 +1067,13 @@ actual object Crypto {
                 throw IllegalStateException("Key with curve ${key.curve} does not support key-agreement")
             }
         }
+        val sharedSecret = SecureByteString(secretBytes)
+        secretBytes.secureZero()
+        return sharedSecret
     }
 
     @OptIn(ExperimentalWasmJsInterop::class)
-    internal actual suspend fun validateCertChain(certChain: X509CertChain): Boolean {
+    internal actual suspend fun validateCertChainSignatures(certChain: X509CertChain): Boolean {
         val certificates = certChain.certificates
         for (n in 1..certificates.lastIndex) {
             val toVerify = certificates[n - 1]
@@ -559,9 +1122,21 @@ actual object Crypto {
                     namedCurve = EcCurve.ED25519.jwkName.toJsString()
                 }
 
-                OID.ED25519.oid -> unsafeJso<EcKeyImportParams> {
+                OID.ED448.oid -> unsafeJso<EcKeyImportParams> {
                     name = "EdDSA"
                     namedCurve = EcCurve.ED448.jwkName.toJsString()
+                }
+
+                OID.ML_DSA_44.oid -> unsafeJso<web.crypto.Algorithm> {
+                    name = "ML-DSA-44"
+                }
+
+                OID.ML_DSA_65.oid -> unsafeJso<web.crypto.Algorithm> {
+                    name = "ML-DSA-65"
+                }
+
+                OID.ML_DSA_87.oid -> unsafeJso<web.crypto.Algorithm> {
+                    name = "ML-DSA-87"
                 }
                 // https://datatracker.ietf.org/doc/html/rfc8017#appendix-A.2.2
                 "1.2.840.113549.1.1.1" ->
@@ -614,6 +1189,15 @@ actual object Crypto {
                 OID.SIGNATURE_RS512.oid -> unsafeJso<web.crypto.Algorithm> {
                     name = "RSASSA-PKCS1-v1_5"
                 }
+                OID.ML_DSA_44.oid -> unsafeJso<web.crypto.Algorithm> {
+                    name = "ML-DSA-44"
+                }
+                OID.ML_DSA_65.oid -> unsafeJso<web.crypto.Algorithm> {
+                    name = "ML-DSA-65"
+                }
+                OID.ML_DSA_87.oid -> unsafeJso<web.crypto.Algorithm> {
+                    name = "ML-DSA-87"
+                }
                 else -> throw IllegalStateException("Unexpected Signature Algorithm OID $toVerifySignatureAlgorithmOid")
             }
             val signatureBytes = when (toVerifySignatureAlgorithmOid) {
@@ -632,7 +1216,10 @@ actual object Crypto {
                 }
                 OID.SIGNATURE_RS256.oid,
                 OID.SIGNATURE_RS384.oid,
-                OID.SIGNATURE_RS512.oid -> {
+                OID.SIGNATURE_RS512.oid,
+                OID.ML_DSA_44.oid,
+                OID.ML_DSA_65.oid,
+                OID.ML_DSA_87.oid -> {
                     signatureDerEncodedBytes
                 }
                 else -> throw IllegalStateException("Unexpected Signature Algorithm OID $toVerifySignatureAlgorithmOid")
@@ -650,3 +1237,64 @@ actual object Crypto {
         return true
     }
 }
+
+private class WebSecureRandom : Random() {
+    companion object {
+        private const val MAX_CHUNK_SIZE = 65536
+    }
+
+    override fun nextBits(bitCount: Int): Int {
+        require(bitCount in 0..32) { "bitCount must be between 0 and 32" }
+        if (bitCount == 0) return 0
+        val bytes = ByteArray(4)
+        nextBytes(bytes)
+        val intValue = (bytes[0].toInt() and 0xFF shl 24) or
+                (bytes[1].toInt() and 0xFF shl 16) or
+                (bytes[2].toInt() and 0xFF shl 8) or
+                (bytes[3].toInt() and 0xFF)
+        return intValue ushr (32 - bitCount)
+    }
+
+    override fun nextBytes(array: ByteArray, fromIndex: Int, toIndex: Int): ByteArray {
+        require(fromIndex in 0..array.size && toIndex in 0..array.size && fromIndex <= toIndex) {
+            "fromIndex ($fromIndex) or toIndex ($toIndex) out of range [0, ${array.size}]"
+        }
+        var offset = fromIndex
+        while (offset < toIndex) {
+            val chunkSize = min(toIndex - offset, MAX_CHUNK_SIZE)
+            val temp = ByteArray(chunkSize)
+            val uint8Array = temp.toUint8Array()
+            crypto.getRandomValues(uint8Array)
+            val chunkBytes = uint8Array.buffer.toByteArray()
+            chunkBytes.copyInto(array, destinationOffset = offset)
+            offset += chunkSize
+        }
+        return array
+    }
+
+    override fun nextBytes(array: ByteArray): ByteArray =
+        nextBytes(array, 0, array.size)
+
+    override fun nextBytes(size: Int): ByteArray =
+        nextBytes(ByteArray(size))
+
+    override fun nextInt(): Int {
+        val bytes = ByteArray(4)
+        nextBytes(bytes)
+        return (bytes[0].toInt() and 0xFF shl 24) or
+                (bytes[1].toInt() and 0xFF shl 16) or
+                (bytes[2].toInt() and 0xFF shl 8) or
+                (bytes[3].toInt() and 0xFF)
+    }
+
+    override fun nextLong(): Long {
+        val bytes = ByteArray(8)
+        nextBytes(bytes)
+        var result = 0L
+        for (b in bytes) {
+            result = (result shl 8) or (b.toLong() and 0xFF)
+        }
+        return result
+    }
+}
+

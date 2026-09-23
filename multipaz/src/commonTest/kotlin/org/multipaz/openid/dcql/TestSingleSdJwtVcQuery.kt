@@ -6,7 +6,8 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import org.multipaz.documenttype.knowntypes.EUPersonalID
-import org.multipaz.presentment.model.DocumentStoreTestHarness
+import org.multipaz.presentment.DocumentStoreTestHarness
+import org.multipaz.presentment.prettyPrint
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -174,11 +175,11 @@ class TestSingleSdJwtVcQuery {
                                   claims:
                                     claim:
                                       path: ["given_name"]
-                                      displayName: Given Names
+                                      displayName: Given names
                                       value: Erika
                                     claim:
                                       path: ["address","street_address"]
-                                      displayName: Resident Street
+                                      displayName: Resident street
                                       value: Sample Street 123
             """.trimIndent().trim(),
             singlePidQuery().execute(
@@ -211,11 +212,11 @@ class TestSingleSdJwtVcQuery {
                                   claims:
                                     claim:
                                       path: ["given_name"]
-                                      displayName: Given Names
+                                      displayName: Given names
                                       value: Erika
                                     claim:
                                       path: ["address","street_address"]
-                                      displayName: Resident Street
+                                      displayName: Resident street
                                       value: Sample Street 123
                               match:
                                 credential:
@@ -224,11 +225,11 @@ class TestSingleSdJwtVcQuery {
                                   claims:
                                     claim:
                                       path: ["given_name"]
-                                      displayName: Given Names
+                                      displayName: Given names
                                       value: Max
                                     claim:
                                       path: ["address","street_address"]
-                                      displayName: Resident Street
+                                      displayName: Resident street
                                       value: Sample Street 456
             """.trimIndent().trim(),
             singlePidQuery().execute(
@@ -261,11 +262,11 @@ class TestSingleSdJwtVcQuery {
                                   claims:
                                     claim:
                                       path: ["given_name"]
-                                      displayName: Given Names
+                                      displayName: Given names
                                       value: Erika
                                     claim:
                                       path: ["address","street_address"]
-                                      displayName: Resident Street
+                                      displayName: Resident street
                                       value: Sample Street 123
             """.trimIndent().trim(),
             singlePidQuery().execute(
@@ -297,7 +298,7 @@ class TestSingleSdJwtVcQuery {
                                   claims:
                                     claim:
                                       path: ["given_name"]
-                                      displayName: Given Names
+                                      displayName: Given names
                                       value: Erika
                                     claim:
                                       path: ["address"]

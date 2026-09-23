@@ -37,18 +37,13 @@ import org.multipaz.crypto.EcPublicKey
 import org.multipaz.crypto.X500Name
 import org.multipaz.crypto.X509Cert
 import org.multipaz.crypto.X509KeyUsage
-import org.multipaz.documenttype.DocumentTypeRepository
-import org.multipaz.mdoc.credential.MdocCredential
-import org.multipaz.mdoc.mso.StaticAuthDataParser
 import org.multipaz.mdoc.mso.StaticAuthDataParser.StaticAuthData
 import org.multipaz.mdoc.request.DeviceRequestParser
-import org.multipaz.request.MdocRequest
-import org.multipaz.request.MdocRequestedClaim
-import org.multipaz.request.Requester
 import org.multipaz.util.Logger
 import kotlin.time.Instant
 import org.multipaz.cbor.buildCborMap
 import org.multipaz.crypto.AsymmetricKey
+import org.multipaz.crypto.PublicKey
 import org.multipaz.crypto.X509Extension
 import kotlin.random.Random
 
@@ -93,7 +88,7 @@ object MdocUtil {
      */
     fun generateIssuerNameSpaces(
         data: NameSpacedData,
-        randomProvider: Random,
+        randomProvider: Random = Crypto.secureRandom,
         dataElementRandomSize: Int,
         overrides: Map<String, Map<String, ByteArray>>?
     ): Map<String, List<ByteArray>> {
@@ -496,7 +491,7 @@ object MdocUtil {
      */
     suspend fun generateDsCertificate(
         iacaKey: AsymmetricKey.X509Certified,
-        dsKey: EcPublicKey,
+        dsKey: PublicKey,
         subject: X500Name,
         serial: ASN1Integer,
         validFrom: Instant,
@@ -602,6 +597,7 @@ object MdocUtil {
      * @param readerRootKey the reader root certificate and the corresponding private key.
      * @param readerKey the public part of the reader key.
      * @param subject the value to use for subject, e.g. "CN=Test Reader,C=ZZ".
+     * @param dnsName name of the host where this certificate will run (if any)
      * @param serial the serial number to use for the certificate.
      * @param validFrom the point in time the certificate should be valid from.
      * @param validUntil the point in time the certificate should be valid until.
@@ -610,8 +606,9 @@ object MdocUtil {
      */
     suspend fun generateReaderCertificate(
         readerRootKey: AsymmetricKey.X509Certified,
-        readerKey: EcPublicKey,
+        readerKey: PublicKey,
         subject: X500Name,
+        dnsName: String?,
         serial: ASN1Integer,
         validFrom: Instant,
         validUntil: Instant,
@@ -642,6 +639,24 @@ object MdocUtil {
                 false,
                 readerRootCert.getExtensionValue(OID.X509_EXTENSION_CRL_DISTRIBUTION_POINTS.oid)!!
             )
+        if (dnsName != null) {
+            builder.addExtension(
+                OID.X509_EXTENSION_SUBJECT_ALT_NAME.oid,
+                false,
+                ASN1.encode(
+                    ASN1Sequence(
+                        listOf(
+                            ASN1TaggedObject(
+                                ASN1TagClass.CONTEXT_SPECIFIC,
+                                ASN1Encoding.PRIMITIVE,
+                                2, // dNSName
+                                dnsName.encodeToByteArray()
+                            )
+                        )
+                    )
+                )
+            )
+        }
         for (extension in extensions) {
             builder.addExtension(
                 oid = extension.oid,
@@ -650,37 +665,6 @@ object MdocUtil {
             )
         }
         return builder.build()
-    }
-
-    /**
-     * Helper function to generate a list of claims for an mdoc.
-     *
-     * @param docType the mdoc document type.
-     * @param requestedData a map from namespace into a list of data elements where each
-     *     pair is the data element name and whether the data element will be retained.
-     * @param documentTypeRepository a [DocumentTypeRepository] used to determine the display name for claims.
-     * @param mdocCredential if set, the returned list is filtered so it only references data
-     *     elements available in the credential.
-     */
-    fun generateRequestedClaims(
-        docType: String,
-        requestedData: Map<String, List<Pair<String, Boolean>>>,
-        documentTypeRepository: DocumentTypeRepository,
-        mdocCredential: MdocCredential?,
-    ): List<MdocRequestedClaim> {
-        val ret = mutableListOf<MdocRequestedClaim>()
-        for ((namespaceName, listOfDe) in requestedData) {
-            for ((dataElementName, intentToRetain) in listOfDe) {
-                ret.add(
-                    MdocRequestedClaim(
-                        namespaceName = namespaceName,
-                        dataElementName = dataElementName,
-                        intentToRetain = intentToRetain,
-                    )
-                )
-            }
-        }
-        return filterConsentFields(ret, mdocCredential)
     }
 }
 
@@ -728,80 +712,5 @@ fun String.mdocVersionCompareTo(otherVersion: String): Int {
         return -1
     }
     return 0
-}
-
-/**
- * Convert to a [MdocRequest].
- *
- * @param documentTypeRepository a [DocumentTypeRepository] used to determine the display name for claims.
- * @param mdocCredential if set, the returned list is filtered so it only references data
- *     elements available in the credential.
- * @param requesterAppId the appId if an app is making the request or `null`.
- * @param requesterOrigin the origin or `null`.
- */
-fun DeviceRequestParser.DocRequest.toMdocRequest(
-    documentTypeRepository: DocumentTypeRepository,
-    mdocCredential: MdocCredential?,
-    requesterAppId: String? = null,
-    requesterOrigin: String? = null,
-): MdocRequest {
-    val requestedData = mutableMapOf<String, MutableList<Pair<String, Boolean>>>()
-    for (namespaceName in namespaces) {
-        for (dataElementName in getEntryNames(namespaceName)) {
-            val intentToRetain = getIntentToRetain(namespaceName, dataElementName)
-            requestedData.getOrPut(namespaceName) { mutableListOf() }
-                .add(Pair(dataElementName, intentToRetain))
-        }
-    }
-    return MdocRequest(
-        requester = Requester(
-            certChain = if (readerAuthenticated) {
-                readerCertificateChain
-            } else {
-                null
-            },
-            appId = requesterAppId,
-            origin = requesterOrigin
-        ),
-        requestedClaims = MdocUtil.generateRequestedClaims(
-            docType,
-            requestedData,
-            documentTypeRepository,
-            mdocCredential
-        ),
-        docType = docType,
-        zkSystemSpecs = this.zkSystemSpecs
-    )
-}
-
-private fun calcAvailableDataElements(
-    issuerNameSpaces: Map<String, List<ByteArray>>
-): Map<String, Set<String>> {
-    val ret = mutableMapOf<String, Set<String>>()
-    for (nameSpaceName in issuerNameSpaces.keys) {
-        val innerSet = mutableSetOf<String>()
-        for (encodedIssuerSignedItemBytes in issuerNameSpaces[nameSpaceName]!!) {
-            val issuerSignedItem = Cbor.decode(encodedIssuerSignedItemBytes).asTaggedEncodedCbor
-            val elementIdentifier = issuerSignedItem["elementIdentifier"].asTstr
-            innerSet.add(elementIdentifier)
-        }
-        ret[nameSpaceName] = innerSet
-    }
-    return ret
-}
-
-private fun filterConsentFields(
-    list: List<MdocRequestedClaim>,
-    credential: MdocCredential?
-): List<MdocRequestedClaim> {
-    if (credential == null) {
-        return list
-    }
-    val staticAuthData = StaticAuthDataParser(credential.issuerProvidedData.toByteArray()).parse()
-    val availableDataElements = calcAvailableDataElements(staticAuthData.digestIdMapping)
-    return list.filter { mdocConsentField ->
-        availableDataElements[mdocConsentField.namespaceName]
-            ?.contains(mdocConsentField.dataElementName) != null
-    }
 }
 

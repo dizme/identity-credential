@@ -1,5 +1,6 @@
 package org.multipaz.mdoc.response
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.io.bytestring.ByteString
 import org.multipaz.cbor.Bstr
 import org.multipaz.cbor.Cbor
@@ -16,6 +17,7 @@ import org.multipaz.mdoc.devicesigned.buildDeviceNamespaces
 import org.multipaz.mdoc.issuersigned.IssuerNamespaces
 import org.multipaz.mdoc.request.EncryptionParameters
 import org.multipaz.mdoc.zkp.ZkDocument
+import org.multipaz.presentment.TransactionData
 import org.multipaz.request.MdocRequestedClaim
 import kotlin.time.Clock
 import kotlin.time.Instant
@@ -48,20 +50,22 @@ data class EncryptedDocuments internal constructor(
      * @param recipientPrivateKey the private key used for decryption.
      * @param encryptionParameters the same [EncryptionParameters] as transferred in the [org.multipaz.mdoc.request.DeviceRequest].
      * @param sessionTranscript the session transcript.
-     * @param atTime the point in time for validating the whether returned documents are valid.
+     * @param transactionDataList list of transaction for each document in this [EncryptedDocuments]
+     * @param atTime the point in time for validating whether returned documents are valid.
      * @return a [EncryptedDocumentsPlaintext].
      */
     suspend fun decrypt(
         recipientPrivateKey: AsymmetricKey,
         encryptionParameters: EncryptionParameters,
         sessionTranscript: DataItem,
+        transactionDataList: List<List<TransactionData<*>>> = emptyList(),
         atTime: Instant = Clock.System.now()
     ): EncryptedDocumentsPlaintext {
         val encSessionTranscript = buildCborArray {
             add(sessionTranscript.asArray[0])
             add(Tagged(
                 tagNumber = Tagged.ENCODED_CBOR,
-                taggedItem = Bstr(Cbor.encode(encryptionParameters.toDataItem()))
+                taggedItem = Bstr(Cbor.encode(encryptionParameters.dataItem))
             ))
             add(sessionTranscript.asArray[2])
         }
@@ -79,9 +83,28 @@ data class EncryptedDocuments internal constructor(
 
         encDocsPt.documents.forEachIndexed { index, document ->
             try {
-                document.verify(encSessionTranscript, null, atTime)
-            } catch (e: Throwable) {
+                val transactionData = if (index < transactionDataList.size) {
+                    transactionDataList[index]
+                } else {
+                    emptyList()
+                }
+                document.verify(encSessionTranscript, null, transactionData, atTime)
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
                 throw IllegalStateException("Error verifying document $index in decrypted DeviceResponse", e)
+            }
+        }
+        encDocsPt.otherDocuments.forEachIndexed { index, document ->
+            try {
+                val transactionData = if (index < transactionDataList.size) {
+                    transactionDataList[index]
+                } else {
+                    emptyList()
+                }
+                document.verify(encSessionTranscript, null, transactionData, atTime)
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                throw IllegalStateException("Error verifying otherDocument $index in decrypted DeviceResponse", e)
             }
         }
 
@@ -104,7 +127,7 @@ data class EncryptedDocuments internal constructor(
             add(sessionTranscript.asArray[0])
             add(Tagged(
                 tagNumber = Tagged.ENCODED_CBOR,
-                taggedItem = Bstr(Cbor.encode(encryptionParameters.toDataItem()))
+                taggedItem = Bstr(Cbor.encode(encryptionParameters.dataItem))
             ))
             add(sessionTranscript.asArray[2])
         }
@@ -178,6 +201,16 @@ data class EncryptedDocuments internal constructor(
         fun addZkDocument(zkDocument: ZkDocument) = builder.addZkDocument(zkDocument)
 
         /**
+         * Adds a [OtherDocument] to an encrypted documents structure.
+         *
+         * @param otherDocument an [OtherDocument].
+         * @return the builder.
+         */
+        fun addOtherDocument(
+            otherDocument: OtherDocument
+        ) = builder.addOtherDocument(otherDocument)
+
+        /**
          * Builds the [EncryptedDocuments] structure.
          *
          * @return a [EncryptedDocuments] structure.
@@ -185,7 +218,8 @@ data class EncryptedDocuments internal constructor(
         suspend fun build(): EncryptedDocuments {
             val encryptedDocumentsPlaintext = EncryptedDocumentsPlaintext(
                 documents = builder.documents,
-                zkDocuments = builder.zkDocuments
+                zkDocuments = builder.zkDocuments,
+                otherDocuments = builder.otherDocuments,
             )
 
             val encrypter = Hpke.getEncrypter(

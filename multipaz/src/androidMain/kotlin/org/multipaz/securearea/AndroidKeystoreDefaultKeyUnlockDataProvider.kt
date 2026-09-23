@@ -1,6 +1,6 @@
 package org.multipaz.securearea
 
-import kotlinx.coroutines.currentCoroutineContext
+import org.multipaz.crypto.Algorithm
 import org.multipaz.prompt.AndroidPromptModel
 import org.multipaz.prompt.PromptModelNotAvailableException
 import org.multipaz.prompt.Reason
@@ -10,6 +10,7 @@ object AndroidKeystoreDefaultKeyUnlockDataProvider: KeyUnlockDataProvider {
     override suspend fun getKeyUnlockData(
         secureArea: SecureArea,
         alias: String,
+        algorithm: Algorithm,
         unlockReason: Reason
     ): KeyUnlockData {
         check(secureArea is AndroidKeystoreSecureArea)
@@ -22,9 +23,14 @@ object AndroidKeystoreDefaultKeyUnlockDataProvider: KeyUnlockDataProvider {
         }
         val humanReadable = promptModel.toHumanReadable(unlockReason, null)
         if (!promptModel.showBiometricPrompt(
-                cryptoObject = unlockData.getCryptoObjectForSigning(),
-                title = humanReadable.title,
-                subtitle = humanReadable.subtitle,
+                cryptoObject = if (algorithm.isSigning) {
+                    unlockData.getCryptoObjectForSigning()
+                } else if (algorithm.isKeyAgreement) {
+                    unlockData.cryptoObjectForKeyAgreement
+                } else {
+                    throw IllegalArgumentException("Algorithm isn't for signing or key agreement")
+                },
+                reason = unlockReason,
                 userAuthenticationTypes = keyInfo.userAuthenticationTypes,
                 requireConfirmation = humanReadable.requireConfirmation
             )

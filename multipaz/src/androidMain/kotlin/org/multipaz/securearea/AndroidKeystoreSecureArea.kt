@@ -15,6 +15,7 @@
  */
 package org.multipaz.securearea
 
+import kotlinx.coroutines.CancellationException
 import android.app.KeyguardManager
 import android.content.Context
 import android.content.pm.FeatureInfo
@@ -24,28 +25,43 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyInfo
 import android.security.keystore.KeyProperties
 import android.security.keystore.UserNotAuthenticatedException
+import androidx.annotation.RequiresApi
 import org.multipaz.context.applicationContext
 import org.multipaz.crypto.Algorithm
 import org.multipaz.crypto.EcCurve
 import org.multipaz.crypto.EcPublicKey
 import org.multipaz.crypto.EcSignature
+import org.multipaz.crypto.MlDsaSignature
+import org.multipaz.crypto.RsaSignature
+import org.multipaz.crypto.SecretKey
+import org.multipaz.crypto.SecureByteString
+import org.multipaz.crypto.Signature
+import org.multipaz.crypto.secureZero
 import org.multipaz.crypto.X509Cert
 import org.multipaz.crypto.X509CertChain
+import org.multipaz.crypto.checkSignature
 import org.multipaz.crypto.javaPublicKey
 import org.multipaz.storage.Storage
 import org.multipaz.storage.StorageTable
 import org.multipaz.storage.StorageTableSpec
 import org.multipaz.util.Logger
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import kotlin.time.Instant
 import kotlinx.io.bytestring.ByteString
 import kotlinx.io.bytestring.buildByteString
+import kotlinx.io.bytestring.encodeToByteString
 import org.multipaz.asn1.ASN1
 import org.multipaz.asn1.ASN1Integer
 import org.multipaz.asn1.ASN1Sequence
+import org.multipaz.crypto.Crypto
+import org.multipaz.device.AndroidKeystoreSecurityLevel
 import org.multipaz.prompt.Reason
+import org.multipaz.storage.ephemeral.EphemeralStorage
+import org.multipaz.util.validateAndroidKeyAttestation
 import java.io.IOException
+import java.security.GeneralSecurityException
 import java.security.InvalidAlgorithmParameterException
 import java.security.KeyFactory
 import java.security.KeyPairGenerator
@@ -53,16 +69,19 @@ import java.security.KeyStore
 import java.security.KeyStoreException
 import java.security.NoSuchAlgorithmException
 import java.security.NoSuchProviderException
+import java.security.PrivateKey
 import java.security.ProviderException
-import java.security.Signature
+import java.security.Signature as JavaSignature
 import java.security.SignatureException
 import java.security.UnrecoverableEntryException
+import java.security.UnrecoverableKeyException
 import java.security.cert.CertificateException
 import java.security.spec.ECGenParameterSpec
 import java.security.spec.InvalidKeySpecException
 import java.sql.Date
 import javax.crypto.KeyAgreement
 import kotlin.coroutines.coroutineContext
+import kotlin.random.Random
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
@@ -116,7 +135,19 @@ class AndroidKeystoreSecureArea private constructor(
 
     private val supportedAlgorithms_: List<Algorithm> by lazy {
         val algorithms = mutableListOf(
-            Algorithm.ESP256
+            Algorithm.ESP256,
+            Algorithm.RS256_2048,
+            Algorithm.RS256_3072,
+            Algorithm.RS256_4096,
+            Algorithm.RS384_3072,
+            Algorithm.RS384_4096,
+            Algorithm.RS512_4096,
+            Algorithm.PS256_2048,
+            Algorithm.PS256_3072,
+            Algorithm.PS256_4096,
+            Algorithm.PS384_3072,
+            Algorithm.PS384_4096,
+            Algorithm.PS512_4096,
         )
         val capabilities = Capabilities()
         if (capabilities.curve25519Supported) {
@@ -127,6 +158,10 @@ class AndroidKeystoreSecureArea private constructor(
             if (capabilities.curve25519Supported) {
                 algorithms.add(Algorithm.ECDH_X25519)
             }
+        }
+        if (capabilities.mlDsaSupported) {
+            algorithms.add(Algorithm.ML_DSA_65)
+            algorithms.add(Algorithm.ML_DSA_87)
         }
         algorithms
     }
@@ -182,8 +217,21 @@ class AndroidKeystoreSecureArea private constructor(
         }
 
         try {
+            val isRsa = aSettings.algorithm.keySizeBits != null
+            val isMlDsa = aSettings.algorithm.isMlDsa
+            val kpgAlgorithm = when {
+                isMlDsa -> when (aSettings.algorithm) {
+                    Algorithm.ML_DSA_44 -> "ML-DSA-44"
+                    Algorithm.ML_DSA_65 -> "ML-DSA-65"
+                    Algorithm.ML_DSA_87 -> "ML-DSA-87"
+                    else -> throw IllegalArgumentException("Unsupported ML-DSA algorithm ${aSettings.algorithm}")
+                }
+                isRsa -> KeyProperties.KEY_ALGORITHM_RSA
+                else -> KeyProperties.KEY_ALGORITHM_EC
+            }
             val kpg = KeyPairGenerator.getInstance(
-                KeyProperties.KEY_ALGORITHM_EC, "AndroidKeyStore"
+                kpgAlgorithm,
+                "AndroidKeyStore"
             )
             var purposes = 0
             if (aSettings.algorithm == Algorithm.ANDROID_KEYSTORE_ATTEST_KEY) {
@@ -224,14 +272,53 @@ class AndroidKeystoreSecureArea private constructor(
                         }
                     }
                 }
+                if (isMlDsa) {
+                    if (aSettings.useStrongBox) {
+                        require(keymintSbFeatureLevel >= 500) {
+                            "ML-DSA not supported on this StrongBox KeyMint version"
+                        }
+                    } else {
+                        require(keymintTeeFeatureLevel >= 500) {
+                            "ML-DSA not supported on this KeyMint version"
+                        }
+                    }
+                }
             }
             val builder = KeyGenParameterSpec.Builder(newKeyAlias, purposes)
             if (aSettings.algorithm != Algorithm.ANDROID_KEYSTORE_ATTEST_KEY) {
-                when (aSettings.algorithm.curve) {
-                    EcCurve.P256 -> builder.setDigests(KeyProperties.DIGEST_SHA256)
-                    EcCurve.ED25519 -> builder.setAlgorithmParameterSpec(ECGenParameterSpec("ed25519"))
-                    EcCurve.X25519 -> builder.setAlgorithmParameterSpec(ECGenParameterSpec("x25519"))
-                    else -> throw IllegalArgumentException("Curve is not supported")
+                if (isRsa) {
+                    builder.setKeySize(aSettings.algorithm.keySizeBits!!)
+                    val digest = when (aSettings.algorithm.hashAlgorithm) {
+                        Algorithm.SHA256 -> KeyProperties.DIGEST_SHA256
+                        Algorithm.SHA384 -> KeyProperties.DIGEST_SHA384
+                        Algorithm.SHA512 -> KeyProperties.DIGEST_SHA512
+                        else -> throw IllegalArgumentException("Unsupported hash algorithm ${aSettings.algorithm.hashAlgorithm}")
+                    }
+                    builder.setDigests(digest)
+                    val padding = when (aSettings.algorithm) {
+                        Algorithm.RS256_2048, Algorithm.RS256_3072, Algorithm.RS256_4096,
+                        Algorithm.RS384_3072, Algorithm.RS384_4096,
+                        Algorithm.RS512_4096 -> KeyProperties.SIGNATURE_PADDING_RSA_PKCS1
+                        Algorithm.PS256_2048, Algorithm.PS256_3072, Algorithm.PS256_4096,
+                        Algorithm.PS384_3072, Algorithm.PS384_4096,
+                        Algorithm.PS512_4096 -> KeyProperties.SIGNATURE_PADDING_RSA_PSS
+                        else -> throw IllegalArgumentException("Unsupported RSA algorithm ${aSettings.algorithm}")
+                    }
+                    builder.setSignaturePaddings(padding)
+                } else if (isMlDsa) {
+                    builder.setDigests(KeyProperties.DIGEST_NONE)
+                } else {
+                    when (aSettings.algorithm.curve) {
+                        EcCurve.P256 -> builder.setDigests(KeyProperties.DIGEST_SHA256)
+                        EcCurve.ED25519 -> {
+                            builder.setAlgorithmParameterSpec(ECGenParameterSpec("ed25519"))
+                            // Ed25519 hashes internally; the keystore op must be authorized for
+                            // DIGEST_NONE or signing fails with "Keystore operation failed".
+                            builder.setDigests(KeyProperties.DIGEST_NONE)
+                        }
+                        EcCurve.X25519 -> builder.setAlgorithmParameterSpec(ECGenParameterSpec("x25519"))
+                        else -> throw IllegalArgumentException("Curve is not supported")
+                    }
                 }
             }
             if (aSettings.userAuthenticationRequired) {
@@ -290,17 +377,13 @@ class AndroidKeystoreSecureArea private constructor(
                 builder.setKeyValidityEnd(notAfter)
                 builder.setCertificateNotAfter(notAfter)
             }
-            try {
-                kpg.initialize(builder.build())
-            } catch (e: InvalidAlgorithmParameterException) {
-                throw IllegalStateException(e)
-            }
+            kpg.initialize(builder.build())
             kpg.generateKeyPair()
-        } catch (e: NoSuchAlgorithmException) {
-            throw IllegalStateException("Error creating key", e)
-        } catch (e: NoSuchProviderException) {
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
             throw IllegalStateException("Error creating key", e)
         }
+
         val attestationCerts = mutableListOf<X509Cert>()
         try {
             val ks = KeyStore.getInstance("AndroidKeyStore")
@@ -311,6 +394,7 @@ class AndroidKeystoreSecureArea private constructor(
                 attestationCerts.add(X509Cert(ByteString(certificate.encoded)))
             }
         } catch (e: Exception) {
+            if (e is CancellationException) throw e
             throw IllegalStateException(e)
         }
         //Logger.d(TAG, "EC key with alias '$alias' created")
@@ -340,29 +424,22 @@ class AndroidKeystoreSecureArea private constructor(
         withContext(Dispatchers.IO) {
             ks.load(null)
         }
-        val entry = ks.getEntry(existingAlias, null)
+        // getKey() rather than getEntry(): getEntry() builds a PrivateKeyEntry that rejects
+        // Curve25519 keys on some devices (b/282063229); see loadKeyIgnoreKeyInvalidated.
+        val privateKey = (ks.getKey(existingAlias, null) as? PrivateKey)
             ?: throw IllegalArgumentException("A key with this alias doesn't exist")
 
-        val keyInfo: KeyInfo = try {
-            val privateKey = (entry as KeyStore.PrivateKeyEntry).privateKey
-            val factory = KeyFactory.getInstance(privateKey.algorithm, "AndroidKeyStore")
-            try {
-                factory.getKeySpec(privateKey, KeyInfo::class.java)
-            } catch (e: InvalidKeySpecException) {
-                throw IllegalStateException("Given key is not an Android Keystore key", e)
+        val keyInfo = try {
+            // "EdDSA" has no dedicated AndroidKeyStore factory; fall back to "EC" for Curve25519.
+            val factory = try {
+                KeyFactory.getInstance(privateKey.algorithm, "AndroidKeyStore")
+            } catch (e: NoSuchAlgorithmException) {
+                KeyFactory.getInstance("EC", "AndroidKeyStore")
             }
-        } catch (e: UnrecoverableEntryException) {
-            throw IllegalStateException(e.message, e)
-        } catch (e: CertificateException) {
-            throw IllegalStateException(e.message, e)
-        } catch (e: KeyStoreException) {
-            throw IllegalStateException(e.message, e)
-        } catch (e: IOException) {
-            throw IllegalStateException(e.message, e)
-        } catch (e: NoSuchAlgorithmException) {
-            throw IllegalStateException(e.message, e)
-        } catch (e: NoSuchProviderException) {
-            throw IllegalStateException(e.message, e)
+            factory.getKeySpec(privateKey, KeyInfo::class.java)
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            throw IllegalStateException("Given key is not an Android Keystore key", e)
         }
 
         // Need to generate the data which getKeyInfo() reads from disk.
@@ -380,16 +457,34 @@ class AndroidKeystoreSecureArea private constructor(
                 attestationCerts.add(X509Cert(ByteString(certificate.encoded)))
             }
         } catch (e: Exception) {
+            if (e is CancellationException) throw e
             throw IllegalStateException(e)
         }
 
         // algorithm
-        val ksPurposes = keyInfo.purposes
-        if (ksPurposes and KeyProperties.PURPOSE_SIGN != 0) {
-            settingsBuilder.setAlgorithm(Algorithm.ESP256)
-        }
-        if (ksPurposes and KeyProperties.PURPOSE_AGREE_KEY != 0) {
-            settingsBuilder.setAlgorithm(Algorithm.ECDH_P256)
+        if (privateKey.algorithm == "RSA") {
+            val keySize = keyInfo.keySize
+            val isPss = keyInfo.signaturePaddings.contains(KeyProperties.SIGNATURE_PADDING_RSA_PSS)
+            val alg = when (keySize) {
+                3072 -> if (isPss) Algorithm.PS256_3072 else Algorithm.RS256_3072
+                4096 -> if (isPss) Algorithm.PS256_4096 else Algorithm.RS256_4096
+                else -> if (isPss) Algorithm.PS256_2048 else Algorithm.RS256_2048
+            }
+            settingsBuilder.setAlgorithm(alg)
+        } else if (privateKey.algorithm == "ML-DSA-65") {
+            settingsBuilder.setAlgorithm(Algorithm.ML_DSA_65)
+        } else if (privateKey.algorithm == "ML-DSA-87") {
+            settingsBuilder.setAlgorithm(Algorithm.ML_DSA_87)
+        } else if (privateKey.algorithm == "ML-DSA-44") {
+            settingsBuilder.setAlgorithm(Algorithm.ML_DSA_44)
+        } else {
+            val ksPurposes = keyInfo.purposes
+            if (ksPurposes and KeyProperties.PURPOSE_SIGN != 0) {
+                settingsBuilder.setAlgorithm(Algorithm.ESP256)
+            }
+            if (ksPurposes and KeyProperties.PURPOSE_AGREE_KEY != 0) {
+                settingsBuilder.setAlgorithm(Algorithm.ECDH_P256)
+            }
         }
 
         // useStrongBox
@@ -419,7 +514,7 @@ class AndroidKeystoreSecureArea private constructor(
             userAuthenticationTypes
         )
         saveKeyMetadata(existingAlias, settingsBuilder.build(), X509CertChain(attestationCerts))
-        Logger.d(TAG, "EC existing key with alias '$existingAlias' created")
+        Logger.d(TAG, "Existing key with alias '$existingAlias' created")
     }
 
     override suspend fun deleteKey(alias: String) {
@@ -435,14 +530,9 @@ class AndroidKeystoreSecureArea private constructor(
             }
             ks.deleteEntry(alias)
             storageTable.delete(alias, partitionId)
-        } catch (e: CertificateException) {
-            throw IllegalStateException("Error loading keystore", e)
-        } catch (e: IOException) {
-            throw IllegalStateException("Error loading keystore", e)
-        } catch (e: NoSuchAlgorithmException) {
-            throw IllegalStateException("Error loading keystore", e)
-        } catch (e: KeyStoreException) {
-            throw IllegalStateException("Error loading keystore", e)
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            throw IllegalStateException( e)
         }
         Logger.d(TAG, "EC key with alias '$alias' deleted")
     }
@@ -451,13 +541,18 @@ class AndroidKeystoreSecureArea private constructor(
         alias: String,
         dataToSign: ByteArray,
         unlockReason: Reason
-    ): EcSignature =
+    ): Signature =
         try {
             signNonInteractive(alias, dataToSign, null)
         } catch (_: KeyLockedException) {
             val unlockDataProvider = coroutineContext[KeyUnlockDataProvider.Key]
                 ?: AndroidKeystoreDefaultKeyUnlockDataProvider
-            val unlockData = unlockDataProvider.getKeyUnlockData(this, alias, unlockReason)
+            val unlockData = unlockDataProvider.getKeyUnlockData(
+                secureArea = this,
+                alias = alias,
+                algorithm = getKeyInfo(alias).algorithm,
+                unlockReason = unlockReason
+            )
             signNonInteractive(alias, dataToSign, unlockData)
         }
 
@@ -465,8 +560,8 @@ class AndroidKeystoreSecureArea private constructor(
         alias: String,
         dataToSign: ByteArray,
         keyUnlockData: KeyUnlockData?,
-    ): EcSignature {
-        val (entry, data) = loadKey(alias)
+    ): Signature {
+        val (privateKey, data) = loadKey(alias)
         val decodedData = AndroidSecureAreaKeyMetadata.fromCbor(data)
         val algorithm = decodedData.algorithm
         if (keyUnlockData != null) {
@@ -477,8 +572,14 @@ class AndroidKeystoreSecureArea private constructor(
             if (unlockData.signature != null) {
                 return try {
                     unlockData.signature!!.update(dataToSign)
-                    val derEncodedSignature = unlockData.signature!!.sign()
-                    signatureFromDer(algorithm.curve!!, derEncodedSignature)
+                    val signatureBytes = unlockData.signature!!.sign()
+                    if (algorithm.curve != null) {
+                        signatureFromDer(algorithm.curve!!, signatureBytes)
+                    } else if (algorithm.isMlDsa) {
+                        MlDsaSignature(signatureBytes)
+                    } else {
+                        RsaSignature(signatureBytes)
+                    }
                 } catch (e: SignatureException) {
                     throw IllegalStateException(e.message, e)
                 }
@@ -486,12 +587,17 @@ class AndroidKeystoreSecureArea private constructor(
         }
 
         return try {
-            val privateKey = (entry as KeyStore.PrivateKeyEntry).privateKey
-            val s = Signature.getInstance(getSignatureAlgorithmName(algorithm))
+            val s = JavaSignature.getInstance(getSignatureAlgorithmName(algorithm))
             s.initSign(privateKey)
             s.update(dataToSign)
-            val derEncodedSignature = s.sign()
-            signatureFromDer(algorithm.curve!!, derEncodedSignature)
+            val signatureBytes = s.sign()
+            if (algorithm.curve != null) {
+                signatureFromDer(algorithm.curve!!, signatureBytes)
+            } else if (algorithm.isMlDsa) {
+                MlDsaSignature(signatureBytes)
+            } else {
+                RsaSignature(signatureBytes)
+            }
         } catch (e: UserNotAuthenticatedException) {
             throw KeyLockedException("User not authenticated", e)
         } catch (e: SignatureException) {
@@ -504,6 +610,7 @@ class AndroidKeystoreSecureArea private constructor(
             }
             throw IllegalStateException(e.message, e)
         } catch (e: Exception) {
+            if (e is CancellationException) throw e
             throw IllegalArgumentException(e)
         }
     }
@@ -512,14 +619,18 @@ class AndroidKeystoreSecureArea private constructor(
         alias: String,
         otherKey: EcPublicKey,
         unlockReason: Reason
-    ): ByteArray {
+    ): SecureByteString {
         do {
             try {
                 return keyAgreementNonInteractive(alias, otherKey)
             } catch (_: KeyLockedException) {
                 val unlockDataProvider = coroutineContext[KeyUnlockDataProvider.Key]
                     ?: AndroidKeystoreDefaultKeyUnlockDataProvider
-                unlockDataProvider.getKeyUnlockData(this, alias, unlockReason)
+                unlockDataProvider.getKeyUnlockData(
+                    secureArea = this,
+                    alias = alias,
+                    algorithm = getKeyInfo(alias).algorithm,
+                    unlockReason = unlockReason)
             }
         } while (true)
     }
@@ -527,14 +638,18 @@ class AndroidKeystoreSecureArea private constructor(
     private suspend fun keyAgreementNonInteractive(
         alias: String,
         otherKey: EcPublicKey,
-    ): ByteArray {
-        val (entry, _) = loadKey(alias)
+    ): SecureByteString {
+        val (privateKey, _) = loadKey(alias)
         return try {
-            val privateKey = (entry as KeyStore.PrivateKeyEntry).privateKey
             val ka = KeyAgreement.getInstance("ECDH", "AndroidKeyStore")
             ka.init(privateKey)
             ka.doPhase(otherKey.javaPublicKey, true)
-            ka.generateSecret()
+            val rawSecret = ka.generateSecret()
+            try {
+                SecureByteString(rawSecret)
+            } finally {
+                rawSecret.secureZero()
+            }
         } catch (e: UserNotAuthenticatedException) {
             throw KeyLockedException("User not authenticated", e)
         } catch (e: ProviderException) {
@@ -548,32 +663,24 @@ class AndroidKeystoreSecureArea private constructor(
             }
             throw IllegalArgumentException(e)
         } catch (e: Exception) {
+            if (e is CancellationException) throw e
             throw IllegalArgumentException(e)
         }
     }
 
     // @throws IllegalArgumentException if the key doesn't exist.
     // @throws KeyInvalidatedException if LSKF was removed and the key is no longer available.
-    private suspend fun loadKey(alias: String): Pair<KeyStore.Entry, ByteArray> {
-        val data = storageTable.get(alias, partitionId)
-            ?: throw IllegalArgumentException("No key with given alias")
-
-        val ks = KeyStore.getInstance("AndroidKeyStore")
-        withContext(Dispatchers.IO) {
-            ks.load(null)
-        }
-        // If the LSKF is removed, all auth-bound keys are removed and the result is
-        // that KeyStore.getEntry() returns null.
-        //
-        val entry = ks.getEntry(alias, null)
-            ?: throw KeyInvalidatedException("This key is no longer available")
-
-        return Pair(entry, data.toByteArray())
+    private suspend fun loadKey(alias: String): Pair<PrivateKey, ByteArray> {
+        val (privateKey, data) = loadKeyIgnoreKeyInvalidated(alias)
+        return Pair(
+            privateKey ?: throw KeyInvalidatedException("This key is no longer available"),
+            data
+        )
     }
 
     // @throws IllegalArgumentException if the key doesn't exist.
     // @throws KeyInvalidatedException if LSKF was removed and the key is no longer available.
-    private suspend fun loadKeyIgnoreKeyInvalidated(alias: String): Pair<KeyStore.Entry?, ByteArray> {
+    private suspend fun loadKeyIgnoreKeyInvalidated(alias: String): Pair<PrivateKey?, ByteArray> {
         val data = storageTable.get(alias, partitionId)
             ?: throw IllegalArgumentException("No key with given alias")
 
@@ -581,25 +688,60 @@ class AndroidKeystoreSecureArea private constructor(
         withContext(Dispatchers.IO) {
             ks.load(null)
         }
-        val entry = ks.getEntry(alias, null)
-        return Pair(entry, data.toByteArray())
+        // Use getKey() rather than getEntry(): getEntry() builds a KeyStore.PrivateKeyEntry
+        // whose constructor rejects Curve25519 keys on some devices because the private key's
+        // algorithm name ("EdDSA") disagrees with the self-signed certificate's public-key
+        // algorithm (b/282063229). getKey() returns the PrivateKey directly and sidesteps that
+        // check. If the LSKF is removed, all auth-bound keys are removed and getKey() returns
+        // null (or throws UnrecoverableKeyException) — both mean the key is no longer available.
+        val privateKey = try {
+            ks.getKey(alias, null) as? PrivateKey
+        } catch (e: UnrecoverableKeyException) {
+            null
+        }
+        return Pair(privateKey, data.toByteArray())
     }
 
     override suspend fun getKeyInvalidated(alias: String): Boolean {
         try {
             loadKey(alias)
-        } catch (e: KeyInvalidatedException) {
+        } catch (_: KeyInvalidatedException) {
             return true
         }
         return false
     }
 
+    override suspend fun unlockKey(
+        alias: String,
+        unlockReason: Reason
+    ): List<KeyUnlockData> {
+        val keyInfo = getKeyInfo(alias)
+        if (keyInfo.userAuthenticationTypes.isEmpty()) {
+            return emptyList()
+        }
+        val unlockDataProvider = coroutineContext[KeyUnlockDataProvider.Key]
+            ?: AndroidKeystoreDefaultKeyUnlockDataProvider
+        val unlockData = unlockDataProvider.getKeyUnlockData(
+            secureArea = this,
+            alias = alias,
+            algorithm = keyInfo.algorithm,
+            unlockReason = unlockReason
+        )
+        return listOf(unlockData)
+    }
+
     override suspend fun getKeyInfo(alias: String): AndroidKeystoreKeyInfo {
-        val (entry, data) = loadKeyIgnoreKeyInvalidated(alias)
+        val (privateKey, data) = loadKeyIgnoreKeyInvalidated(alias)
         return try {
-            val keyInfo = if (entry != null) {
-                val privateKey = (entry as KeyStore.PrivateKeyEntry).privateKey
-                val factory = KeyFactory.getInstance(privateKey.algorithm, "AndroidKeyStore")
+            val keyInfo = if (privateKey != null) {
+                // AndroidKeyStore exposes its KeyInfo transform under the "EC" factory for both
+                // EC and Curve25519 keys; a Curve25519 private key reports algorithm "EdDSA",
+                // which has no dedicated AndroidKeyStore factory, so fall back to "EC".
+                val factory = try {
+                    KeyFactory.getInstance(privateKey.algorithm, "AndroidKeyStore")
+                } catch (e: NoSuchAlgorithmException) {
+                    KeyFactory.getInstance("EC", "AndroidKeyStore")
+                }
                 factory.getKeySpec(privateKey, KeyInfo::class.java)
             } else {
                 null
@@ -625,7 +767,7 @@ class AndroidKeystoreSecureArea private constructor(
             } else {
                 keyMetadata.attestation
             }
-            val publicKey = attestationCertChain.certificates.first().ecPublicKey
+            val publicKey = attestationCertChain.certificates.first().publicKey
 
             val userAuthenticationTypes = mutableSetOf<UserAuthenticationType>()
             if (keyInfo != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -654,6 +796,7 @@ class AndroidKeystoreSecureArea private constructor(
                 validUntil
             )
         } catch (e: Exception) {
+            if (e is CancellationException) throw e
             throw IllegalStateException(e)
         }
     }
@@ -769,6 +912,248 @@ class AndroidKeystoreSecureArea private constructor(
          */
         val strongBoxCurve25519Supported: Boolean
             get() = sbFeatureLevel >= 200
+
+        /**
+         * Whether ML-DSA is supported.
+         *
+         * This is only supported in KeyMint 5.0 (version 500) and higher.
+         */
+        val mlDsaSupported: Boolean
+            get() = teeFeatureLevel >= 500
+
+        /**
+         * Whether StrongBox ML-DSA is supported.
+         *
+         * This is only supported in StrongBox KeyMint 5.0 (version 500) and higher.
+         */
+        val strongBoxMlDsaSupported: Boolean
+            get() = sbFeatureLevel >= 500
+
+        /**
+         * Tests if the implementation properly supports key attestations and ECDSA signatures with Curve P-256.
+         *
+         * Key attestations and ECDSA signatures with Curve P-256 are used for ISO mdoc credentials
+         * and this function will check if this is implemented correctly on the device.
+         *
+         * Tests include check that
+         * - key attestations are correct and chains up to the well-known Google root.
+         * - the attestation is for the correct app.
+         * - the attestation says the device is in the Verified Boot GREEN state.
+         * - keys created can can properly sign messages by verifying the signature. Messages of
+         *   varying sizes from 16 bytes to 128 KiB and with random content are tested.
+         *
+         * If the checks pass no exception is thrown. If one of the checks fail [IllegalStateException] is
+         * thrown and the `message` and `cause` fields contains more details.
+         *
+         * This can be slow, observed times on 2025-era hardware is ~200 milliseconds for TEE and
+         * ~2000 milliseconds for StrongBox.
+         *
+         * @param useStrongBox `false` to test normal TEE implementation, `true` to test StrongBox.
+         * @throws IllegalArgumentException if [useStrongBox] is `true` but [strongBoxSupported] is `false`.
+         * @throws IllegalStateException if one of the checks fail.
+         */
+        @RequiresApi(Build.VERSION_CODES.P)
+        suspend fun testKeyAttestationsAndEcdsaSigning(
+            useStrongBox: Boolean
+        ) {
+            if (useStrongBox) {
+                require(strongBoxSupported) { "testStrongBox is true but device does not support StrongBox" }
+            }
+            val storage = EphemeralStorage()
+            val secureArea = create(storage = storage)
+            var keyAliasToCleanUp: String? = null
+            try {
+                val attestationChallenge = "Challenge".encodeToByteString()
+                val keyInfo = try {
+                    secureArea.createKey(
+                        alias = null,
+                        createKeySettings = buildAndroidKeystoreCreateKeySettings(attestationChallenge) {
+                            setAlgorithm(Algorithm.ESP256)
+                            setUseStrongBox(useStrongBox)
+                        }
+                    )
+                } catch (e: Exception) {
+                    if (e is CancellationException) throw e
+                    throw IllegalStateException("Error creating key: ${e.message}", e)
+                }
+                keyAliasToCleanUp = keyInfo.alias
+
+                val signatureCertificateDigests = mutableSetOf<ByteString>()
+                val pkg = applicationContext.packageManager
+                    .getPackageInfo(applicationContext.packageName, PackageManager.GET_SIGNING_CERTIFICATES)
+
+                val si = pkg.signingInfo!!
+                val signersToUse = if (si.hasMultipleSigners()) {
+                    si.apkContentsSigners.toList()
+                } else {
+                    si.signingCertificateHistory.toList()
+                }
+                signersToUse.forEach { signatureInfo ->
+                    signatureCertificateDigests.add(
+                        ByteString(Crypto.digest(Algorithm.SHA256, signatureInfo.toByteArray()))
+                    )
+                }
+
+                try {
+                    validateAndroidKeyAttestation(
+                        chain = keyInfo.attestation.certChain!!,
+                        challenge = attestationChallenge,
+                        requireGmsAttestation = true,
+                        requireVerifiedBootGreen = true,
+                        requireKeyMintSecurityLevel = if (useStrongBox) {
+                            AndroidKeystoreSecurityLevel.STRONG_BOX
+                        } else {
+                            AndroidKeystoreSecurityLevel.TRUSTED_ENVIRONMENT
+                        },
+                        requireAppSignatureCertificateDigests = signatureCertificateDigests,
+                        requireAppPackages = setOf(pkg.packageName)
+                    )
+                } catch (e: Exception) {
+                    if (e is CancellationException) throw e
+                    throw IllegalStateException("Error validating attestation: ${e.message}", e)
+                }
+
+                for (messageLen in listOf(16, 64, 256, 1024, 4*1024, 64*1024, 128*1024)) {
+                    val message = Random.Default.nextBytes(messageLen)
+                    val signature = try {
+                        secureArea.sign(
+                            alias = keyInfo.alias,
+                            dataToSign = message,
+                            unlockReason = Reason.Unspecified
+                        )
+                    } catch (e: Exception) {
+                        if (e is CancellationException) throw e
+                        throw IllegalStateException("Error signing message of $messageLen bytes", e)
+                    }
+                    try {
+                        Crypto.checkSignature(
+                            publicKey = keyInfo.publicKey,
+                            message = message,
+                            algorithm = Algorithm.ESP256,
+                            signature = signature
+                        )
+                    } catch (e: Exception) {
+                        if (e is CancellationException) throw e
+                        throw IllegalStateException("Error verifying signature for message of $messageLen bytes", e)
+                    }
+                }
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                throw IllegalStateException("Test failed: ${e.message}", e)
+            } finally {
+                if (keyAliasToCleanUp != null) {
+                    withContext(context = NonCancellable) {
+                        secureArea.deleteKey(keyAliasToCleanUp)
+                    }
+                }
+            }
+        }
+        /**
+         * Tests if the implementation properly supports key attestations and ML-DSA signatures with ML-DSA-65.
+         *
+         * @param useStrongBox `false` to test normal TEE implementation, `true` to test StrongBox.
+         * @throws IllegalArgumentException if [useStrongBox] is `true` but [strongBoxMlDsaSupported] is `false`,
+         *   or if [useStrongBox] is `false` but [mlDsaSupported] is `false`.
+         * @throws IllegalStateException if one of the checks fail.
+         */
+        @RequiresApi(Build.VERSION_CODES.P)
+        suspend fun testKeyAttestationsAndMlDsaSigning(
+            useStrongBox: Boolean
+        ) {
+            if (useStrongBox) {
+                require(strongBoxMlDsaSupported) { "testStrongBox is true but device does not support StrongBox ML-DSA" }
+            } else {
+                require(mlDsaSupported) { "Device does not support ML-DSA" }
+            }
+            val storage = EphemeralStorage()
+            val secureArea = create(storage = storage)
+            var keyAliasToCleanUp: String? = null
+            try {
+                val attestationChallenge = "Challenge".encodeToByteString()
+                val keyInfo = try {
+                    secureArea.createKey(
+                        alias = null,
+                        createKeySettings = buildAndroidKeystoreCreateKeySettings(attestationChallenge) {
+                            setAlgorithm(Algorithm.ML_DSA_65)
+                            setUseStrongBox(useStrongBox)
+                        }
+                    )
+                } catch (e: Exception) {
+                    if (e is CancellationException) throw e
+                    throw IllegalStateException("Error creating key: ${e.message}", e)
+                }
+                keyAliasToCleanUp = keyInfo.alias
+
+                val signatureCertificateDigests = mutableSetOf<ByteString>()
+                val pkg = applicationContext.packageManager
+                    .getPackageInfo(applicationContext.packageName, PackageManager.GET_SIGNING_CERTIFICATES)
+
+                val si = pkg.signingInfo!!
+                val signersToUse = if (si.hasMultipleSigners()) {
+                    si.apkContentsSigners.toList()
+                } else {
+                    si.signingCertificateHistory.toList()
+                }
+                signersToUse.forEach { signatureInfo ->
+                    signatureCertificateDigests.add(
+                        ByteString(Crypto.digest(Algorithm.SHA256, signatureInfo.toByteArray()))
+                    )
+                }
+
+                try {
+                    validateAndroidKeyAttestation(
+                        chain = keyInfo.attestation.certChain!!,
+                        challenge = attestationChallenge,
+                        requireGmsAttestation = true,
+                        requireVerifiedBootGreen = true,
+                        requireKeyMintSecurityLevel = if (useStrongBox) {
+                            AndroidKeystoreSecurityLevel.STRONG_BOX
+                        } else {
+                            AndroidKeystoreSecurityLevel.TRUSTED_ENVIRONMENT
+                        },
+                        requireAppSignatureCertificateDigests = signatureCertificateDigests,
+                        requireAppPackages = setOf(pkg.packageName)
+                    )
+                } catch (e: Exception) {
+                    if (e is CancellationException) throw e
+                    throw IllegalStateException("Error validating attestation: ${e.message}", e)
+                }
+
+                for (messageLen in listOf(16, 64, 256, 1024, 4 * 1024, 64 * 1024, 128 * 1024)) {
+                    val message = Random.Default.nextBytes(messageLen)
+                    val signature = try {
+                        secureArea.sign(
+                            alias = keyInfo.alias,
+                            dataToSign = message,
+                            unlockReason = Reason.Unspecified
+                        )
+                    } catch (e: Exception) {
+                        if (e is CancellationException) throw e
+                        throw IllegalStateException("Error signing message of $messageLen bytes", e)
+                    }
+                    try {
+                        Crypto.checkSignature(
+                            publicKey = keyInfo.publicKey,
+                            message = message,
+                            algorithm = Algorithm.ML_DSA_65,
+                            signature = signature
+                        )
+                    } catch (e: Exception) {
+                        if (e is CancellationException) throw e
+                        throw IllegalStateException("Error verifying signature for message of $messageLen bytes", e)
+                    }
+                }
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                throw IllegalStateException("Test failed: ${e.message}", e)
+            } finally {
+                if (keyAliasToCleanUp != null) {
+                    withContext(context = NonCancellable) {
+                        secureArea.deleteKey(keyAliasToCleanUp)
+                    }
+                }
+            }
+        }
     }
 
     companion object {
@@ -805,6 +1190,15 @@ class AndroidKeystoreSecureArea private constructor(
                 Algorithm.ES512, Algorithm.ESP512, Algorithm.ESB512 -> "SHA512withECDSA"
                 Algorithm.ED25519 -> "Ed25519"
                 Algorithm.EDDSA -> "Ed25519"
+                Algorithm.RS256, Algorithm.RS256_2048, Algorithm.RS256_3072, Algorithm.RS256_4096 -> "SHA256withRSA"
+                Algorithm.RS384, Algorithm.RS384_3072, Algorithm.RS384_4096 -> "SHA384withRSA"
+                Algorithm.RS512, Algorithm.RS512_4096 -> "SHA512withRSA"
+                Algorithm.PS256, Algorithm.PS256_2048, Algorithm.PS256_3072, Algorithm.PS256_4096 -> "SHA256withRSA/PSS"
+                Algorithm.PS384, Algorithm.PS384_3072, Algorithm.PS384_4096 -> "SHA384withRSA/PSS"
+                Algorithm.PS512, Algorithm.PS512_4096 -> "SHA512withRSA/PSS"
+                Algorithm.ML_DSA_44 -> "ML-DSA-44"
+                Algorithm.ML_DSA_65 -> "ML-DSA-65"
+                Algorithm.ML_DSA_87 -> "ML-DSA-87"
                 else -> throw IllegalArgumentException(
                     "Unsupported signing algorithm with id $signatureAlgorithm"
                 )
@@ -819,11 +1213,24 @@ class AndroidKeystoreSecureArea private constructor(
         }
 
         internal fun signatureFromDer(curve: EcCurve, derEncodedSignature: ByteArray): EcSignature {
+            val keySize = (curve.bitSize + 7)/8
+
+            // Curve25519 (EdDSA) signing returns a raw r||s pair from the platform, not a
+            // DER SEQUENCE, so split it directly instead of ASN.1-decoding (b/282063229).
+            if (curve == EcCurve.ED25519) {
+                check(derEncodedSignature.size == keySize * 2) {
+                    "Expected raw ${keySize * 2}-byte Ed25519 signature, got ${derEncodedSignature.size}"
+                }
+                return EcSignature(
+                    r = derEncodedSignature.copyOfRange(0, keySize),
+                    s = derEncodedSignature.copyOfRange(keySize, keySize * 2)
+                )
+            }
+
             val seq = ASN1.decode(derEncodedSignature) as ASN1Sequence
             val r = stripLeadingZeroes((seq.elements[0] as ASN1Integer).value)
             val s = stripLeadingZeroes((seq.elements[1] as ASN1Integer).value)
 
-            val keySize = (curve.bitSize + 7)/8
             check(r.size <= keySize)
             check(s.size <= keySize)
 

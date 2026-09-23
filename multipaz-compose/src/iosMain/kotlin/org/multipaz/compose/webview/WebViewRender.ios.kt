@@ -167,7 +167,10 @@ internal fun injectContent(
     } else {
         "renderResource(\"/${WebViewRenderingContext.escape(asset!!)}\", \"$cssStr\")"
     }
-    client.evaluateJavaScript(webView, command)
+    if (command != client.lastCommand) {
+        client.lastCommand = command
+        client.evaluateJavaScript(webView, command)
+    }
 }
 
 class URLHandler(
@@ -192,7 +195,7 @@ class URLHandler(
                         startURLSchemeTask.didReceiveData(bytes.toNSData())
                     } catch (err: CancellationException) {
                         throw err
-                    } catch (err: Throwable) {
+                    } catch (err: Exception) {
                         Logger.e(TAG, "Error loading resource '$path'", err)
                     }
                     startURLSchemeTask.didFinish()
@@ -222,6 +225,7 @@ class URLHandler(
 internal class WebViewClient : NSObject(), WKNavigationDelegateProtocol {
     private var loaded = false
     private var deferredCommand: String? = null
+    internal var lastCommand: String? = null
 
     @ObjCSignatureOverride
     override fun webView(
@@ -249,6 +253,7 @@ internal class WebViewClient : NSObject(), WKNavigationDelegateProtocol {
         ) { _, _ ->
         }
         if (deferredCommand != null) {
+            lastCommand = deferredCommand
             webView.evaluateJavaScript(deferredCommand!!) { _, _ -> }
             deferredCommand = null
         }

@@ -1,5 +1,7 @@
 package org.multipaz.mdoc.request
 
+import kotlinx.io.bytestring.ByteString
+import org.multipaz.cbor.Cbor
 import org.multipaz.cbor.DataItem
 import org.multipaz.cbor.buildCborMap
 import org.multipaz.cose.Cose
@@ -7,13 +9,11 @@ import org.multipaz.cose.CoseNumberLabel
 import org.multipaz.cose.CoseSign1
 import org.multipaz.cose.toCoseLabel
 import org.multipaz.crypto.Algorithm
-import org.multipaz.crypto.SignatureVerificationException
 import org.multipaz.crypto.X509CertChain
 import org.multipaz.documenttype.DocumentTypeRepository
-import org.multipaz.mdoc.credential.MdocCredential
-import org.multipaz.mdoc.util.MdocUtil
-import org.multipaz.request.MdocRequest
-import org.multipaz.request.Requester
+import org.multipaz.documenttype.ISO_18013_TRANSACTION_DATA_NAMESPACE
+import org.multipaz.presentment.TransactionData
+import org.multipaz.presentment.TransactionProtocol
 
 /**
  * Document request according to ISO 18013-5.
@@ -21,14 +21,16 @@ import org.multipaz.request.Requester
  * @property docType the document type.
  * @property nameSpaces the namespaces and data items to request, with intentToRetain.
  * @property docRequestInfo a [DocRequestInfo] or `null`.
+ * @property docRequestId the index of the [DocRequest] in [DeviceRequest].
  */
 @ConsistentCopyVisibility
 data class DocRequest internal constructor(
     val docType: String,
     val nameSpaces: Map<String, Map<String, Boolean>>,
     val docRequestInfo: DocRequestInfo?,
+    val docRequestId: Int,
     internal val readerAuth_: CoseSign1?,
-    internal val itemsRequestBytes: DataItem
+    internal val itemsRequestBytes: DataItem,
 ) {
     internal var readerAuthVerified: Boolean = false
 
@@ -62,6 +64,27 @@ data class DocRequest internal constructor(
             )
         }
 
+    /**
+     * Compares two [DocRequest] instances and checks if they are similar in structure,
+     * including signing structure (protected headers and unprotected header keys), ignoring
+     * session-transcript-dependent signatures and ephemeral differences (such as certificate
+     * chains when the reader uses single-use keys).
+     *
+     * @param otherDocRequest the other document request to compare against.
+     * @return `true` if structurally equivalent, `false` otherwise.
+     */
+    fun isStructurallyEquivalent(otherDocRequest: DocRequest): Boolean {
+        if (docType != otherDocRequest.docType) return false
+        if (nameSpaces != otherDocRequest.nameSpaces) return false
+        if (docRequestInfo != otherDocRequest.docRequestInfo) return false
+        if ((readerAuth_ != null) != (otherDocRequest.readerAuth_ != null)) return false
+        if (readerAuth_ != null && otherDocRequest.readerAuth_ != null) {
+            if (readerAuth_.protectedHeaders != otherDocRequest.readerAuth_.protectedHeaders) return false
+            if (readerAuth_.unprotectedHeaders.keys != otherDocRequest.readerAuth_.unprotectedHeaders.keys) return false
+        }
+        return true
+    }
+
     internal fun toDataItem(): DataItem {
         return buildCborMap {
             put("itemsRequest", itemsRequestBytes)
@@ -72,52 +95,45 @@ data class DocRequest internal constructor(
     }
 
     /**
-     * Convert to a [MdocRequest].
+     * Returns parsed transaction data associated with this document request that was
+     * requested by data elements.
      *
-     * @param documentTypeRepository a [DocumentTypeRepository] used to determine the display name for claims.
-     * @param mdocCredential if set, the returned list is filtered so it only references data
-     *     elements available in the credential.
-     * @param requesterAppId the appId if an app is making the request or `null`.
-     * @param requesterOrigin the origin or `null`.
-     * @return a [MdocRequest]
-     * @throws IllegalStateException if this is accessed before [DeviceRequest.verifyReaderAuthentication] is called.
+     * @param documentTypeRepository repository that contains all supported transaction data types
+     * @return list of transaction data
      */
-    @Throws(IllegalStateException::class)
-    fun toMdocRequest(
-        documentTypeRepository: DocumentTypeRepository,
-        mdocCredential: MdocCredential?,
-        requesterAppId: String? = null,
-        requesterOrigin: String? = null,
-    ): MdocRequest {
-        if (!readerAuthVerified) {
-            throw IllegalStateException("readerAuth not verified")
-        }
-        val requestedData = mutableMapOf<String, MutableList<Pair<String, Boolean>>>()
-        for ((namespace, dataElementMap) in nameSpaces) {
-            for ((dataElement, intentToRetain) in dataElementMap) {
-                requestedData.getOrPut(namespace) { mutableListOf() }
-                    .add(Pair(dataElement, intentToRetain))
+    fun getTransactionData(
+        documentTypeRepository: DocumentTypeRepository
+    ): List<TransactionData<*>> = buildList {
+        val requestedTxIdentifiers = mutableSetOf<String>()
+        nameSpaces[ISO_18013_TRANSACTION_DATA_NAMESPACE]?.keys?.let { requestedTxIdentifiers.addAll(it) }
+        docRequestInfo?.alternativeDataElements?.forEach { altSet ->
+            if (altSet.requestedElement.namespace == ISO_18013_TRANSACTION_DATA_NAMESPACE) {
+                requestedTxIdentifiers.add(altSet.requestedElement.dataElement)
+            }
+            altSet.alternativeElementSets.forEach { elementRefs ->
+                elementRefs.forEach { elementRef ->
+                    if (elementRef.namespace == ISO_18013_TRANSACTION_DATA_NAMESPACE) {
+                        requestedTxIdentifiers.add(elementRef.dataElement)
+                    }
+                }
             }
         }
-        return MdocRequest(
-            requester = Requester(
-                certChain = readerAuthCertChain,
-                appId = requesterAppId,
-                origin = requesterOrigin
-            ),
-            requestedClaims = MdocUtil.generateRequestedClaims(
-                docType,
-                requestedData,
-                documentTypeRepository,
-                mdocCredential
-            ),
-            docType = docType,
-            zkSystemSpecs = docRequestInfo?.zkRequest?.systemSpecs ?: emptyList()
-        )
+        for (transactionType in documentTypeRepository.transactionTypes) {
+            val typeId = transactionType.iso18013RequestInfoIdentifier
+            if (!requestedTxIdentifiers.contains(typeId)) {
+                continue
+            }
+            docRequestInfo?.transactionData?.data[typeId]?.let { data ->
+                add(transactionType.parseCbor(data))
+            }
+        }
     }
 
     companion object {
-        internal fun fromDataItem(dataItem: DataItem): DocRequest {
+        internal fun fromDataItem(
+            dataItem: DataItem,
+            docRequestId: Int
+        ): DocRequest {
             val itemsRequestBytes = dataItem["itemsRequest"]
             val itemsRequest = itemsRequestBytes.asTaggedEncodedCbor
             val readerAuth = dataItem.getOrNull("readerAuth")?.asCoseSign1
@@ -138,8 +154,9 @@ data class DocRequest internal constructor(
                 docType = docType,
                 nameSpaces = nameSpaces,
                 docRequestInfo = docRequestInfo,
+                docRequestId = docRequestId,
                 readerAuth_ = readerAuth,
-                itemsRequestBytes = itemsRequestBytes
+                itemsRequestBytes = itemsRequestBytes,
             )
         }
     }

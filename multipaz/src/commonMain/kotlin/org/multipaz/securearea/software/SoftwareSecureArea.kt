@@ -15,12 +15,21 @@
  */
 package org.multipaz.securearea.software
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import org.multipaz.crypto.Algorithm
 import org.multipaz.crypto.Crypto
 import org.multipaz.crypto.EcPrivateKey
 import org.multipaz.crypto.EcPublicKey
-import org.multipaz.crypto.EcSignature
+import org.multipaz.crypto.MlDsaPrivateKey
+import org.multipaz.crypto.MlKemPrivateKey
+import org.multipaz.crypto.PrivateKey
+import org.multipaz.crypto.PublicKey
+import org.multipaz.crypto.RsaPrivateKey
+import org.multipaz.crypto.SecretKey
+import org.multipaz.crypto.SecureByteString
+import org.multipaz.crypto.Signature
+import org.multipaz.crypto.secureZero
 import org.multipaz.prompt.requestPassphrase
 import org.multipaz.securearea.KeyAttestation
 import org.multipaz.securearea.KeyLockedException
@@ -40,10 +49,11 @@ import org.multipaz.prompt.PromptModel
 import org.multipaz.prompt.PromptModelNotAvailableException
 import org.multipaz.securearea.KeyUnlockDataProvider
 import org.multipaz.prompt.Reason
+import org.multipaz.securearea.KeyInfo
 import kotlin.random.Random
 
 /**
- * An implementation of [SecureArea] in software.
+ * An implementation of [SecureArea] that creates and uses software keys.
  *
  * This implementation supports all the curves and algorithms defined by [SecureArea]
  * and also supports passphrase-protected keys. Key material is stored using the
@@ -56,14 +66,22 @@ import kotlin.random.Random
  *
  * Use [SoftwareSecureArea.create] to create an instance of SoftwareSecureArea.
  */
-class SoftwareSecureArea private constructor(private val storageTable: StorageTable) : SecureArea {
+class SoftwareSecureArea private constructor(
+    private val storageTable: StorageTable,
+    private val random: Random = Crypto.secureRandom
+) : SecureArea {
     override val identifier get() = IDENTIFIER
 
     override val displayName get() = "Software Secure Area"
 
     private val supportedAlgorithms_: List<Algorithm> by lazy {
         Algorithm.entries.filter {
-            it.fullySpecified && it.curve != null && Crypto.supportedCurves.contains(it.curve)
+            it.fullySpecified && (
+                (it.curve != null && Crypto.supportedCurves.contains(it.curve)) ||
+                (it.keySizeBits != null && it.isSigning) ||
+                (it in Crypto.supportedMlDsaAlgorithms) ||
+                (it in Crypto.supportedMlKemAlgorithms)
+            )
         }
     }
 
@@ -85,6 +103,13 @@ class SoftwareSecureArea private constructor(private val storageTable: StorageTa
             // If user passed in a generic SecureArea.CreateKeySettings, honor them.
             val builder = SoftwareCreateKeySettings.Builder()
                 .setAlgorithm(createKeySettings.algorithm)
+                .setUserAuthenticationRequired(
+                    required = createKeySettings.userAuthenticationRequired,
+                    types = setOf(
+                        SoftwareUserAuthType.PASSCODE,
+                        SoftwareUserAuthType.BIOMETRIC,
+                    )
+                )
             if (createKeySettings.validFrom != null && createKeySettings.validUntil != null) {
                 builder.setValidityPeriod(
                     validFrom = createKeySettings.validFrom,
@@ -94,18 +119,32 @@ class SoftwareSecureArea private constructor(private val storageTable: StorageTa
             builder.build()
         }
         try {
-            val privateKey = Crypto.createEcPrivateKey(settings.algorithm.curve!!)
+            val privateKey = settings.privateKey ?: if (settings.algorithm.curve != null) {
+                Crypto.createEcPrivateKey(settings.algorithm.curve!!)
+            } else if (settings.algorithm in listOf(Algorithm.ML_DSA_44, Algorithm.ML_DSA_65, Algorithm.ML_DSA_87)) {
+                Crypto.createMlDsaPrivateKey(settings.algorithm)
+            } else if (settings.algorithm in listOf(Algorithm.ML_KEM_512, Algorithm.ML_KEM_768, Algorithm.ML_KEM_1024)) {
+                Crypto.createMlKemPrivateKey(settings.algorithm)
+            } else {
+                Crypto.createRsaPrivateKey(settings.algorithm.keySizeBits ?: 2048)
+            }
             val encodedPublicKey = Cbor.encode(privateKey.publicKey.toCoseKey().toDataItem())
             val keyMetadata = if (settings.passphraseRequired) {
                 val secretKey = derivePrivateKeyEncryptionKey(encodedPublicKey, settings.passphrase!!)
                 val cleartextPrivateKey = Cbor.encode(privateKey.toCoseKey().toDataItem())
-                val iv = Random.Default.nextBytes(12)
-                val encryptedPrivateKey = Crypto.encrypt(
-                    Algorithm.A128GCM,
-                    secretKey,
-                    iv,
-                    cleartextPrivateKey
-                )
+                val iv = random.nextBytes(12)
+                val encryptedPrivateKey = try {
+                    Crypto.encrypt(
+                        Algorithm.A256GCM,
+                        secretKey,
+                        iv,
+                        cleartextPrivateKey
+                    )
+                } finally {
+                    secretKey.close()
+                    cleartextPrivateKey.secureZero()
+                }
+                privateKey.close()
                 KeyMetadata(
                     algorithm = settings.algorithm,
                     passphraseRequired = true,
@@ -113,7 +152,9 @@ class SoftwareSecureArea private constructor(private val storageTable: StorageTa
                     encryptedPrivateKey = ByteString(encryptedPrivateKey),
                     encryptedPrivateKeyIv = ByteString(iv),
                     encodedPublicKey = ByteString(encodedPublicKey),
-                    passphraseConstraints = settings.passphraseConstraints
+                    passphraseConstraints = settings.passphraseConstraints,
+                    userAuthenticationRequired = if (settings.userAuthenticationRequired) true else null,
+                    userAuthenticationTypes = if (settings.userAuthenticationRequired) settings.userAuthenticationTypes else null
                 )
             } else {
                 KeyMetadata(
@@ -123,7 +164,9 @@ class SoftwareSecureArea private constructor(private val storageTable: StorageTa
                     encryptedPrivateKey = null,
                     encryptedPrivateKeyIv = null,
                     encodedPublicKey = ByteString(encodedPublicKey),
-                    passphraseConstraints = null
+                    passphraseConstraints = null,
+                    userAuthenticationRequired = if (settings.userAuthenticationRequired) true else null,
+                    userAuthenticationTypes = if (settings.userAuthenticationRequired) settings.userAuthenticationTypes else null
                 )
             }
             val newAlias = storageTable.insert(
@@ -132,7 +175,7 @@ class SoftwareSecureArea private constructor(private val storageTable: StorageTa
             )
             return getKeyInfo(newAlias)
         } catch (e: Exception) {
-            // such as NoSuchAlgorithmException, CertificateException, InvalidAlgorithmParameterException, OperatorCreationException, IOException, NoSuchProviderException
+            if (e is CancellationException) throw e
             throw IllegalStateException("Unexpected exception", e)
         }
     }
@@ -140,15 +183,20 @@ class SoftwareSecureArea private constructor(private val storageTable: StorageTa
     private suspend fun derivePrivateKeyEncryptionKey(
         encodedPublicKey: ByteArray,
         passphrase: String
-    ): ByteArray {
+    ): SecretKey {
         val info = "ICPrivateKeyEncryption1".encodeToByteArray()
-        return Hkdf.deriveKey(
-            Algorithm.HMAC_SHA256,
-            passphrase.encodeToByteArray(),
-            encodedPublicKey,
-            info,
-            32
-        )
+        val ikm = passphrase.encodeToByteArray()
+        return try {
+            Hkdf.deriveKey(
+                Algorithm.HMAC_SHA256,
+                SecretKey(ikm),
+                encodedPublicKey,
+                info,
+                32
+            )
+        } finally {
+            ikm.secureZero()
+        }
     }
 
     override suspend fun deleteKey(alias: String) {
@@ -157,21 +205,29 @@ class SoftwareSecureArea private constructor(private val storageTable: StorageTa
 
     private data class KeyData(
         val algorithm: Algorithm,
-        val privateKey: EcPrivateKey,
+        val privateKey: PrivateKey,
     )
 
     private suspend fun loadKey(
         alias: String,
         keyUnlockData: KeyUnlockData?
     ): KeyData {
-        var passphrase: String? = null
-        if (keyUnlockData != null) {
-            val unlockData = keyUnlockData as SoftwareKeyUnlockData
-            passphrase = unlockData.passphrase
-        }
         val data = storageTable.get(alias)
             ?: throw IllegalArgumentException("No key with given alias")
         val keyMetadata = KeyMetadata.fromCbor(data.toByteArray())
+
+        var passphrase: String? = null
+        var userAuthenticated = false
+        if (keyUnlockData != null) {
+            val unlockData = keyUnlockData as SoftwareKeyUnlockData
+            passphrase = unlockData.passphrase
+            userAuthenticated = unlockData.userAuthenticated
+        }
+
+        if (keyMetadata.userAuthenticationRequired == true && !userAuthenticated) {
+            throw KeyLockedException("User authentication required")
+        }
+
         val privateKey = if (keyMetadata.passphraseRequired) {
             if (passphrase == null) {
                 throw KeyLockedException("No passphrase provided")
@@ -183,9 +239,17 @@ class SoftwareSecureArea private constructor(private val storageTable: StorageTa
             val encodedPrivateKey = try {
                 Crypto.decrypt(Algorithm.A128GCM, secretKey, iv, encryptedPrivateKey)
             } catch (e: Exception) {
+                if (e is CancellationException) throw e
                 throw KeyLockedException("Error decrypting private key - wrong passphrase?", e)
+            } finally {
+                secretKey.close()
             }
-            EcPrivateKey.fromDataItem(Cbor.decode(encodedPrivateKey))
+            val parsedKey = try {
+                PrivateKey.fromDataItem(Cbor.decode(encodedPrivateKey))
+            } finally {
+                encodedPrivateKey.secureZero()
+            }
+            parsedKey
         } else {
             keyMetadata.privateKey!!
         }
@@ -198,12 +262,18 @@ class SoftwareSecureArea private constructor(private val storageTable: StorageTa
      * @param alias the alias for the key.
      * @param keyUnlockData unlock data, or `null`.
      * @return a [PrivateKey].
-     * @throws KeyLockedException
+     * @throws IllegalArgumentException if no key with the given alias exists.
+     * @throws KeyLockedException if the key needs unlocking.
      */
+    @Throws(
+        IllegalArgumentException::class,
+        KeyLockedException::class,
+        CancellationException::class
+    )
     suspend fun getPrivateKey(
         alias: String,
         keyUnlockData: KeyUnlockData?
-    ): EcPrivateKey = loadKey(alias, keyUnlockData).privateKey
+    ): PrivateKey = loadKey(alias, keyUnlockData).privateKey
 
     private suspend fun<T> interactionHelper(
         alias: String,
@@ -222,6 +292,7 @@ class SoftwareSecureArea private constructor(private val storageTable: StorageTa
             val unlockData = unlockDataProvider.getKeyUnlockData(
                 secureArea = this,
                 alias = alias,
+                algorithm = getKeyInfo(alias).algorithm,
                 unlockReason = unlockReason
             )
             op.invoke(unlockData)
@@ -231,7 +302,7 @@ class SoftwareSecureArea private constructor(private val storageTable: StorageTa
         alias: String,
         dataToSign: ByteArray,
         unlockReason: Reason
-    ): EcSignature {
+    ): Signature {
         return interactionHelper(
             alias,
             unlockReason,
@@ -243,17 +314,24 @@ class SoftwareSecureArea private constructor(private val storageTable: StorageTa
         alias: String,
         dataToSign: ByteArray,
         keyUnlockData: KeyUnlockData?
-    ): EcSignature {
+    ): Signature {
         val keyData = loadKey(alias, keyUnlockData)
-        require(keyData.algorithm.isSigning) { "Key algorithm is not for Signing" }
-        return Crypto.sign(keyData.privateKey, keyData.algorithm, dataToSign)
+        return keyData.privateKey.use { privateKey ->
+            require(keyData.algorithm.isSigning) { "Key algorithm is not for Signing" }
+            when (privateKey) {
+                is EcPrivateKey -> Crypto.sign(privateKey, keyData.algorithm, dataToSign)
+                is RsaPrivateKey -> Crypto.sign(privateKey, keyData.algorithm, dataToSign)
+                is MlDsaPrivateKey -> Crypto.sign(privateKey, keyData.algorithm, dataToSign)
+                is MlKemPrivateKey -> throw IllegalArgumentException("Cannot sign with ML-KEM key")
+            }
+        }
     }
 
     override suspend fun keyAgreement(
         alias: String,
         otherKey: EcPublicKey,
         unlockReason: Reason
-    ): ByteArray {
+    ): SecureByteString {
         return interactionHelper(
             alias,
             unlockReason,
@@ -265,24 +343,56 @@ class SoftwareSecureArea private constructor(private val storageTable: StorageTa
         alias: String,
         otherKey: EcPublicKey,
         keyUnlockData: KeyUnlockData?
-    ): ByteArray {
+    ): SecureByteString {
         val keyData = loadKey(alias, keyUnlockData)
-        require(keyData.algorithm.isKeyAgreement) { "Key algorithm is not for Key Agreement" }
-        return Crypto.keyAgreement(keyData.privateKey, otherKey)
+        return keyData.privateKey.use { privateKey ->
+            require(keyData.algorithm.isKeyAgreement) { "Key algorithm is not for Key Agreement" }
+            val ecPrivateKey = privateKey as? EcPrivateKey
+                ?: throw IllegalArgumentException("Key is not an EC key")
+            Crypto.keyAgreement(ecPrivateKey, otherKey)
+        }
+    }
+
+    override suspend fun kemDecapsulate(
+        alias: String,
+        ciphertext: ByteArray,
+        unlockReason: Reason
+    ): SecureByteString {
+        return interactionHelper(
+            alias,
+            unlockReason,
+            op = { unlockData -> kemDecapsulateNonInteractive(alias, ciphertext, unlockData) }
+        )
+    }
+
+    private suspend fun kemDecapsulateNonInteractive(
+        alias: String,
+        ciphertext: ByteArray,
+        keyUnlockData: KeyUnlockData?
+    ): SecureByteString {
+        val keyData = loadKey(alias, keyUnlockData)
+        return keyData.privateKey.use { privateKey ->
+            require(keyData.algorithm.isKeyEncapsulation) { "Key algorithm is not for Key Encapsulation" }
+            val mlKemPrivateKey = privateKey as? MlKemPrivateKey
+                ?: throw IllegalArgumentException("Key is not an ML-KEM key")
+            Crypto.kemDecapsulate(mlKemPrivateKey, ciphertext)
+        }
     }
 
     override suspend fun getKeyInfo(alias: String): SoftwareKeyInfo {
         val data = storageTable.get(alias)
             ?: throw IllegalArgumentException("No key with the given alias '$alias'")
         val keyMetadata = KeyMetadata.fromCbor(data.toByteArray())
-        val publicKey = EcPublicKey.fromDataItem(Cbor.decode(keyMetadata.encodedPublicKey.toByteArray()))
+        val publicKey = PublicKey.fromDataItem(Cbor.decode(keyMetadata.encodedPublicKey.toByteArray()))
         return SoftwareKeyInfo(
             alias,
             publicKey,
             KeyAttestation(publicKey, null),
             keyMetadata.algorithm,
             keyMetadata.passphraseRequired,
-            keyMetadata.passphraseConstraints
+            keyMetadata.passphraseConstraints,
+            keyMetadata.userAuthenticationRequired ?: false,
+            keyMetadata.userAuthenticationTypes ?: emptySet()
         )
     }
 
@@ -291,52 +401,98 @@ class SoftwareSecureArea private constructor(private val storageTable: StorageTa
         return false
     }
 
+    override suspend fun unlockKey(
+        alias: String,
+        unlockReason: Reason
+    ): List<KeyUnlockData> {
+        val keyInfo = getKeyInfo(alias)
+        if (!keyInfo.isPassphraseProtected && !keyInfo.isUserAuthenticationRequired) {
+            return emptyList()
+        }
+        val unlockDataProvider = currentCoroutineContext()[KeyUnlockDataProvider.Key]
+            ?: DefaultKeyUnlockDataProvider
+        val unlockData = unlockDataProvider.getKeyUnlockData(
+            secureArea = this,
+            alias = alias,
+            algorithm = keyInfo.algorithm,
+            unlockReason = unlockReason
+        )
+        return listOf(unlockData)
+    }
+
     object DefaultKeyUnlockDataProvider: KeyUnlockDataProvider {
         override suspend fun getKeyUnlockData(
             secureArea: SecureArea,
             alias: String,
+            algorithm: Algorithm,
             unlockReason: Reason
         ): KeyUnlockData {
             secureArea as SoftwareSecureArea
             val keyInfo = secureArea.getKeyInfo(alias)
-            val constraints = keyInfo.passphraseConstraints ?: PassphraseConstraints.NONE
-            val promptModel = try {
-                PromptModel.get()
-            } catch (_: PromptModelNotAvailableException) {
-                throw KeyLockedException("Key is locked and PromptModel is not available to unlock interactively")
-            }
-            val humanReadable = promptModel.toHumanReadable(unlockReason, constraints)
-            val passphrase = try {
-                promptModel.requestPassphrase(
-                    title = humanReadable.title,
-                    subtitle = humanReadable.subtitle,
-                    passphraseConstraints = constraints,
-                    passphraseEvaluator = { enteredPassphrase: String ->
-                        try {
-                            secureArea.loadKey(alias, SoftwareKeyUnlockData(enteredPassphrase))
-                            PassphraseEvaluation.OK
-                        } catch (_: Throwable) {
-                            // TODO: translations
-                            PassphraseEvaluation.TryAgain
+
+            var passphrase: String? = null
+            if (keyInfo.isPassphraseProtected) {
+                val constraints = keyInfo.passphraseConstraints ?: PassphraseConstraints.NONE
+                val promptModel = try {
+                    PromptModel.get()
+                } catch (_: PromptModelNotAvailableException) {
+                    throw KeyLockedException("Key is locked and PromptModel is not available to unlock interactively")
+                }
+                passphrase = try {
+                    promptModel.requestPassphrase(
+                        reason = unlockReason,
+                        passphraseConstraints = constraints,
+                        passphraseEvaluator = { enteredPassphrase: String ->
+                            try {
+                                secureArea.loadKey(
+                                    alias,
+                                    SoftwareKeyUnlockData(
+                                        secureArea,
+                                        alias,
+                                        passphrase = enteredPassphrase,
+                                        userAuthenticated = true
+                                    )
+                                )
+                                PassphraseEvaluation.OK
+                            } catch (e: Exception) {
+                                if (e is CancellationException) throw e
+                                PassphraseEvaluation.TryAgain
+                            }
                         }
-                    }
-                )
-            } catch (_: PromptDismissedException) {
-                throw KeyLockedException("User canceled passphrase prompt")
+                    )
+                } catch (_: PromptDismissedException) {
+                    throw KeyLockedException("User canceled passphrase prompt")
+                }
             }
-            return SoftwareKeyUnlockData(passphrase)
+
+            var userAuthenticated = false
+            if (keyInfo.isUserAuthenticationRequired) {
+                if (!softwareSecureAreaPerformUserAuth(alias, keyInfo.userAuthenticationTypes, unlockReason)) {
+                    throw KeyLockedException("User canceled authentication")
+                }
+                userAuthenticated = true
+            }
+
+            return SoftwareKeyUnlockData(
+                secureArea = secureArea,
+                alias = alias,
+                passphrase = passphrase,
+                userAuthenticated = userAuthenticated
+            )
         }
     }
 
-    @CborSerializable(schemaHash = "6ifPnbV5Efd5Yf9NLMh4wXHWIVySzLaTeJqnGxrPuzI")
+    @CborSerializable(schemaHash = "ZQhm_YwMdgsTBNuJjP_Zv5HQL2dKaVLwMRH96nxpf8Q")
     internal data class KeyMetadata(
         val algorithm: Algorithm,
         val passphraseRequired: Boolean,
-        val privateKey: EcPrivateKey?,
+        val privateKey: PrivateKey?,
         val encryptedPrivateKey: ByteString?,
         val encryptedPrivateKeyIv: ByteString?,
         val encodedPublicKey: ByteString,  // store as encoded CoseKey
-        val passphraseConstraints: PassphraseConstraints?
+        val passphraseConstraints: PassphraseConstraints?,
+        val userAuthenticationRequired: Boolean? = null,
+        val userAuthenticationTypes: Set<SoftwareUserAuthType>? = null
     ) {
         companion object
     }
@@ -347,12 +503,25 @@ class SoftwareSecureArea private constructor(private val storageTable: StorageTa
         const val IDENTIFIER = "SoftwareSecureArea"
 
         /**
-         * Creates an instance of SoftwareSecureArea.
+         * Creates an instance of SoftwareSecureArea using default [Crypto.secureRandom].
          *
          * @param storage the storage engine to use for storing key material.
          */
-        suspend fun create(storage: Storage): SoftwareSecureArea {
-            return SoftwareSecureArea(storage.getTable(tableSpec))
+        suspend fun create(
+            storage: Storage
+        ): SoftwareSecureArea = create(storage, Crypto.secureRandom)
+
+        /**
+         * Creates an instance of SoftwareSecureArea.
+         *
+         * @param storage the storage engine to use for storing key material.
+         * @param random the random provider to use.
+         */
+        suspend fun create(
+            storage: Storage,
+            random: Random
+        ): SoftwareSecureArea {
+            return SoftwareSecureArea(storage.getTable(tableSpec), random)
         }
 
         private val tableSpec = StorageTableSpec(

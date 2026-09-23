@@ -11,6 +11,7 @@ import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
 class ASN1Tests {
@@ -57,8 +58,20 @@ class ASN1Tests {
 
         assertEquals(ASN1Boolean(false), ASN1.decode("010100".fromHex()))
         assertEquals(ASN1Boolean(true), ASN1.decode("0101ff".fromHex()))
+
+        // X.690 8.2.2 makes any non-zero octet TRUE, and Android KeyMint emits 0x01 in the
+        // `critical` flag of X.509 extensions, so decoding has to accept it. Note that equality
+        // is semantic and ignores the octet, so it cannot catch the octet being dropped — the
+        // re-encoding below is what pins that.
+        assertEquals(ASN1Boolean(true), ASN1.decode("010101".fromHex()))
+
+        // The octet is preserved rather than normalized to 0xff, keeping decode/encode
+        // byte-exact as testCertificate() requires.
+        assertContentEquals("010101".fromHex(), ASN1.encode(ASN1.decode("010101".fromHex())!!))
+
+        // Well-formedness is still enforced: the contents are exactly one octet (X.690 8.2.1).
         assertFailsWith(IllegalArgumentException::class) {
-            assertEquals(ASN1Boolean(false), ASN1.decode("010101".fromHex()))
+            ASN1.decode("01020000".fromHex())
         }
 
         assertEquals(
@@ -72,6 +85,21 @@ class ASN1Tests {
                 ASN1Boolean(false),
             ))).trim()
         )
+    }
+
+    @Test
+    fun testBooleanNonCanonicalInExtension() {
+        // The keyUsage extension of an Android Keystore certificate whose KeyMint encodes the
+        // `critical` flag as 0x01 — SEQUENCE { OID 2.5.29.15, BOOLEAN 01, OCTET STRING }.
+        // This nested form is the one that actually failed: a certificate's extensions live in a
+        // CONTEXT_SPECIFIC [3] whose content ASN1.decode passes through untouched, so they are
+        // only decoded when accessed, via X509Signed.getExtensionsSeq().
+        val extension = "300e0603551d0f010101040403020780".fromHex()
+
+        val decoded = ASN1.decode(extension) as ASN1Sequence
+
+        assertTrue((decoded.elements[1] as ASN1Boolean).value)
+        assertContentEquals(extension, ASN1.encode(decoded))
     }
 
     @Test
@@ -651,6 +679,60 @@ A01EUDAKBggqhkjOPQQDAgNIADBFAiEAnX3+E4E5dQ+5G1rmStJTW79ZAiDTabyL
             """.trimIndent(),
             ASN1.print(certificate!!).trim()
         )
+    }
+
+    @Test
+    fun testASN1IntegerFromRandom() {
+        // Test invalid numBits
+        assertFailsWith<IllegalArgumentException> {
+            ASN1Integer.fromRandom(0)
+        }
+        assertFailsWith<IllegalArgumentException> {
+            ASN1Integer.fromRandom(-8)
+        }
+        assertFailsWith<IllegalArgumentException> {
+            ASN1Integer.fromRandom(7)
+        }
+        assertFailsWith<IllegalArgumentException> {
+            ASN1Integer.fromRandom(15)
+        }
+
+        // Test with different bit sizes and ensure all generated numbers are positive
+        for (numBits in listOf(8, 16, 24, 32, 64, 128, 160, 256)) {
+            val numBytes = numBits / 8
+            var sawPrependedZero = false
+            var sawNoPrependedZero = false
+            for (i in 0 until 500) {
+                val asn1Integer = ASN1Integer.fromRandom(numBits)
+                // MSB of first byte must be 0 for a positive integer in two's complement DER
+                assertTrue((asn1Integer.value[0].toInt() and 0x80) == 0, "MSB must be 0 for positive integer")
+
+                // If leading byte is 0x00, second byte must have MSB=1 to satisfy X.690 8.3.2
+                if (asn1Integer.value.size > 1 && asn1Integer.value[0] == 0.toByte()) {
+                    sawPrependedZero = true
+                    assertTrue(asn1Integer.value.size <= numBytes + 1)
+                    assertTrue(
+                        (asn1Integer.value[1].toInt() and 0x80) != 0,
+                        "When leading byte is 0x00, bit 8 of second byte must be 1"
+                    )
+                } else {
+                    sawNoPrependedZero = true
+                    assertTrue(asn1Integer.value.size <= numBytes)
+                    assertTrue(asn1Integer.value[0].toInt() != 0)
+                }
+
+                if (asn1Integer.value.size <= 8) {
+                    assertTrue(asn1Integer.toLong() > 0, "toLong() must be positive")
+                }
+
+                // Encode and decode roundtrip
+                val encoded = ASN1.encode(asn1Integer)
+                val decoded = ASN1.decode(encoded) as ASN1Integer
+                assertEquals(asn1Integer, decoded)
+            }
+            assertTrue(sawPrependedZero, "Expected to encounter cases with prepended 0x00 for numBits=$numBits")
+            assertTrue(sawNoPrependedZero, "Expected to encounter cases without prepended 0x00 for numBits=$numBits")
+        }
     }
 }
 

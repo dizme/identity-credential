@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="referrer" content="unsafe-url">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>OWF Multipaz Verifier</title>
+    <script src="verify_credentials.js"></script>
+    <script src="light.js"></script>
+    <script src="render_content.js"></script>
+    <link rel="stylesheet" href="render_content.css">
+</head>
+<body>
+<div>
+<label>Select an example:
+<select id="examples">
+</select>
+<button id="apply_example">Apply</button>
+</label>
+</div>
+<div>
+<label>Query:<br/>
+<textarea id="query" rows="20" cols="80">
+</textarea>
+</label>
+</div>
+<div>
+<label>Transaction Data: <input id="transaction_data_present" type="checkbox"/>
+<br/>
+<textarea id="transaction_data" rows="5" cols="80" style="display:none">
+</textarea>
+</label>
+</div>
+<div id="signing">
+    <span>Request Signing:</span>
+</div>
+<div>
+    <input type="checkbox" id="encrypt-response" checked="checked"/>
+    <label for="encrypt-response">Encrypt Response</label>
+</div>
+DC API Protocols:
+<br/>
+<label><input id="protocol_iso" type="checkbox" checked="checked"/>ISO 18013-7 Annex C</label>
+<br/>
+<label><input id="protocol_openid4vp" type="checkbox" checked="checked"/>OpenID4VP v1</label>
+</div>
+<div>
+<label>Issuer Identifiers (hex, comma separated):<br/>
+<input class="form-control" type="text" id="issuer_identifiers">
+</label>
+</div>
+<button onclick="run()">Submit</button>
+<div id="result">
+
+</div>
+</body>
+</html>

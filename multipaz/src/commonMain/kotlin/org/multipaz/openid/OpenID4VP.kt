@@ -1,11 +1,16 @@
 package org.multipaz.openid
 
+import io.ktor.utils.io.core.toByteArray
 import kotlinx.io.bytestring.decodeToString
 import kotlin.time.Clock
 import kotlinx.io.bytestring.encodeToByteString
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonObjectBuilder
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.add
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -27,8 +32,9 @@ import org.multipaz.crypto.EcPublicKey
 import org.multipaz.crypto.EcPublicKeyDoubleCoordinate
 import org.multipaz.crypto.JsonWebEncryption
 import org.multipaz.crypto.AsymmetricKey
-import org.multipaz.crypto.X509CertChain
 import org.multipaz.document.Document
+import org.multipaz.documenttype.TransactionUserInput
+import org.multipaz.eventlogger.EventPresentmentData
 import org.multipaz.webtoken.buildJwt
 import org.multipaz.mdoc.credential.MdocCredential
 import org.multipaz.mdoc.response.DeviceResponse
@@ -36,19 +42,30 @@ import org.multipaz.mdoc.response.MdocDocument
 import org.multipaz.mdoc.response.buildDeviceResponse
 import org.multipaz.mdoc.zkp.ZkSystem
 import org.multipaz.mdoc.zkp.ZkSystemSpec
+import org.multipaz.openid.dcql.DcqlCredentialQueryException
 import org.multipaz.openid.dcql.DcqlQuery
-import org.multipaz.openid.dcql.DcqlResponseCredentialSetOptionMemberMatch
-import org.multipaz.presentment.model.PresentmentCanceled
-import org.multipaz.presentment.model.PresentmentSource
+import org.multipaz.presentment.CredentialMatchSourceOpenID4VP
+import org.multipaz.presentment.CredentialPresentmentSetOptionMemberMatch
+import org.multipaz.presentment.PresentmentCanceledException
+import org.multipaz.presentment.PresentmentCannotSatisfyRequestException
+import org.multipaz.presentment.PresentmentSource
 import org.multipaz.request.JsonRequestedClaim
 import org.multipaz.request.MdocRequestedClaim
 import org.multipaz.request.Requester
 import org.multipaz.sdjwt.SdJwt
 import org.multipaz.sdjwt.credential.SdJwtVcCredential
 import org.multipaz.presentment.PresentmentUnlockReason
+import org.multipaz.presentment.ConsentData
+import org.multipaz.presentment.TransactionData
+import org.multipaz.presentment.TransactionProtocol
+import org.multipaz.presentment.computeTransactionResponse
+import org.multipaz.request.OpenID4VPRequesterIdentity
+import org.multipaz.request.RequesterIdentity
 import org.multipaz.util.Logger
 import org.multipaz.util.fromBase64Url
 import org.multipaz.util.toBase64Url
+import org.multipaz.verification.VerifierIdentity
+import org.multipaz.webtoken.buildMultisignedJwt
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.io.encoding.ExperimentalEncodingApi
 import kotlin.random.Random
@@ -71,36 +88,42 @@ object OpenID4VP {
      *
      * @param version the version of OpenID4vp to generate the request for.
      * @param origin the origin, e.g. `https://verifier.multipaz.org` or `android:apk-key-hash:<sha256_hash-of-apk-signing-cert>`.
-     * @param clientId the client ID, e.g. `x509_san_dns:verifier.multipaz.org` or `null`.
      * @param nonce the nonce to use.
      * @param responseEncryptionKey the key to encrypt the response against or `null`.
-     * @param requestSigningKey the key to sign the request with or `null`.
+     * @param verifierIdentities verifier identities that are used to sign the request (there may be
+     *  multiple for multisigned requests, or none for unsigned requests).
      * @param responseMode the response mode.
      * @param responseUri the response URI or `null`.
-     * @param dclqQuery the DCQL query.
+     * @param dcqlQuery the DCQL query.
+     * @param jsonTransactionData strings from `transaction_data` array *before* base64url encoding,
+     *   see OpenID4VP 1.0 section 8.4.
+     * @param state OpenID4VP state parameter (optional)
      * @return the OpenID4VP request.
      */
     suspend fun generateRequest(
         version: Version,
         origin: String,
-        clientId: String?,
         nonce: String,
         responseEncryptionKey: EcPublicKey?,
-        requestSigningKey: AsymmetricKey?,
+        verifierIdentities: List<VerifierIdentity>,
         responseMode: ResponseMode,
         responseUri: String?,
-        dclqQuery: JsonObject,
+        dcqlQuery: JsonObject,
+        jsonTransactionData: List<String> = emptyList(),
+        state: String? = null
     ): JsonObject {
         if (version == Version.DRAFT_24) {
+            check(jsonTransactionData.isEmpty())
+            check(verifierIdentities.size <= 1)
             return generateRequestDraft24(
                 origin = origin,
-                clientId = clientId,
+                clientId = verifierIdentities.firstOrNull()?.clientId,
                 nonce = nonce,
                 responseEncryptionKey = responseEncryptionKey,
-                requestSigningKey = requestSigningKey,
+                requestSigningKey = verifierIdentities.firstOrNull()?.key,
                 responseMode = responseMode,
                 responseUri = responseUri,
-                dclqQuery = dclqQuery
+                dclqQuery = dcqlQuery
             )
         }
         val responseEncryptionKeyJwk = responseEncryptionKey?.let {
@@ -119,15 +142,16 @@ object OpenID4VP {
                 }
             )
             responseUri?.let { put("response_uri", it)}
-            if (requestSigningKey != null) {
-                require(clientId != null) { "clientId must be set for signed requests"}
-                put("client_id", clientId)
+            if (verifierIdentities.size == 1) {
+                // for multisign request, client_id goes into the header instead
+                put("client_id", verifierIdentities.first().clientId)
                 putJsonArray("expected_origins") {
                     add(origin)
                 }
             }
-            put("dcql_query", dclqQuery)
+            put("dcql_query", dcqlQuery)
             put("nonce", nonce)
+            state?.let { put("state", it) }
             putJsonObject("client_metadata") {
                 // TODO: take parameters for all these
                 put("vp_formats_supported", buildJsonObject {
@@ -158,18 +182,37 @@ object OpenID4VP {
                     }
                 }
             }
+            if (jsonTransactionData.isNotEmpty()) {
+                put("transaction_data", JsonArray(jsonTransactionData.map {
+                    JsonPrimitive(it.toByteArray().toBase64Url())
+                }))
+            }
         }
 
-        return buildJsonObject {
-            if (requestSigningKey == null) {
+        return if (verifierIdentities.isEmpty()) {
+            // unsigned request
+            buildJsonObject {
                 jsonBuildBlock()
-            } else {
-                put("request", buildJwt(
-                    key = requestSigningKey,
-                    type = "oauth-authz-req+jwt",
-                    builderAction = jsonBuildBlock
-                ))
             }
+        } else if (verifierIdentities.size == 1) {
+            // single signature, compact serialization
+            buildJsonObject {
+                put(
+                    "request", buildJwt(
+                        key = verifierIdentities.first().key,
+                        type = "oauth-authz-req+jwt",
+                        builderAction = jsonBuildBlock
+                    )
+                )
+            }
+        } else {
+            // multisigned request
+            buildMultisignedJwt(
+                keys = verifierIdentities.map { it.key },
+                type = "oauth-authz-req+jwt",
+                builderAction = jsonBuildBlock,
+                header = { index -> put("client_id", verifierIdentities[index].clientId) }
+            )
         }
     }
 
@@ -252,6 +295,21 @@ object OpenID4VP {
     }
 
     /**
+     * Represents the response to an OpenID4VP request.
+     *
+     * @property response the response containing [vpToken], possibly encrypted.
+     * @property vpToken the VP Token.
+     * @property eventData a [EventPresentmentData] to be used for logging.
+     * @property state state parameter as specified in the request (if given)
+     */
+    data class OpenID4VPResponse(
+        val response: JsonObject,
+        val vpToken: JsonObject,
+        val eventData: EventPresentmentData,
+        val state: String?,
+    )
+
+    /**
      * Generates an OpenID4VP response.
      *
      * @param version the version of OpenID4VP to generate a response for.
@@ -264,15 +322,17 @@ object OpenID4VP {
      * @param origin the origin of the requester or `null` if not known.
      * @param request the authorization request object according to OpenID4VP Section 5 Authorization
      *   Request.
-     * @param requesterCertChain the X.509 certificate chain if the request is signed or `null`
-     *   if the request is not signed.
+     * @param requesterIdentities verifier identities that were used to sign the request (there
+     *  may be multiple for multisigned requests, or none for unsigned requests).
      * @return the generated response according to OpenID4VP Section 8 Response.
-     * @throws PresentmentCanceled if the user canceled in a consent prompt.
+     * @throws PresentmentCanceledException if the user canceled in a consent prompt.
+     * @throws PresentmentCannotSatisfyRequestException if it's not possible to satisfy the request.
      */
     @Throws(
         CancellationException::class,
         IllegalStateException::class,
-        PresentmentCanceled::class
+        PresentmentCanceledException::class,
+        PresentmentCannotSatisfyRequestException::class
     )
     @OptIn(ExperimentalEncodingApi::class)
     suspend fun generateResponse(
@@ -282,9 +342,11 @@ object OpenID4VP {
         appId: String?,
         origin: String?,
         request: JsonObject,
-        requesterCertChain: X509CertChain?,
-    ): JsonObject {
-        Logger.iJson(TAG, "request", request)
+        requesterIdentities: List<RequesterIdentity>,
+        onDocumentsInFocus: (documents: List<Document>) -> Unit = {},
+        random: Random = Crypto.secureRandom
+    ): OpenID4VPResponse {
+        Logger.dJson(TAG, "request", request)
 
         val nonce = request["nonce"]!!.jsonPrimitive.content
         val responseModeText = request["response_mode"]!!.jsonPrimitive.content
@@ -299,36 +361,12 @@ object OpenID4VP {
                     ?: throw IllegalArgumentException("No response_uri set for $responseModeText")
                 Pair(uri, ResponseMode.DIRECT_POST)
             }
+
             else -> throw IllegalArgumentException("Unexpected response_mode $responseModeText")
         }
         // TODO: in the future, maybe flat out reject requests that doesn't use encrypted response
 
-
         // TODO: handle expected_origins
-
-        // For unsigned requests, we must ignore client_id as per OpenID4VP section A.2. Request:
-        //
-        //   The client_id parameter MUST be omitted in unsigned requests defined in Appendix A.3.1. The Wallet
-        //   determines the effective Client Identifier from the Origin. The effective Client Identifier is
-        //   composed of a synthetic Client Identifier Scheme of web-origin and the Origin itself. For example,
-        //   an Origin of https://verifier.example.com would result in an effective Client Identifier of
-        //   web-origin:https://verifier.example.com. The transport of the request and Origin to the Wallet
-        //   is platform-specific and is out of scope of OpenID4VP over the W3C Digital Credentials API. The
-        //   Wallet MUST ignore any client_id parameter that is present in an unsigned request.
-        //
-        val clientId = if (requesterCertChain != null) {
-            request["client_id"]?.jsonPrimitive?.content
-                ?: throw IllegalArgumentException("client_id not set on a signed request")
-        } else {
-            val syntheticOrigin = "web-origin:$origin"
-            if (request.containsKey("client_id")) {
-                Logger.w(
-                    TAG, "Ignoring client_id value of ${request["client_id"]} for an unsigned request, " +
-                            "using synthetic origin $syntheticOrigin instead"
-                )
-            }
-            syntheticOrigin
-        }
 
         // Get public key to encrypt response against...
         var reEncAlg: Algorithm = Algorithm.UNSET
@@ -391,35 +429,88 @@ object OpenID4VP {
 
         val vpTokens = mutableMapOf<String, String>()
         val dcqlQuery = DcqlQuery.fromJson(request["dcql_query"]!!.jsonObject)
-        val dcqlResponse = dcqlQuery.execute(
-            presentmentSource = source,
-        )
+        val transactionDataMap = request["transaction_data"]?.let { list ->
+            if (list !is JsonArray) {
+                throw IllegalStateException("Invalid 'transaction_data'")
+            }
+            try {
+                source.documentTypeRepository.parseJsonTransactions(list.map {
+                    it.jsonPrimitive.content
+                })
+            } catch (err: IllegalArgumentException) {
+                throw IllegalStateException("Problem processing transaction(s)", err)
+            }
+        } ?: emptyMap()
+        val dcqlResponse = try {
+            dcqlQuery.execute(
+                presentmentSource = source,
+                transactionDataMap = transactionDataMap,
+                requesterIdentities = requesterIdentities,
+            )
+        } catch (e: DcqlCredentialQueryException) {
+            throw PresentmentCannotSatisfyRequestException("Unable to satisfy the request", e)
+        }
 
         val requester = Requester(
-            certChain = requesterCertChain,
+            requesterIdentities = requesterIdentities,
             appId = appId,
             origin = origin
         )
 
+        val trustedRequesterIdentity = source.resolveTrust(requester)
+
+        // For unsigned requests, we must ignore client_id as per OpenID4VP section A.2. Request:
+        //
+        //   The client_id parameter MUST be omitted in unsigned requests defined in Appendix A.3.1. The Wallet
+        //   determines the effective Client Identifier from the Origin. The effective Client Identifier is
+        //   composed of a synthetic Client Identifier Scheme of web-origin and the Origin itself. For example,
+        //   an Origin of https://verifier.example.com would result in an effective Client Identifier of
+        //   web-origin:https://verifier.example.com. The transport of the request and Origin to the Wallet
+        //   is platform-specific and is out of scope of OpenID4VP over the W3C Digital Credentials API. The
+        //   Wallet MUST ignore any client_id parameter that is present in an unsigned request.
+        //
+        val clientId = (trustedRequesterIdentity?.identity as? OpenID4VPRequesterIdentity)?.clientId ?: run {
+            if (requester.requesterIdentities.isEmpty()) {
+                // Unsigned request
+                val syntheticOrigin = "web-origin:$origin"
+                if (request.containsKey("client_id")) {
+                    Logger.w(
+                        TAG,
+                        "Ignoring client_id value of ${request["client_id"]} for an unsigned request, " +
+                                "using synthetic origin $syntheticOrigin instead"
+                    )
+                }
+                syntheticOrigin
+            } else {
+                // Signed request, but none of the signatures are trusted. Just pick the first one.
+                // clientId must not be null in the context of OpenID4VP protocol
+                (requester.requesterIdentities.first() as OpenID4VPRequesterIdentity).clientId
+            }
+        }
+
         val selection = source.showConsentPrompt(
-            requester,
-            source.resolveTrust(requester),
-            dcqlResponse,
-            preselectedDocuments,
-            { selection -> },
+            requester = requester,
+            trustedRequesterIdentity = trustedRequesterIdentity,
+            consentData = ConsentData.fromCredentialQueryResult(
+                credentialQueryResult = dcqlResponse,
+                source = source
+            ),
+            preselectedDocuments = preselectedDocuments,
+            onDocumentsInFocus = onDocumentsInFocus
         )
         if (selection == null) {
-            throw PresentmentCanceled("User canceled at document selection time")
+            throw PresentmentCanceledException("User canceled at document selection time")
         }
 
         var usingZk = false
+        val credentialsPresented = mutableSetOf<Credential>()
         selection.matches.forEach { match ->
-            match as DcqlResponseCredentialSetOptionMemberMatch
-            val requestIsForZk = match.credentialQuery.format == "mso_mdoc_zk"
+            match.source as CredentialMatchSourceOpenID4VP
+            val requestIsForZk = match.source.credentialQuery.format == "mso_mdoc_zk"
             if (requestIsForZk) {
                 usingZk = true
             }
-            val credentialResponse = if (match.credentialQuery.mdocDocType != null) {
+            val credentialResponse = if (match.source.credentialQuery.mdocDocType != null) {
                 openID4VPMsoMdoc(
                     version = version,
                     match = match,
@@ -431,7 +522,7 @@ object OpenID4VP {
                     responseUri = responseUri,
                     requestIsForZk = requestIsForZk
                 )
-            } else if (match.credentialQuery.vctValues != null) {
+            } else if (match.source.credentialQuery.vctValues != null) {
                 openID4VPSdJwt(
                     version = version,
                     match = match,
@@ -443,7 +534,8 @@ object OpenID4VP {
             } else {
                 throw IllegalArgumentException("Expected ISO mdoc or IETF SD-JWT, got neither")
             }
-            vpTokens.put(match.credentialQuery.id, credentialResponse)
+            vpTokens[match.source.credentialQuery.id] = credentialResponse
+            credentialsPresented.add(match.credential)
         }
 
         val vpToken = when (version) {
@@ -457,6 +549,9 @@ object OpenID4VP {
                             }
                         }
                     }
+                    (request["state"] as? JsonPrimitive)?.let {
+                        put("state", it)
+                    }
                 }
             }
 
@@ -467,16 +562,19 @@ object OpenID4VP {
                             put(dcqlId, response)
                         }
                     }
+                    (request["state"] as? JsonPrimitive)?.let {
+                        put("state", it)
+                    }
                 }
             }
         }
-        Logger.iJson(TAG, "vpToken", vpToken)
+        Logger.dJson(TAG, "vpToken", vpToken)
 
         // If using ZKP the response will be huge so compression helps
         val compressionLevel = if (usingZk) 9 else null
 
-        val walletGeneratedNonce = Random.nextBytes(16).toBase64Url()
-        return if (reReaderPublicKey != null) {
+        val walletGeneratedNonce = random.nextBytes(16).toBase64Url()
+        val response = if (reReaderPublicKey != null) {
             buildJsonObject {
                 put("response",
                     JsonWebEncryption.encrypt(
@@ -485,6 +583,7 @@ object OpenID4VP {
                         encAlg = reEncAlg,
                         apu = nonce.encodeToByteString(),
                         apv = walletGeneratedNonce.encodeToByteString(),
+                        random = random,
                         kid = reKid,
                         compressionLevel = compressionLevel
                     )
@@ -493,24 +592,38 @@ object OpenID4VP {
         } else {
             vpToken
         }
+
+        return OpenID4VPResponse(
+            response = response,
+            vpToken = vpToken,
+            eventData = EventPresentmentData.fromPresentmentSelection(
+                selection = selection,
+                requester = requester,
+                trustedRequesterIdentity = trustedRequesterIdentity,
+            ),
+            state = (request["state"] as? JsonPrimitive)?.content
+        )
     }
 
     private suspend fun openID4VPMsoMdoc(
         version: Version,
-        match: DcqlResponseCredentialSetOptionMemberMatch,
+        match: CredentialPresentmentSetOptionMemberMatch,
         source: PresentmentSource,
         origin: String?,
         clientId: String,
         nonce: String,
         reReaderPublicKey: EcPublicKey?,
         responseUri: String?,
-        requestIsForZk: Boolean
+        requestIsForZk: Boolean,
+        onDocumentsInFocus: (documents: List<Document>) -> Unit = {},
     ): String {
+        match.source as CredentialMatchSourceOpenID4VP
         var zkSystemMatch: ZkSystem? = null
         var zkSystemSpec: ZkSystemSpec? = null
         if (requestIsForZk) {
+            check(match.transactionData.isEmpty())
             val requesterSupportedZkSpecs = mutableListOf<ZkSystemSpec>()
-            for (entry in match.credentialQuery.meta["zk_system_type"]!!.jsonArray) {
+            for (entry in match.source.credentialQuery.meta["zk_system_type"]!!.jsonArray) {
                 entry as JsonObject
                 val system = entry["system"]!!.jsonPrimitive.content
                 val id = entry["id"]!!.jsonPrimitive.content
@@ -527,14 +640,11 @@ object OpenID4VP {
             if (zkSystemRepository != null) {
                 // Find the first ZK System that the requester supports and matches the document
                 for (zkSpec in requesterSupportedZkSpecs) {
-                    val zkSystem = zkSystemRepository.lookup(zkSpec.system)
-                    if (zkSystem == null) {
-                        continue
-                    }
+                    val zkSystem = zkSystemRepository.lookup(zkSpec.system) ?: continue
 
                     val matchingZkSystemSpec = zkSystem.getMatchingSystemSpec(
                         zkSystemSpecs = requesterSupportedZkSpecs,
-                        requestedClaims = match.credentialQuery.claims
+                        requestedClaims = match.source.credentialQuery.claims
                     )
                     if (matchingZkSystemSpec != null) {
                         zkSystemMatch = zkSystem
@@ -549,9 +659,9 @@ object OpenID4VP {
             }
         }
 
-        val reReaderPublicKeJwkThumbprint = reReaderPublicKey?.let {
-            it.toJwkThumbprint(Algorithm.SHA256).toByteArray()
-        }
+        val reReaderPublicKeJwkThumbprint = reReaderPublicKey
+            ?.toJwkThumbprint(Algorithm.SHA256)
+            ?.toByteArray()
         val handoverInfo = Cbor.encode(
             when (version) {
                 Version.DRAFT_29 -> {
@@ -584,7 +694,7 @@ object OpenID4VP {
                 }
             }
         )
-        Logger.iCbor(TAG, "handoverInfo", handoverInfo)
+        Logger.dCbor(TAG, "handoverInfo", handoverInfo)
 
         val handoverString = if (responseUri != null) {
             "OpenID4VPHandover"
@@ -602,14 +712,15 @@ object OpenID4VP {
                 }
             }
         )
-        Logger.iCbor(TAG, "handoverInfo", handoverInfo)
-        Logger.iCbor(TAG, "encodedSessionTranscript", encodedSessionTranscript)
+        Logger.dCbor(TAG, "handoverInfo", handoverInfo)
+        Logger.dCbor(TAG, "encodedSessionTranscript", encodedSessionTranscript)
 
         val mdocCredential = match.credential as MdocCredential
         val document = MdocDocument.fromPresentment(
             sessionTranscript = Cbor.decode(encodedSessionTranscript),
             credential = mdocCredential,
-            requestedClaims = match.credentialQuery.claims as List<MdocRequestedClaim>,
+            requestedClaims = match.source.credentialQuery.claims as List<MdocRequestedClaim>,
+            deviceNamespaces = computeTransactionResponse(match)
         )
         val deviceResponse = buildDeviceResponse(
             sessionTranscript = Cbor.decode(encodedSessionTranscript),
@@ -631,22 +742,79 @@ object OpenID4VP {
         return Cbor.encode(deviceResponse.toDataItem()).toBase64Url()
     }
 
+    /**
+     * Processes transaction data for the given SD-JWT credential.
+     *
+     * @param credential credential which transactions are targeting, must be key-bound if any
+     *   transactions are present (i.e. [transactionData] is not empty)
+     * @param transactionData transaction data for the credential
+     * @param docRequestId index of the specific document request in the context of ISO 18013
+     *   presentation
+     * @return additional attributes to add to the SD-JWT+KB body
+     */
+    suspend fun processTransactions(
+        credential: SdJwtVcCredential,
+        transactionData: List<TransactionData<*>>,
+        transactionUserInput: Map<String, TransactionUserInput>,
+        docRequestId: Int? = null
+    ): Map<String, JsonElement> {
+        val transactionResponse = mutableMapOf<String, JsonElement>()
+        for (data in transactionData) {
+            val responseClaims = data.generateSdJwtResponseClaims(
+                credential as Credential,
+                transactionUserInput[data.type.identifier],
+                docRequestId
+            )
+            if (responseClaims.isNotEmpty()) {
+                transactionResponse[data.type.kbJwtResponseClaimName] = buildJsonObject {
+                    for ((name, value) in responseClaims) {
+                        put(name, value)
+                    }
+                }
+            }
+        }
+        val isIso18013_5 = transactionData.any { it.protocol == TransactionProtocol.ISO_18013_5 }
+        if (!isIso18013_5) {
+            val hashAlgorithm = transactionData.firstNotNullOfOrNull { it.hashAlgorithms?.first() }
+            if (hashAlgorithm != null) {
+                // Non-default hash algorithm; ensure all transaction data items are
+                // using the same one
+                transactionData.forEach { data ->
+                    check(hashAlgorithm == (data.hashAlgorithms?.first() ?: Algorithm.SHA256))
+                }
+                transactionResponse["transaction_data_hashes_alg"] =
+                    JsonPrimitive(hashAlgorithm.hashAlgorithmName)
+            }
+            transactionResponse["transaction_data_hashes"] = buildJsonArray {
+                transactionData.forEach { data ->
+                    add(data.computeHash(
+                        hashAlgorithm ?: Algorithm.SHA256).toByteArray().toBase64Url())
+                }
+            }
+        }
+        return transactionResponse
+    }
+
     private suspend fun openID4VPSdJwt(
         version: Version,
-        match: DcqlResponseCredentialSetOptionMemberMatch,
+        match: CredentialPresentmentSetOptionMemberMatch,
         origin: String?,
         clientId: String,
         nonce: String,
-        responseMode: ResponseMode,
+        responseMode: ResponseMode
     ): String {
+        match.source as CredentialMatchSourceOpenID4VP
         val sdjwtVcCredential = match.credential as SdJwtVcCredential
-        val claims = match.credentialQuery.claims as List<JsonRequestedClaim>
+        val claims = match.source.credentialQuery.claims as List<JsonRequestedClaim>
 
         val sdJwt = SdJwt.fromCompactSerialization(sdjwtVcCredential.issuerProvidedData.decodeToString())
         val pathsToDisclose = claims.map { claim: JsonRequestedClaim -> claim.claimPath }
         val filteredSdJwt = sdJwt.filter(pathsToDisclose)
 
         (sdjwtVcCredential as Credential).increaseUsageCount()
+
+        val transactionResponse = processTransactions(sdjwtVcCredential, match.transactionData, match.transactionUserInput)
+
         return if (sdjwtVcCredential is SecureAreaBoundCredential) {
             filteredSdJwt.present(
                 signingKey = AsymmetricKey.anonymous(
@@ -668,9 +836,16 @@ object OpenID4VP {
                     clientId
                 },
                 creationTime = Clock.System.now()
-            ).compactSerialization
+            ) {
+                if (!match.transactionData.isEmpty()) {
+                    for ((key, response) in transactionResponse) {
+                        put(key, response)
+                    }
+                }
+            }.compactSerialization
         } else {
             filteredSdJwt.compactSerialization
         }
     }
+
 }

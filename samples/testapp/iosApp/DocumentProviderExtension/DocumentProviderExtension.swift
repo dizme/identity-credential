@@ -12,24 +12,69 @@ import IdentityDocumentServicesUI
 @preconcurrency import Multipaz
 import SwiftUI
 
+fileprivate let TAG = "DocumentProviderExtension"
+
+private class ExtensionLogPrinter: NSObject, LoggerLogPrinter {
+    private let maxChunkLength = 800
+
+    func print(level: LoggerLogPrinterLevel, tag: String, msg: String, throwable: KotlinThrowable?) {
+        let levelStr: String
+        switch level {
+        case .debug: levelStr = "DEBUG"
+        case .info: levelStr = "INFO"
+        case .warning: levelStr = "WARNING"
+        case .error: levelStr = "ERROR"
+        default: levelStr = level.name
+        }
+
+        var fullMsg = msg
+        if let throwable = throwable {
+            fullMsg += "\nEXCEPTION: \(throwable)"
+        }
+
+        let lines = fullMsg.components(separatedBy: "\n")
+        for line in lines {
+            if line.count <= maxChunkLength {
+                NSLog("Multipaz: [%@] [%@] %@", levelStr, tag, line)
+            } else {
+                var remaining = line[...]
+                while !remaining.isEmpty {
+                    let chunk = remaining.prefix(maxChunkLength)
+                    NSLog("Multipaz: [%@] [%@] %@", levelStr, tag, String(chunk))
+                    remaining = remaining.dropFirst(maxChunkLength)
+                }
+            }
+        }
+    }
+}
+
+private var isLoggingSetup = false
+
+private func initializeLogging() {
+    guard !isLoggingSetup else { return }
+    isLoggingSetup = true
+    Logger.shared.logPrinter = ExtensionLogPrinter()
+    Logger.shared.d(tag: TAG, msg: "Initialized logging")
+}
+
 func getPresentmentSource() async -> PresentmentSource {
     let storage = TestAppConfiguration.shared.storage
     let secureArea = try! await Platform.shared.getSecureArea(storage: storage)
+    let softwareSecureArea = try! await SoftwareSecureArea.companion.create(storage: storage)
     let secureAreaRepository = SecureAreaRepository.Builder()
         .add(secureArea: secureArea)
+        .add(secureArea: softwareSecureArea)
         .build()
     let documentTypeRepository = DocumentTypeRepository()
-    documentTypeRepository.addDocumentType(documentType: DrivingLicense.shared.getDocumentType())
-    documentTypeRepository.addDocumentType(documentType: PhotoID.shared.getDocumentType())
-    documentTypeRepository.addDocumentType(documentType: AgeVerification.shared.getDocumentType())
-    documentTypeRepository.addDocumentType(documentType: EUPersonalID.shared.getDocumentType())
+    documentTypeRepository.addKnownTypes(locale: LocalizedStrings.shared.getCurrentLocale())
+    documentTypeRepository.addUtopiaTypes(locale: LocalizedStrings.shared.getCurrentLocale())
     let documentStore = DocumentStore.Builder(
         storage: storage,
         secureAreaRepository: secureAreaRepository
     ).build()
     
     let ephemeralStorage = EphemeralStorage(clock: KotlinClockCompanion().getSystem())
-    let readerTrustManager = TrustManagerLocal(storage: ephemeralStorage, identifier: "default", partitionId: "default_default")
+    let readerTrustManager = TrustManager(storage: ephemeralStorage, identifier: "default", partitionId: "default_default")
     try! await readerTrustManager.addX509Cert(
         certificate: X509Cert.companion.fromPem(
             pemEncoding: """
@@ -49,7 +94,7 @@ func getPresentmentSource() async -> PresentmentSource {
                 """.trimmingCharacters(in: .whitespacesAndNewlines)
         ),
         metadata: TrustMetadata(
-            displayName: "Multipaz Identity Verifier",
+            displayName: "Multipaz Verifier",
             displayIcon: nil,
             displayIconUrl: "https://www.multipaz.org/multipaz-logo-200x200.png",
             privacyPolicyUrl: "https://apps.multipaz.org",
@@ -88,61 +133,52 @@ func getPresentmentSource() async -> PresentmentSource {
     )
     
     let zkSystemRepository = ZkSystemRepository()
-    // TODO: the RAM limit for IdentityDocumentProvider is 120 MB and Longfellow uses
-    //   just under 500MB. So we need to disable it for now. One possible work-around
-    //   is for Apple to increase the limit, another is to move the proof generation
-    //   to another process and do IPC.
-    /*
+    // Note: the RAM limit for IdentityDocumentProvider is 120 MB as of iOS 26 and
+    //   Longfellow v0.9 uses around ~200MB. So until Apple increases the RAM limit
+    //   for this extension ZKP will likely not work.
+    //
     let longfellow = LongfellowZkSystem()
-    let circuitFilenames = [
-        "6_1_4096_2945_137e5a75ce72735a37c8a72da1a8a0a5df8d13365c2ae3d2c2bd6a0e7197c7c6",
-        "6_2_4025_2945_b4bb6f01b7043f4f51d8302a30b36e3d4d2d0efc3c24557ab9212ad524a9764e",
-        "6_3_4121_2945_b2211223b954b34a1081e3fbf71b8ea2de28efc888b4be510f532d6ba76c2010",
-        "6_4_4283_2945_c70b5f44a1365c53847eb8948ad5b4fdc224251a2bc02d958c84c862823c49d6"
-    ]
-    for filename in circuitFilenames {
-        let url = Bundle.main.url(
-            forResource: filename,
-            withExtension: ""
-        )
-        let data = try! Data(contentsOf: url!)
-        longfellow.addCircuit(
-            circuitFilename: filename,
-            circuitBytes: ByteString(bytes: data.toByteArray())
-        )
-    }
+    longfellow.addDefaultCircuits()
     zkSystemRepository.add(zkSystem: longfellow)
-     */
     return SimplePresentmentSource.companion.create(
         documentStore: documentStore,
         documentTypeRepository: documentTypeRepository,
         zkSystemRepository: zkSystemRepository,
         resolveTrustFn: { requester in
-            if let certChain = requester.certChain {
+            for requesterIdentity in requester.requesterIdentities {
+                let certChain = requesterIdentity.certChain
                 let result = try! await readerTrustManager.verify(
                     chain: certChain.certificates,
-                    atTime: KotlinClockCompanion().getSystem().now()
+                    atTime: KotlinClockCompanion().getSystem().now(),
+                    validateCaValidity: true
                 )
-                if result.isTrusted {
-                    return result.trustPoints.first?.metadata
+                if result.isTrusted, let trustPoint = result.trustPoints.first {
+                    Logger.shared.d(tag: TAG, msg: "resolveTrust: Matched '\(trustPoint.metadata.displayName)'")
+                    return TrustedRequesterIdentity(
+                        identity: requesterIdentity,
+                        trustMetadata: trustPoint.metadata
+                    )
                 }
+            }
+            if !requester.requesterIdentities.isEmpty {
+                Logger.shared.d(tag: TAG, msg: "resolveTrust: No matching trust point for \(requester.requesterIdentities.count) identities")
             }
             return nil
         },
-        showConsentPromptFn: { requester, trustMetadata, credentialPresentmentData, preselectedDocuments, onDocumentsInFocus in
+        showConsentPromptFn: { requester, trustedRequesterIdentity, consentData, preselectedDocuments, onDocumentsInFocus in
             try! await promptModelSilentConsent(
                 requester: requester,
-                trustMetadata: trustMetadata,
-                credentialPresentmentData: credentialPresentmentData,
+                trustedRequesterIdentity: trustedRequesterIdentity,
+                consentData: consentData,
                 preselectedDocuments: preselectedDocuments,
                 onDocumentsInFocus: { documents in onDocumentsInFocus(documents) }
             )
         },
         preferSignatureToKeyAgreement: false,
-        domainMdocSignature: TestAppUtils.shared.CREDENTIAL_DOMAIN_MDOC_USER_AUTH,
-        domainMdocKeyAgreement: TestAppUtils.shared.CREDENTIAL_DOMAIN_MDOC_MAC_USER_AUTH,
-        domainKeylessSdJwt: nil,
-        domainKeyBoundSdJwt: nil
+        domainsMdocSignature: [TestAppUtils.shared.CREDENTIAL_DOMAIN_MDOC_USER_AUTH],
+        domainsMdocKeyAgreement: [TestAppUtils.shared.CREDENTIAL_DOMAIN_MDOC_MAC_USER_AUTH],
+        domainsKeylessSdJwt: [TestAppUtils.shared.CREDENTIAL_DOMAIN_SDJWT_KEYLESS],
+        domainsKeyBoundSdJwt: [TestAppUtils.shared.CREDENTIAL_DOMAIN_SDJWT_USER_AUTH]
     )
 }
 
@@ -154,6 +190,7 @@ struct DocumentProviderExtension: IdentityDocumentProvider {
             RequestAuthorizationView(
                 requestContext: context,
                 getPresentmentSource: {
+                    initializeLogging()
                     return await getPresentmentSource()
                 }
             )
@@ -161,6 +198,22 @@ struct DocumentProviderExtension: IdentityDocumentProvider {
     }
 
     func performRegistrationUpdates() async {
+        initializeLogging()
+        Logger.shared.d(tag: TAG, msg: "in performRegistrationUpdates")
+        let source = await getPresentmentSource()
+        do {
+            let dcApi = try await DigitalCredentialsCompanion.shared.getDefault()
+            try await dcApi.register(
+                documentStore: source.documentStore,
+                documentTypeRepository: source.documentTypeRepository,
+                selectedProtocols: dcApi.supportedProtocols,
+                forceRegistration: false
+            )
+            Logger.shared.d(tag: TAG, msg: "Successfully registered credentials")
+        } catch {
+            Logger.shared.e(tag: TAG, msg: "Error registering credentials: \(error)")
+        }
+        
     }
 }
 

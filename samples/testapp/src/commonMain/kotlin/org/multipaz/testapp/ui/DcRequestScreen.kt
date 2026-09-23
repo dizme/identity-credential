@@ -1,8 +1,11 @@
 package org.multipaz.testapp.ui
 
+import kotlinx.coroutines.CancellationException
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -14,117 +17,146 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
 import kotlinx.io.bytestring.ByteString
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
 import org.multipaz.cbor.DataItem
 import org.multipaz.compose.rememberUiBoundCoroutineScope
 import org.multipaz.crypto.Crypto
-import org.multipaz.crypto.EcCurve
 import org.multipaz.crypto.EcPrivateKey
-import org.multipaz.crypto.AsymmetricKey
-import org.multipaz.digitalcredentials.Default
+import org.multipaz.crypto.Algorithm
 import org.multipaz.documenttype.DocumentCannedRequest
-import org.multipaz.documenttype.DocumentType
-import org.multipaz.mdoc.zkp.ZkSystemRepository
-import org.multipaz.digitalcredentials.DigitalCredentials
-import org.multipaz.verification.MdocApiDcResponse
-import org.multipaz.verification.OpenID4VPDcResponse
-import org.multipaz.request.JsonRequestedClaim
-import org.multipaz.request.MdocRequestedClaim
+import org.multipaz.documenttype.MultiDocumentCannedRequest
+import org.multipaz.documenttype.SingleDocumentCannedRequest
 import org.multipaz.testapp.App
 import org.multipaz.testapp.TestAppUtils
 import org.multipaz.util.Logger
-import org.multipaz.verification.VerificationUtil
+import org.multipaz.util.fromHexByteString
+import org.multipaz.util.toBase64Url
 import org.multipaz.testapp.ShowResponseMetadata
 import org.multipaz.testapp.TestAppConfiguration
+import org.multipaz.utopia.knowntypes.wellKnownMultipleDocumentRequests
+import org.multipaz.testapp.DcqlRequestDefinition
+import org.multipaz.verification.VerificationSession
+import org.multipaz.verification.VerificationUtil
+import org.multipaz.verification.VerifierIdentity
+import org.multipaz.eventlogger.EventVerificationDigitalCredentials
 import kotlin.random.Random
 import kotlin.time.Clock
 
 private const val TAG = "AppToAppReadingScreen"
 
+private fun parseIssuerIdentifiers(input: String?): List<ByteString> {
+    if (input.isNullOrBlank()) return emptyList()
+    return input.split(",")
+        .map { it.filterNot { c -> c.isWhitespace() } }
+        .filter { it.isNotEmpty() }
+        .map { it.fromHexByteString() }
+}
+
 private data class RequestEntry(
+    val id: String,
     val displayName: String,
-    val documentType: DocumentType,
-    val sampleRequest: DocumentCannedRequest
+    val request: DocumentCannedRequest
 )
 
 private enum class RequestProtocol(
     val displayName: String,
-    val exchangeProtocolNames: List<String>,
+    val requestTypes: List<VerificationSession.RequestType>,
     val signRequest: Boolean,
 ) {
     W3C_DC_OPENID4VP_29(
         displayName = "OpenID4VP 1.0",
-        exchangeProtocolNames = listOf("openid4vp-v1-signed"),
+        requestTypes = listOf(VerificationSession.RequestType.DC_OPENID4VP),
         signRequest = true,
     ),
     W3C_DC_OPENID4VP_29_UNSIGNED(
         displayName = "OpenID4VP 1.0 (Unsigned)",
-        exchangeProtocolNames = listOf("openid4vp-v1-unsigned"),
+        requestTypes = listOf(VerificationSession.RequestType.DC_OPENID4VP),
         signRequest = false,
     ),
     W3C_DC_OPENID4VP_24(
         displayName = "OpenID4VP Draft 24",
-        exchangeProtocolNames = listOf("openid4vp"),
+        requestTypes = listOf(VerificationSession.RequestType.DC_OPENID4VP_DRAFT_24),
         signRequest = true,
     ),
     W3C_DC_OPENID4VP_24_UNSIGNED(
         displayName = "OpenID4VP Draft 24 (Unsigned)",
-        exchangeProtocolNames = listOf("openid4vp"),
+        requestTypes = listOf(VerificationSession.RequestType.DC_OPENID4VP_DRAFT_24),
         signRequest = false,
     ),
     W3C_DC_MDOC_API(
         displayName = "ISO 18013-7 Annex C",
-        exchangeProtocolNames = listOf("org-iso-mdoc"),
+        requestTypes = listOf(VerificationSession.RequestType.DC_ISO_18013),
         signRequest = true
     ),
     W3C_DC_MDOC_API_UNSIGNED(
         displayName = "ISO 18013-7 Annex C (Unsigned)",
-        exchangeProtocolNames = listOf("org-iso-mdoc"),
+        requestTypes = listOf(VerificationSession.RequestType.DC_ISO_18013),
         signRequest = false
     ),
-
     W3C_DC_MDOC_API_AND_OPENID4VP_29(
         displayName = "ISO 18013-7 Annex C + OpenID4VP 1.0",
-        exchangeProtocolNames = listOf("org-iso-mdoc", "openid4vp-v1-signed"),
+        requestTypes = listOf(
+            VerificationSession.RequestType.DC_ISO_18013,
+            VerificationSession.RequestType.DC_OPENID4VP
+        ),
         signRequest = true
     ),
     W3C_DC_MDOC_API_AND_OPENID4VP_29_UNSIGNED(
         displayName = "ISO 18013-7 Annex C + OpenID4VP 1.0 (Unsigned)",
-        exchangeProtocolNames = listOf("org-iso-mdoc", "openid4vp-v1-unsigned"),
+        requestTypes = listOf(
+            VerificationSession.RequestType.DC_ISO_18013,
+            VerificationSession.RequestType.DC_OPENID4VP
+        ),
         signRequest = false
     ),
     W3C_DC_MDOC_API_AND_OPENID4VP_24(
         displayName = "ISO 18013-7 Annex C + OpenID4VP Draft 24",
-        exchangeProtocolNames = listOf("org-iso-mdoc", "openid4vp"),
+        requestTypes = listOf(
+            VerificationSession.RequestType.DC_ISO_18013,
+            VerificationSession.RequestType.DC_OPENID4VP_DRAFT_24
+        ),
         signRequest = true
     ),
     W3C_DC_MDOC_API_AND_OPENID4VP_24_UNSIGNED(
         displayName = "ISO 18013-7 Annex C + OpenID4VP Draft 24 (Unsigned)",
-        exchangeProtocolNames = listOf("org-iso-mdoc", "openid4vp"),
+        requestTypes = listOf(
+            VerificationSession.RequestType.DC_ISO_18013,
+            VerificationSession.RequestType.DC_OPENID4VP_DRAFT_24
+        ),
         signRequest = false
     ),
-
     OPENID4VP_29_AND_W3C_DC_MDOC_API(
         displayName = "OpenID4VP 1.0 + ISO 18013-7 Annex C",
-        exchangeProtocolNames = listOf("openid4vp-v1-signed", "org-iso-mdoc"),
+        requestTypes = listOf(
+            VerificationSession.RequestType.DC_OPENID4VP,
+            VerificationSession.RequestType.DC_ISO_18013
+        ),
         signRequest = true
     ),
     OPENID4VP_29_UNSIGNED_AND_W3C_DC_MDOC_API(
         displayName = "OpenID4VP 1.0 + ISO 18013-7 Annex C (Unsigned)",
-        exchangeProtocolNames = listOf("openid4vp-v1-unsigned", "org-iso-mdoc"),
+        requestTypes = listOf(
+            VerificationSession.RequestType.DC_OPENID4VP,
+            VerificationSession.RequestType.DC_ISO_18013
+        ),
         signRequest = false
     ),
     OPENID4VP_24_AND_W3C_DC_MDOC_API(
         displayName = "OpenID4VP Draft 24 + ISO 18013-7 Annex C",
-        exchangeProtocolNames = listOf("openid4vp", "org-iso-mdoc"),
+        requestTypes = listOf(
+            VerificationSession.RequestType.DC_OPENID4VP_DRAFT_24,
+            VerificationSession.RequestType.DC_ISO_18013,
+        ),
         signRequest = true
     ),
     OPENID4VP_24_UNSIGNED_AND_W3C_DC_MDOC_API(
         displayName = "OpenID4VP Draft 24 + ISO 18013-7 Annex C (Unsigned)",
-        exchangeProtocolNames = listOf("openid4vp", "org-iso-mdoc"),
+        requestTypes = listOf(
+            VerificationSession.RequestType.DC_OPENID4VP_DRAFT_24,
+            VerificationSession.RequestType.DC_ISO_18013,
+        ),
         signRequest = false
     ),
 }
@@ -136,8 +168,7 @@ private enum class CredentialFormat(
     IETF_SDJWT("IETF SD-JWT"),
 }
 
-private var lastRequest: Int = 0
-private var lastProtocol: Int = 0
+private var lastProtocol: Int = 4
 private var lastFormat: Int = 0
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalCoroutinesApi::class)
@@ -148,30 +179,51 @@ fun DcRequestScreen(
     showResponse: (
         vpToken: JsonObject?,
         deviceResponse: DataItem?,
-        sessionTranscript: DataItem,
-        nonce: ByteString?,
+        session: VerificationSession,
         eReaderKey: EcPrivateKey?,
         metadata: ShowResponseMetadata
     ) -> Unit
 ) {
     val requestOptions = mutableListOf<RequestEntry>()
     for (documentType in TestAppUtils.provisionedDocumentTypes) {
+        val docTypeId = documentType.mdocDocumentType?.docType
+            ?: documentType.jsonDocumentType?.vct
+            ?: documentType.displayName
         for (sampleRequest in documentType.cannedRequests) {
             requestOptions.add(RequestEntry(
+                id = "${docTypeId}_${sampleRequest.id}",
                 displayName = "${documentType.displayName}: ${sampleRequest.displayName}",
-                documentType = documentType,
-                sampleRequest = sampleRequest
+                request = sampleRequest
             ))
         }
     }
+    for (request in app.documentTypeRepository.extraSingleDocumentCannedRequests) {
+        requestOptions.add(RequestEntry(
+            id = "extra_" + request.id,
+            displayName = request.displayName,
+            request = request
+        ))
+    }
+    for (request in wellKnownMultipleDocumentRequests) {
+        requestOptions.add(RequestEntry(
+            id = "multidoc_" + request.id,
+            displayName = "Multi-doc: ${request.displayName}",
+            request = request
+        ))
+    }
     val requestDropdownExpanded = remember { mutableStateOf(false) }
-    val requestSelected = remember { mutableStateOf(requestOptions[lastRequest]) }
+    val requestSelected = remember { mutableStateOf(
+        requestOptions.find {
+            it.id == app.settingsModel.dcRequestLastSelectedRequestId.value
+        } ?: requestOptions.first()
+    )}
     val protocolOptions = RequestProtocol.entries
     val protocolDropdownExpanded = remember { mutableStateOf(false) }
     val protocolSelected = remember { mutableStateOf(protocolOptions[lastProtocol]) }
     val formatOptions = CredentialFormat.entries
     val formatDropdownExpanded = remember { mutableStateOf(false) }
     val formatSelected = remember { mutableStateOf(formatOptions[lastFormat]) }
+    val issuerIdentifiers = remember { mutableStateOf(app.settingsModel.dcRequestIssuerIdentifiers.value) }
     val coroutineScope = rememberUiBoundCoroutineScope { app.promptModel }
 
     LazyColumn(
@@ -180,17 +232,19 @@ fun DcRequestScreen(
         item {
             ComboBox(
                 headline = "Claims to request",
-                availableRequests = requestOptions,
+                options = requestOptions,
                 comboBoxSelected = requestSelected,
                 comboBoxExpanded = requestDropdownExpanded,
                 getDisplayName = { it.displayName },
-                onSelected = { index, value -> lastRequest = index }
+                onSelected = { index, value ->
+                    app.settingsModel.dcRequestLastSelectedRequestId.value = value.id
+                }
             )
         }
         item {
             ComboBox(
                 headline = "W3C Digital Credentials Protocol(s)",
-                availableRequests = protocolOptions,
+                options = protocolOptions,
                 comboBoxSelected = protocolSelected,
                 comboBoxExpanded = protocolDropdownExpanded,
                 getDisplayName = { it.displayName },
@@ -200,11 +254,22 @@ fun DcRequestScreen(
         item {
             ComboBox(
                 headline = "Credential Format",
-                availableRequests = formatOptions,
+                options = formatOptions,
                 comboBoxSelected = formatSelected,
                 comboBoxExpanded = formatDropdownExpanded,
                 getDisplayName = { it.displayName },
                 onSelected = { index, value -> lastFormat = index }
+            )
+        }
+        item {
+            OutlinedTextField(
+                value = issuerIdentifiers.value,
+                onValueChange = {
+                    issuerIdentifiers.value = it
+                    app.settingsModel.dcRequestIssuerIdentifiers.value = it
+                },
+                label = { Text("Issuer Identifiers (hex, comma separated)") },
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
             )
         }
         item {
@@ -213,14 +278,15 @@ fun DcRequestScreen(
                     coroutineScope.launch {
                         try {
                             doDcRequestFlow(
-                                appReaderKey = app.readerKey,
-                                request = requestSelected.value.sampleRequest,
+                                app = app,
+                                request = requestSelected.value.request,
                                 protocol = protocolSelected.value,
                                 format = formatSelected.value,
-                                zkSystemRepository = app.zkSystemRepository,
+                                issuerIdentifiers = parseIssuerIdentifiers(issuerIdentifiers.value),
                                 showResponse = showResponse
                             )
-                        } catch (error: Throwable) {
+                        } catch (error: Exception) {
+                            if (error is CancellationException) throw error
                             Logger.e(TAG, "Error requesting credentials", error)
                             showToast("Error: ${error.message}")
                         }
@@ -233,111 +299,117 @@ fun DcRequestScreen(
 }
 
 private suspend fun doDcRequestFlow(
-    appReaderKey: AsymmetricKey.X509Compatible,
+    app: App,
     request: DocumentCannedRequest,
     protocol: RequestProtocol,
     format: CredentialFormat,
-    zkSystemRepository: ZkSystemRepository,
+    issuerIdentifiers: List<ByteString> = emptyList(),
     showResponse: (
         vpToken: JsonObject?,
         deviceResponse: DataItem?,
-        sessionTranscript: DataItem,
-        nonce: ByteString?,
+        session: VerificationSession,
         eReaderKey: EcPrivateKey?,
         metadata: ShowResponseMetadata
     ) -> Unit
 ) {
-    when (format) {
-        CredentialFormat.ISO_MDOC -> {
-            require(request.mdocRequest != null) { "No ISO mdoc format in request" }
-        }
+    if (request is SingleDocumentCannedRequest) {
+        when (format) {
+            CredentialFormat.ISO_MDOC -> {
+                require(request.mdocRequest != null) { "No ISO mdoc format in request" }
+            }
 
-        CredentialFormat.IETF_SDJWT -> {
-            require(request.jsonRequest != null) { "No IETF SD-JWT format in request" }
+            CredentialFormat.IETF_SDJWT -> {
+                require(request.jsonRequest != null) { "No IETF SD-JWT format in request" }
+            }
         }
     }
 
-    val nonce = ByteString(Random.Default.nextBytes(16))
-    val responseEncryptionKey = Crypto.createEcPrivateKey(EcCurve.P256)
+    val nonce = ByteString(Random.nextBytes(16))
     val origin = TestAppConfiguration.getAppToAppOrigin()
     // According to OpenID4VP, Client ID must be set for signed requests and not for unsigned requests
-    val clientId = "web-origin:$origin"
+    val clientId = if (protocol.signRequest) {
+        val cert = app.readerKey.certChain.certificates.getOrNull(0)
+            ?: throw IllegalArgumentException("Certificate chain is missing or empty")
+        val certHash = Crypto.digest(Algorithm.SHA256, cert.encoded.toByteArray()).toBase64Url()
+        "x509_hash:$certHash"
+    } else {
+        null
+    }
 
-    val dcRequestObject = when (format) {
-        CredentialFormat.ISO_MDOC -> {
-            val claims = mutableListOf<MdocRequestedClaim>()
-            request.mdocRequest!!.namespacesToRequest.forEach { namespaceRequest ->
-                namespaceRequest.dataElementsToRequest.forEach { (mdocDataElement, intentToRetain) ->
-                    claims.add(
-                        MdocRequestedClaim(
-                            namespaceName = namespaceRequest.namespace,
-                            dataElementName = mdocDataElement.attribute.identifier,
-                            intentToRetain = intentToRetain
-                        )
-                    )
-                }
-            }
-            VerificationUtil.generateDcRequestMdoc(
-                exchangeProtocols = protocol.exchangeProtocolNames,
-                docType = request.mdocRequest!!.docType,
-                claims = claims,
-                nonce = nonce,
-                origin = origin,
-                clientId = clientId,
-                responseEncryptionKey = responseEncryptionKey.publicKey,
-                readerAuthenticationKey = if (protocol.signRequest) {
-                    appReaderKey
-                } else {
-                    null
-                },
-                zkSystemSpecs = if (request.mdocRequest!!.useZkp) {
-                    zkSystemRepository.getAllZkSystemSpecs()
-                } else {
-                    emptyList()
-                }
-            )
-        }
+    val requestDefinition = when (request) {
+        is SingleDocumentCannedRequest -> {
+            when (format) {
+                CredentialFormat.ISO_MDOC -> DcqlRequestDefinition(
+                    dcql = request.mdocRequest!!
+                        .toDcql(app.zkSystemRepository.getAllZkSystemSpecs()).toString(),
+                    // VerificationUtils.calcDcqlMdoc currently always uses "calc1"
+                    transactionData = request.toJsonTransactionData("cred1")
+                )
 
-        CredentialFormat.IETF_SDJWT -> {
-            val claims = request.jsonRequest!!.claimsToRequest.map { documentAttribute ->
-                val path = mutableListOf<JsonElement>()
-                documentAttribute.parentAttribute?.let {
-                    path.add(JsonPrimitive(it.identifier))
-                }
-                path.add(JsonPrimitive(documentAttribute.identifier))
-                JsonRequestedClaim(
-                    claimPath = JsonArray(path),
+                CredentialFormat.IETF_SDJWT -> DcqlRequestDefinition(
+                    dcql = request.jsonRequest!!.toDcql().toString(),
+                    transactionData = request.toJsonTransactionData("cred1")
                 )
             }
-            VerificationUtil.generateDcRequestSdJwt(
-                exchangeProtocols = protocol.exchangeProtocolNames,
-                vct = listOf(request.jsonRequest!!.vct),
-                claims = claims,
-                nonce = nonce,
-                origin = origin,
-                clientId = clientId,
-                responseEncryptionKey = responseEncryptionKey.publicKey,
-                readerAuthenticationKey = appReaderKey,
+        }
+        is MultiDocumentCannedRequest -> {
+            val transactions = request.transactionData?.let { data ->
+                Json.parseToJsonElement(data).jsonArray
+            }
+            DcqlRequestDefinition(
+                dcql = request.dcqlString,
+                transactionData = transactions?.map { it.toString() } ?: emptyList(),
             )
         }
     }
+
+    val dcqlToUse = if (issuerIdentifiers.isNotEmpty()) {
+        VerificationUtil.injectIssuerIdentifiersIntoDcql(
+            Json.parseToJsonElement(requestDefinition.dcql).jsonObject,
+            issuerIdentifiers
+        ).toString()
+    } else {
+        requestDefinition.dcql
+    }
+
+    val session = VerificationUtil.generateVerificationSessionForDcql(
+        requestTypes = protocol.requestTypes,
+        dcql = dcqlToUse,
+        transactionData = requestDefinition.transactionData,
+        nonce = nonce,
+        origin = origin,
+        verifierIdentities = buildList {
+            if (protocol.signRequest) {
+                add(VerifierIdentity(app.readerKey, clientId))
+            }
+        },
+        documentTypeRepository = app.documentTypeRepository,
+    )
+
+    val dcRequestObject = session.getDcRequest()
 
     Logger.i(TAG, "clientId: $clientId")
     Logger.i(TAG, "origin: $origin")
     Logger.iJson(TAG, "Request", dcRequestObject)
     val t0 = Clock.System.now()
-    val dcResponseObject = DigitalCredentials.Default.request(dcRequestObject)
+    val dcResponseObject = app.digitalCredentials.request(dcRequestObject)
+    val durationRequestSentToResponseReceived = Clock.System.now() - t0
     Logger.iJson(TAG, "Response", dcResponseObject)
 
-    val dcResponse = VerificationUtil.decryptDcResponse(
-        response = dcResponseObject,
-        nonce = nonce,
-        origin = origin,
-        responseEncryptionKey = AsymmetricKey.anonymous(
-            privateKey = responseEncryptionKey,
-            algorithm = responseEncryptionKey.curve.defaultKeyAgreementAlgorithm
+    val presentmentRecord = session.processDcResponse(dcResponse = dcResponseObject)
+    val requestJson = Json.encodeToString(dcRequestObject)
+    val responseJson = Json.encodeToString(dcResponseObject)
+    app.eventLogger.addEventAsync(
+        EventVerificationDigitalCredentials(
+            presentmentRecord = presentmentRecord,
+            requestJson = requestJson,
+            responseJson = responseJson,
+            durationRequestSentToResponseReceived = durationRequestSentToResponseReceived,
+            origin = origin,
+            appId = clientId
         )
     )
+
     val metadata = ShowResponseMetadata(
         engagementType = "OS-provided CredentialManager API",
         transferProtocol = "W3C Digital Credentials (${protocol.displayName})",
@@ -345,32 +417,15 @@ private suspend fun doDcRequestFlow(
         responseSize = Json.encodeToString(dcResponseObject).length.toLong(),
         durationMsecNfcTapToEngagement = null,
         durationMsecEngagementReceivedToRequestSent = null,
-        durationMsecRequestSentToResponseReceived = (Clock.System.now() - t0).inWholeMilliseconds
+        durationMsecRequestSentToResponseReceived = (Clock.System.now() - t0).inWholeMilliseconds,
+        nfcHybridTransportStats = null
     )
-    when (dcResponse) {
-        is MdocApiDcResponse -> {
-            Logger.iCbor(TAG, "deviceResponse", dcResponse.deviceResponse)
-            Logger.iCbor(TAG, "sessionTranscript", dcResponse.sessionTranscript)
-            showResponse(
-                /* vpToken = */ null,
-                /* deviceResponse = */ dcResponse.deviceResponse,
-                /* sessionTranscript = */ dcResponse.sessionTranscript,
-                /* nonce = */ nonce,
-                /* eReaderKey = */ null,
-                /* metadata = */ metadata
-            )
-        }
-        is OpenID4VPDcResponse -> {
-            Logger.iJson(TAG, "vpToken", dcResponse.vpToken)
-            Logger.iCbor(TAG, "sessionTranscript", dcResponse.sessionTranscript)
-            showResponse(
-                /* vpToken = */ dcResponse.vpToken,
-                /* deviceResponse = */ null,
-                /* sessionTranscript = */ dcResponse.sessionTranscript,
-                /* nonce = */ nonce,
-                /* eReaderKey = */ null,
-                /* metadata = */ metadata
-            )
-        }
-    }
+
+    showResponse(
+        /* vpToken = */ dcResponseObject,
+        /* deviceResponse = */ null,
+        /* session = */ session,
+        /* eReaderKey = */ null,
+        /* metadata = */ metadata
+    )
 }

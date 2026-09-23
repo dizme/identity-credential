@@ -26,12 +26,13 @@ import org.multipaz.cbor.DataItem
  */
 class MdocDocumentType private constructor(
     val docType: String,
-    val namespaces: Map<String, MdocNamespace>
+    val namespaces: Map<String, MdocNamespace>,
 ) {
     /**
      * Builder class for class [MdocDocumentType].
      *
      * @param docType the docType of the ISO mdoc Document Type.
+     * @property namespaces the mutable map of namespaces being built.
      */
     data class Builder(
         val docType: String,
@@ -46,6 +47,7 @@ class MdocDocumentType private constructor(
          * @param displayName the name suitable for display of the attribute.
          * @param description a description of the attribute.
          * @param mandatory indication whether the ISO mdoc attribute is mandatory.
+         * @param sensitivity the sensitivity of the attribute.
          * @param icon the icon, if available.
          * @param sampleValue a sample value for the attribute, if available.
          * @return the builder.
@@ -57,6 +59,7 @@ class MdocDocumentType private constructor(
             displayName: String,
             description: String,
             mandatory: Boolean,
+            sensitivity: DocumentAttributeSensitivity = DocumentAttributeSensitivity.PII,
             icon: Icon? = null,
             sampleValue: DataItem? = null,
         ) = apply {
@@ -64,13 +67,14 @@ class MdocDocumentType private constructor(
                 namespaces[namespace] = MdocNamespace.Builder(namespace)
             }
             namespaces[namespace]!!.addDataElement(
-                type,
-                identifier,
-                displayName,
-                description,
-                mandatory,
-                icon,
-                sampleValue
+                type = type,
+                identifier = identifier,
+                displayName = displayName,
+                description = description,
+                mandatory = mandatory,
+                sensitivity = sensitivity,
+                icon = icon,
+                sampleValue = sampleValue
             )
         }
 
@@ -99,6 +103,8 @@ class MdocDocumentType private constructor(
 
         /**
          * Build the [MdocDocumentType].
+         *
+         * @return the built [MdocDocumentType].
          */
         fun build() =
             MdocDocumentType(docType, namespaces.map { Pair(it.key, it.value.build()) }.toMap())

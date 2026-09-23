@@ -1,5 +1,6 @@
 package org.multipaz.testapp.ui
 
+import kotlinx.coroutines.CancellationException
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -16,6 +17,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TextField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.collectAsState
@@ -28,6 +30,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import org.multipaz.asn1.ASN1Integer
 import org.multipaz.crypto.Crypto
@@ -53,10 +56,16 @@ import kotlin.time.Instant
 import kotlinx.io.bytestring.ByteString
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.json.Json
+import org.multipaz.compose.cards.CardCarousel
+import org.multipaz.compose.document.DocumentInfo
 import org.multipaz.crypto.Algorithm
-import org.multipaz.crypto.JsonWebSignature
 import org.multipaz.crypto.AsymmetricKey
+import org.multipaz.crypto.JsonWebSignature
 import org.multipaz.crypto.X509CertChain
+import org.multipaz.cbor.Cbor
+import org.multipaz.compose.pickers.rememberFilePicker
+import org.multipaz.mpzpass.MpzPass
+import org.multipaz.securearea.software.SoftwareUserAuthType
 import org.multipaz.testapp.TestAppConfiguration
 import org.multipaz.util.Logger
 import org.multipaz.util.Platform
@@ -81,6 +90,8 @@ private val userAuthenticationTimeoutValues = mapOf(
     "No auth" to null
 )
 
+private const val INITIAL_ISSUER_URL = "https://issuer.multipaz.org/issuer"
+
 @Composable
 fun DocumentStoreScreen(
     documentStore: DocumentStore,
@@ -90,6 +101,7 @@ fun DocumentStoreScreen(
     iacaKey: AsymmetricKey.X509Certified,
     showToast: (message: String) -> Unit,
     onViewDocument: (documentId: String) -> Unit,
+    onIssuerSelected: (issuerUrl: String) -> Unit
 ) {
     // TODO: Use the same coroutine scope as what the storage layer uses to make it faster.
     val coroutineScope = rememberCoroutineScope()
@@ -100,6 +112,32 @@ fun DocumentStoreScreen(
     val showProvisioningResult = remember { mutableStateOf<AnnotatedString?>(null) }
     val userAuthenticationTimeout = remember { mutableStateOf<Duration?>(10.seconds) }
     val documentInfos = documentModel.documentInfos.collectAsState().value
+
+    val mpzPassFilePicker = rememberFilePicker(
+        types = listOf("*/*"),
+        allowMultiple = false,
+        onResult = { files ->
+            if (files.isNotEmpty()) {
+                val fileBytes = files.first().toByteArray()
+                coroutineScope.launch {
+                    try {
+                        val mpzPass = MpzPass.fromDataItem(Cbor.decode(fileBytes))
+                        val doc = documentStore.importMpzPass(
+                            mpzPass = mpzPass,
+                            isoMdocDomain = TestAppUtils.CREDENTIAL_DOMAIN_MDOC_SOFTWARE,
+                            sdJwtVcDomain = TestAppUtils.CREDENTIAL_DOMAIN_SDJWT_SOFTWARE,
+                            keylessSdJwtVcDomain = TestAppUtils.CREDENTIAL_DOMAIN_SDJWT_KEYLESS
+                        )
+                        showToast("Imported pass '${doc.displayName ?: doc.identifier}' successfully")
+                    } catch (e: Exception) {
+                        if (e is CancellationException) throw e
+                        e.printStackTrace()
+                        showToast("Error importing pass: ${e.message}")
+                    }
+                }
+            }
+        }
+    )
 
     val showDocumentCreationDialog = remember { mutableStateOf(false) }
     if (showDocumentCreationDialog.value) {
@@ -114,6 +152,34 @@ fun DocumentStoreScreen(
                     onClick = {}) {
                     Text("OK")
                 }
+            }
+        )
+    }
+
+    val showIssuanceDialog = remember { mutableStateOf(false) }
+    if (showIssuanceDialog.value) {
+        val issuingServerUrl = remember { mutableStateOf(INITIAL_ISSUER_URL) }
+        AlertDialog(
+            onDismissRequest = { showIssuanceDialog.value = false },
+            title = { Text("Select Issuer") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showIssuanceDialog.value = false
+                        onIssuerSelected(issuingServerUrl.value)
+                    }) {
+                    Text("Start")
+                }
+            },
+            text = {
+                TextField(
+                    modifier = Modifier.padding(4.dp),
+                    value = issuingServerUrl.value,
+                    onValueChange = { issuingServerUrl.value = it },
+                    label = {
+                        Text("Issuer server URL")
+                    }
+                )
             }
         )
     }
@@ -138,7 +204,10 @@ fun DocumentStoreScreen(
             },
             confirmButton = {
                 Button(
-                    onClick = { showProvisioningResult.value = null }) {
+                    onClick = {
+                        showProvisioningResult.value = null
+                    }
+                ) {
                     Text("Close")
                 }
             }
@@ -194,7 +263,8 @@ fun DocumentStoreScreen(
                             numCredentialsPerDomain = numCredentialsPerDomain.value,
                             showDocumentCreationDialog = showDocumentCreationDialog,
                         )
-                    } catch (e: Throwable) {
+                    } catch (e: Exception) {
+                        if (e is CancellationException) throw e
                         e.printStackTrace()
                         showToast("${e.message}")
                     }
@@ -209,6 +279,54 @@ fun DocumentStoreScreen(
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         item {
+            CardCarousel(
+                cardInfos = documentInfos,
+                initialCardInfo = documentInfos.find { it.identifier == settingsModel.currentlyFocusedDocumentId.value },
+                allowReordering = true,
+                onCardClicked = { cardInfo ->
+                    val documentInfo = cardInfo as DocumentInfo
+                    onViewDocument(documentInfo.document.identifier)
+                },
+                onCardFocused = { cardInfo ->
+                    settingsModel.currentlyFocusedDocumentId.value = cardInfo.identifier
+                },
+                onCardReordered = { cardInfo, oldPos, newPos ->
+                    val documentInfo = cardInfo as DocumentInfo
+                    coroutineScope.launch {
+                        try {
+                            documentModel.setDocumentPosition(
+                                documentInfo = documentInfo,
+                                position = newPos
+                            )
+                        } catch (e: IllegalArgumentException) {
+                            Logger.e(TAG, "Error setting document position", e)
+                        }
+                    }
+                },
+                selectedCardInfo = { cardInfo, index, total ->
+                    if (cardInfo != null) {
+                        val documentInfo = cardInfo as DocumentInfo
+                        Text(
+                            text = "${index + 1} of $total: ${documentInfo.document.displayName ?: "No displayname"}",
+                            fontWeight = FontWeight.Bold
+                        )
+                    } else {
+                        Text(
+                            text = "Drag to reorder",
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                },
+                emptyCardContent = {
+                    Text(
+                        text = "No documents in store",
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            )
+        }
+
+        item {
             TextButton(onClick = {
                 coroutineScope.launch {
                     val timestampBegin = Clock.System.now()
@@ -220,6 +338,20 @@ fun DocumentStoreScreen(
                 }
             }) {
                 Text(text = "Delete all Documents")
+            }
+        }
+        item {
+            TextButton(onClick = {
+                showIssuanceDialog.value = true
+            }) {
+                Text(text = "Provision a Document from an Issuer")
+            }
+        }
+        item {
+            TextButton(onClick = {
+                mpzPassFilePicker.launch()
+            }) {
+                Text(text = "Import MpzPass")
             }
         }
         item {
@@ -273,6 +405,7 @@ fun DocumentStoreScreen(
                             SoftwareCreateKeySettings.Builder()
                                 .setAlgorithm(algorithm)
                                 .setPassphraseRequired(true, "1111", PassphraseConstraints.PIN_FOUR_DIGITS)
+                                .setUserAuthenticationRequired(true, setOf(SoftwareUserAuthType.PASSCODE, SoftwareUserAuthType.BIOMETRIC))
                                 .build()
                         },
                         dsKey = dsKey,
@@ -412,7 +545,7 @@ fun DocumentStoreScreen(
                 )
             }
         } else {
-            for ((_, documentInfo) in documentInfos) {
+            for (documentInfo in documentInfos) {
                 item {
                     Row(
                         modifier = Modifier.padding(horizontal = 16.dp),
@@ -427,7 +560,6 @@ fun DocumentStoreScreen(
                         )
                         TextButton(onClick = {
                             onViewDocument(documentInfo.document.identifier)
-                            // TODO: Go to page showing document details and credentials
                         }) {
                             Text(
                                 text = documentInfo.document.displayName ?: "(displayName not set)"
@@ -530,7 +662,8 @@ private suspend fun provisionTestDocuments(
             }
         }
         showProvisioningResult.value = provisioningResult
-    } catch (e: Throwable) {
+    } catch (e: Exception) {
+        if (e is CancellationException) throw e
         e.printStackTrace()
         showToast("Error provisioning documents: $e")
     }

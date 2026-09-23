@@ -1,5 +1,6 @@
 package org.multipaz.securearea.cloud
 
+import kotlinx.coroutines.CancellationException
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.engine.HttpClientEngineFactory
@@ -13,6 +14,7 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlin.time.Instant
 import kotlinx.io.bytestring.ByteString
 import kotlinx.io.bytestring.buildByteString
@@ -28,7 +30,11 @@ import org.multipaz.crypto.Crypto
 import org.multipaz.crypto.EcCurve
 import org.multipaz.crypto.EcPublicKey
 import org.multipaz.crypto.EcSignature
+import org.multipaz.crypto.SecretKey
+import org.multipaz.crypto.SecureByteString
+import org.multipaz.crypto.Signature
 import org.multipaz.crypto.SignatureVerificationException
+import org.multipaz.crypto.secureZero
 import org.multipaz.crypto.X509Cert
 import org.multipaz.crypto.X509CertChain
 import org.multipaz.device.AssertionNonce
@@ -56,7 +62,12 @@ import org.multipaz.securearea.cloud.CloudSecureAreaProtocol.E2EESetupRequest0
 import org.multipaz.securearea.cloud.CloudSecureAreaProtocol.E2EESetupRequest1
 import org.multipaz.securearea.cloud.CloudSecureAreaProtocol.E2EESetupResponse0
 import org.multipaz.securearea.cloud.CloudSecureAreaProtocol.E2EESetupResponse1
+import org.multipaz.securearea.cloud.CloudSecureAreaProtocol.KemDecapsulateRequest0
+import org.multipaz.securearea.cloud.CloudSecureAreaProtocol.KemDecapsulateRequest1
+import org.multipaz.securearea.cloud.CloudSecureAreaProtocol.KemDecapsulateResponse0
+import org.multipaz.securearea.cloud.CloudSecureAreaProtocol.KemDecapsulateResponse1
 import org.multipaz.securearea.cloud.CloudSecureAreaProtocol.KeyAgreementRequest0
+
 import org.multipaz.securearea.cloud.CloudSecureAreaProtocol.KeyAgreementRequest1
 import org.multipaz.securearea.cloud.CloudSecureAreaProtocol.KeyAgreementResponse0
 import org.multipaz.securearea.cloud.CloudSecureAreaProtocol.KeyAgreementResponse1
@@ -79,11 +90,14 @@ import org.multipaz.util.appendUInt32
 import org.multipaz.certext.MultipazExtension
 import org.multipaz.certext.fromCbor
 import org.multipaz.crypto.Hkdf
+import org.multipaz.crypto.X509CertChainValidationException
 import org.multipaz.prompt.PassphraseEvaluation
 import org.multipaz.prompt.PromptDismissedException
 import org.multipaz.prompt.PromptModel
 import org.multipaz.prompt.PromptModelNotAvailableException
 import org.multipaz.securearea.KeyUnlockDataProvider
+import org.multipaz.securearea.PreloadedKeyUnlockDataProvider
+import org.multipaz.securearea.buildPreloadedKeyUnlockDataProvider
 import org.multipaz.prompt.Reason
 import kotlin.random.Random
 import kotlin.time.Duration
@@ -118,10 +132,11 @@ open class CloudSecureArea protected constructor(
     private val storageTable: StorageTable,
     final override val identifier: String,
     val serverUrl: String,
-    httpClientEngineFactory: HttpClientEngineFactory<*>
+    httpClientEngineFactory: HttpClientEngineFactory<*>,
+    private val random: Random = Crypto.secureRandom
 ) : SecureArea {
-    private var skDevice: ByteArray? = null
-    private var skCloud: ByteArray? = null
+    private var skDevice: SecretKey? = null
+    private var skCloud: SecretKey? = null
     private var e2eeContext: ByteArray? = null
     private var encryptedCounter = 0
     private var decryptedCounter = 0
@@ -138,7 +153,12 @@ open class CloudSecureArea protected constructor(
     private val supportedAlgorithms_: List<Algorithm> by lazy {
         // TODO: get from server to support configurations where only a subset of algorithms are supported.
         Algorithm.entries.filter {
-            it.fullySpecified && it.curve != null
+            it.fullySpecified && (
+                it.curve != null ||
+                (it.keySizeBits != null && it.isSigning) ||
+                it.isMlDsa ||
+                it.isMlKem
+            )
         }
     }
 
@@ -183,6 +203,7 @@ open class CloudSecureArea protected constructor(
             val responseBody: ByteArray = httpResponse.body()
             return Pair(responseStatus, responseBody)
         } catch (e: Exception) {
+            if (e is CancellationException) throw e
             throw CloudException("Error communicating with Cloud Secure Area", e)
         }
     }
@@ -231,7 +252,7 @@ open class CloudSecureArea protected constructor(
                     userAuthenticationTypes = setOf()
                 )
             )
-            val deviceChallenge = Random.Default.nextBytes(32)
+            val deviceChallenge = random.nextBytes(32)
 
             val deviceAttestationResult = DeviceCheck.generateAttestation(
                 platformSecureArea,
@@ -306,7 +327,8 @@ open class CloudSecureArea protected constructor(
                 partitionId = identifier,
                 data = ByteString(passphraseConstraints.toCbor())
             )
-        } catch (e: Throwable) {
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
             throw CloudException(e)
         }
     }
@@ -332,7 +354,10 @@ open class CloudSecureArea protected constructor(
         deviceAttestationId = null
         cloudBindingKey = null
         registrationContext = null
+        skDevice?.close()
         skDevice = null
+        skCloud?.close()
+        skCloud = null
     }
 
     private suspend fun validateCloudBindingKeyAttestation(
@@ -340,8 +365,10 @@ open class CloudSecureArea protected constructor(
         expectedDeviceChallenge: ByteArray,
         onAuthorizeRootOfTrust: (cloudSecureAreaRootOfTrust: X509Cert) -> Boolean,
     ) {
-        if (!attestation.validate()) {
-            throw CloudException("Error verifying attestation chain")
+        try {
+            attestation.validate()
+        } catch (err: X509CertChainValidationException) {
+            throw CloudException("Error verifying attestation chain: $err")
         }
 
         val rootX509Cert = attestation.certificates.last()
@@ -369,53 +396,54 @@ open class CloudSecureArea protected constructor(
             val request0 = E2EESetupRequest0(registrationContext!!.toByteArray())
             response = communicate(serverUrl, request0.toCbor())
             val response0 = CloudSecureAreaProtocol.Command.fromCbor(response) as E2EESetupResponse0
-            val deviceNonce = Random.Default.nextBytes(32)
-            val eDeviceKey = Crypto.createEcPrivateKey(EcCurve.P256)
-            val dataToSign = Cbor.encode(
-                buildCborArray {
-                    add(eDeviceKey.publicKey.toCoseKey().toDataItem())
-                    add(response0.cloudNonce)
-                    add(deviceNonce)
-                }
-            )
-            val signature = platformSecureArea.sign(
-                "DeviceBindingKey",
-                dataToSign
-            )
-            val deviceAssertion = DeviceCheck.generateAssertion(
-                secureArea = platformSecureArea,
-                deviceAttestationId = deviceAttestationId!!,
-                assertion = AssertionNonce(ByteString(response0.cloudNonce))
-            )
-            val request1 = E2EESetupRequest1(
-                eDeviceKey = eDeviceKey.publicKey.toCoseKey(),
-                deviceNonce = deviceNonce,
-                signature = signature,
-                deviceAssertion = deviceAssertion,
-                serverState = response0.serverState
-            )
-            response = communicate(serverUrl, request1.toCbor())
-            val response1 = CloudSecureAreaProtocol.Command.fromCbor(response) as E2EESetupResponse1
-            val dataSignedByTheCloud = Cbor.encode(
-                buildCborArray {
-                    add(response1.eCloudKey.toDataItem())
-                    add(response0.cloudNonce)
-                    add(deviceNonce)
-                }
-            )
-            try {
-                Crypto.checkSignature(
-                    cloudBindingKey!!,
-                    dataSignedByTheCloud,
-                    Algorithm.ES256,
-                    response1.signature
+            val deviceNonce = random.nextBytes(32)
+            val (zab, response1) = Crypto.createEcPrivateKey(EcCurve.P256).use { eDeviceKey ->
+                val dataToSign = Cbor.encode(
+                    buildCborArray {
+                        add(eDeviceKey.publicKey.toCoseKey().toDataItem())
+                        add(response0.cloudNonce)
+                        add(deviceNonce)
+                    }
                 )
-            } catch(e: SignatureVerificationException) {
-                throw CloudException("Error verifying signature", e)
-            }
+                val signature = platformSecureArea.sign(
+                    "DeviceBindingKey",
+                    dataToSign
+                )
+                val deviceAssertion = DeviceCheck.generateAssertion(
+                    secureArea = platformSecureArea,
+                    deviceAttestationId = deviceAttestationId!!,
+                    assertion = AssertionNonce(ByteString(response0.cloudNonce))
+                )
+                val request1 = E2EESetupRequest1(
+                    eDeviceKey = eDeviceKey.publicKey.toCoseKey(),
+                    deviceNonce = deviceNonce,
+                    signature = signature as EcSignature,
+                    deviceAssertion = deviceAssertion,
+                    serverState = response0.serverState
+                )
+                response = communicate(serverUrl, request1.toCbor())
+                val response1 = CloudSecureAreaProtocol.Command.fromCbor(response) as E2EESetupResponse1
+                val dataSignedByTheCloud = Cbor.encode(
+                    buildCborArray {
+                        add(response1.eCloudKey.toDataItem())
+                        add(response0.cloudNonce)
+                        add(deviceNonce)
+                    }
+                )
+                try {
+                    Crypto.checkSignature(
+                        cloudBindingKey!!,
+                        dataSignedByTheCloud,
+                        Algorithm.ES256,
+                        response1.signature
+                    )
+                } catch(e: SignatureVerificationException) {
+                    throw CloudException("Error verifying signature", e)
+                }
 
-            // Now we can derive SKDevice and SKCloud
-            val zab = Crypto.keyAgreement(eDeviceKey, response1.eCloudKey.ecPublicKey)
+                // Now we can derive SKDevice and SKCloud
+                Pair(Crypto.keyAgreement(eDeviceKey, response1.eCloudKey.ecPublicKey), response1)
+            }
             val salt = Crypto.digest(
                 Algorithm.SHA256,
                 Cbor.encode(
@@ -425,24 +453,29 @@ open class CloudSecureArea protected constructor(
                     }
                 )
             )
-            skDevice = Hkdf.deriveKey(
-                Algorithm.HMAC_SHA256,
-                zab,
-                salt,
-                "SKDevice".encodeToByteArray(),
-                32
-            )
-            skCloud = Hkdf.deriveKey(
-                Algorithm.HMAC_SHA256,
-                zab,
-                salt,
-                "SKCloud".encodeToByteArray(),
-                32
-            )
+            skDevice?.close()
+            skCloud?.close()
+            zab.use {
+                skDevice = Hkdf.deriveKey(
+                    Algorithm.HMAC_SHA256,
+                    it,
+                    salt,
+                    "SKDevice".encodeToByteArray(),
+                    32
+                )
+                skCloud = Hkdf.deriveKey(
+                    Algorithm.HMAC_SHA256,
+                    it,
+                    salt,
+                    "SKCloud".encodeToByteArray(),
+                    32
+                )
+            }
             e2eeContext = response1.serverState
             encryptedCounter = 1
             decryptedCounter = 1
         } catch (e: Exception) {
+            if (e is CancellationException) throw e
             throw CloudException(e)
         }
     }
@@ -455,7 +488,7 @@ open class CloudSecureArea protected constructor(
             appendUInt32(ivIdentifier)
             appendUInt32(encryptedCounter++)
         }.toByteArray()
-        return Crypto.encrypt(Algorithm.A128GCM, skDevice!!, iv, messagePlaintext)
+        return Crypto.encrypt(Algorithm.A256GCM, skDevice!!, iv, messagePlaintext)
     }
 
     private suspend fun decryptFromCloud(messageCiphertext: ByteArray): ByteArray {
@@ -515,6 +548,7 @@ open class CloudSecureArea protected constructor(
         } else {
             // Use default settings if user passed in a generic SecureArea.CreateKeySettings.
             val builder = CloudCreateKeySettings.Builder(createKeySettings.nonce)
+                .setAlgorithm(createKeySettings.algorithm)
                 .setUserAuthenticationRequired(
                     required = createKeySettings.userAuthenticationRequired,
                     types = setOf(
@@ -579,6 +613,7 @@ open class CloudSecureArea protected constructor(
             saveKeyMetadata(newKeyAlias, cSettings, response1.remoteKeyAttestation)
             return getKeyInfo(newKeyAlias)
         } catch (e: Exception) {
+            if (e is CancellationException) throw e
             throw CloudException(e)
         }
     }
@@ -591,7 +626,8 @@ open class CloudSecureArea protected constructor(
             createKeySettings
         } else {
             // Use default settings if user passed in a generic SecureArea.CreateKeySettings.
-            CloudCreateKeySettings.Builder(createKeySettings.nonce)
+            val builder = CloudCreateKeySettings.Builder(createKeySettings.nonce)
+                .setAlgorithm(createKeySettings.algorithm)
                 .setUserAuthenticationRequired(
                     required = createKeySettings.userAuthenticationRequired,
                     types = setOf(
@@ -599,7 +635,13 @@ open class CloudSecureArea protected constructor(
                         CloudUserAuthType.BIOMETRIC,
                     )
                 )
-                .build()
+            if (createKeySettings.validFrom != null && createKeySettings.validUntil != null) {
+                builder.setValidityPeriod(
+                    validFrom = createKeySettings.validFrom,
+                    validUntil = createKeySettings.validUntil
+                )
+            }
+            builder.build()
         }
         setupE2EE(false)
         try {
@@ -672,6 +714,7 @@ open class CloudSecureArea protected constructor(
                 openid4vciKeyAttestationJws = response1.openid4vciKeyAttestationCompactSerialization
             )
         } catch (e: Exception) {
+            if (e is CancellationException) throw e
             throw CloudException(e)
         }
     }
@@ -707,6 +750,7 @@ open class CloudSecureArea protected constructor(
                     val unlockData = unlockDataProvider.getKeyUnlockData(
                         secureArea = this,
                         alias = alias,
+                        algorithm = getKeyInfo(alias).algorithm,
                         unlockReason = unlockReason
                     )
                     op.invoke(unlockData)
@@ -723,7 +767,7 @@ open class CloudSecureArea protected constructor(
         alias: String,
         dataToSign: ByteArray,
         unlockReason: Reason
-    ): EcSignature {
+    ): Signature {
         return interactionHelper(
             alias,
             unlockReason,
@@ -735,8 +779,8 @@ open class CloudSecureArea protected constructor(
         alias: String,
         dataToSign: ByteArray,
         keyUnlockData: KeyUnlockData?
-    ): EcSignature {
-        var resultingSignature: EcSignature? = null
+    ): Signature {
+        var resultingSignature: Signature? = null
         val keyContext = storageTable.get(
             key = alias,
             partitionId = identifier
@@ -768,7 +812,7 @@ open class CloudSecureArea protected constructor(
             dataToSign = dataToSignLocally,
         )
         val request1 = SignRequest1(
-            signatureLocal,
+            signatureLocal as EcSignature,
             (keyUnlockData as? CloudKeyUnlockData)?.passphrase,
             response0.serverState
         )
@@ -804,7 +848,7 @@ open class CloudSecureArea protected constructor(
         alias: String,
         otherKey: EcPublicKey,
         unlockReason: Reason
-    ): ByteArray {
+    ): SecureByteString {
         return interactionHelper(
             alias,
             unlockReason,
@@ -816,7 +860,7 @@ open class CloudSecureArea protected constructor(
         alias: String,
         otherKey: EcPublicKey,
         keyUnlockData: KeyUnlockData?
-    ): ByteArray {
+    ): SecureByteString {
         var zab: ByteArray? = null
         val keyContext = storageTable.get(key = alias, partitionId = identifier)
         setupE2EE(false)
@@ -846,7 +890,7 @@ open class CloudSecureArea protected constructor(
             dataToSign = dataToSignLocally,
         )
         val request1 = KeyAgreementRequest1(
-            signatureLocal,
+            signatureLocal as EcSignature,
             (keyUnlockData as? CloudKeyUnlockData)?.passphrase,
             response0.serverState
         )
@@ -875,7 +919,95 @@ open class CloudSecureArea protected constructor(
                 else -> throw CloudException("Unexpected result ${response1.result}")
             }
         } while (tryAgain)
-        return zab!!
+        val rawZab = zab!!
+        try {
+            return SecureByteString(rawZab)
+        } finally {
+            rawZab.secureZero()
+        }
+    }
+
+    override suspend fun kemDecapsulate(
+        alias: String,
+        ciphertext: ByteArray,
+        unlockReason: Reason
+    ): SecureByteString {
+        return interactionHelper(
+            alias,
+            unlockReason,
+            op = { unlockData -> kemDecapsulateNonInteractive(alias, ciphertext, unlockData) }
+        )
+    }
+
+    private suspend fun kemDecapsulateNonInteractive(
+        alias: String,
+        ciphertext: ByteArray,
+        keyUnlockData: KeyUnlockData?
+    ): SecureByteString {
+        var sharedSecret: ByteArray? = null
+        val keyContext = storageTable.get(key = alias, partitionId = identifier)
+        setupE2EE(false)
+        var response: ByteArray
+
+        // Throw if passphrase is required and not passed in.
+        val keyInfo = getKeyInfo(alias)
+        if (keyInfo.isPassphraseRequired) {
+            if (keyUnlockData == null || (keyUnlockData as CloudKeyUnlockData).passphrase == null) {
+                throw CloudKeyLockedException(
+                    CloudKeyLockedException.Reason.WRONG_PASSPHRASE,
+                    "No passphrase supplied"
+                )
+            }
+        }
+
+        val request0 = KemDecapsulateRequest0(ciphertext, keyContext!!.toByteArray())
+        response = communicateE2EE(request0.toCbor())
+        val response0 = CloudSecureAreaProtocol.Command.fromCbor(response) as KemDecapsulateResponse0
+        val dataToSignLocally = Cbor.encode(
+            buildCborArray {
+                add(response0.cloudNonce)
+            }
+        )
+        val signatureLocal = platformSecureArea.sign(
+            alias = getLocalKeyAlias(alias),
+            dataToSign = dataToSignLocally,
+        )
+        val request1 = KemDecapsulateRequest1(
+            signatureLocal as EcSignature,
+            (keyUnlockData as? CloudKeyUnlockData)?.passphrase,
+            response0.serverState
+        )
+        do {
+            var tryAgain = false
+
+            response = communicateE2EE(request1.toCbor())
+            val response1 = CloudSecureAreaProtocol.Command.fromCbor(response) as KemDecapsulateResponse1
+            when (response1.result) {
+                CloudSecureAreaProtocol.RESULT_OK -> {
+                    sharedSecret = response1.sharedSecret
+                }
+
+                CloudSecureAreaProtocol.RESULT_WRONG_PASSPHRASE -> {
+                    throw CloudKeyLockedException(
+                        CloudKeyLockedException.Reason.WRONG_PASSPHRASE,
+                        "Wrong passphrase supplied"
+                    )
+                }
+
+                CloudSecureAreaProtocol.RESULT_TOO_MANY_PASSPHRASE_ATTEMPTS -> {
+                    delayForBruteforceMitigation(response1.waitDurationMillis.milliseconds)
+                    tryAgain = true
+                }
+
+                else -> throw CloudException("Unexpected result ${response1.result}")
+            }
+        } while (tryAgain)
+        val rawSecret = sharedSecret!!
+        try {
+            return SecureByteString(rawSecret)
+        } finally {
+            rawSecret.secureZero()
+        }
     }
 
     private suspend fun checkPassphrase(
@@ -896,7 +1028,7 @@ open class CloudSecureArea protected constructor(
         return CloudKeyInfo(
             alias,
             KeyAttestation(
-                keyMetadata.attestationCertChain.certificates[0].ecPublicKey,
+                keyMetadata.attestationCertChain.certificates[0].publicKey,
                 keyMetadata.attestationCertChain
             ),
             keyMetadata.algorithm,
@@ -910,6 +1042,31 @@ open class CloudSecureArea protected constructor(
 
     override suspend fun getKeyInvalidated(alias: String): Boolean {
         return platformSecureArea.getKeyInvalidated(getLocalKeyAlias(alias))
+    }
+
+    override suspend fun unlockKey(
+        alias: String,
+        unlockReason: Reason
+    ): List<KeyUnlockData> {
+        val list = mutableListOf<KeyUnlockData>()
+        val keyInfo = getKeyInfo(alias)
+        if (keyInfo.isPassphraseRequired) {
+            val unlockDataProvider = currentCoroutineContext()[KeyUnlockDataProvider.Key]
+                ?: DefaultKeyUnlockDataProvider
+            val cloudUnlockData = unlockDataProvider.getKeyUnlockData(
+                secureArea = this,
+                alias = alias,
+                algorithm = keyInfo.algorithm,
+                unlockReason = unlockReason
+            )
+            list.add(cloudUnlockData)
+        }
+        val platformUnlockDataList = platformSecureArea.unlockKey(
+            alias = getLocalKeyAlias(alias),
+            unlockReason = unlockReason
+        )
+        list.addAll(platformUnlockDataList)
+        return list
     }
 
     private suspend fun saveKeyMetadata(
@@ -944,7 +1101,7 @@ open class CloudSecureArea protected constructor(
     }
 
     @CborSerializable(
-        schemaHash = "w-5iNr7XcEFY2B2L8dT64GO06QiTsDV87YdGHeocruI"
+        schemaHash = "RUORjIQR7WTnW3b6i6-XRujKbW_WniY8QgUXGF8FyUs"
     )
     internal data class KeyMetadata(
         val algorithm: Algorithm,
@@ -962,6 +1119,7 @@ open class CloudSecureArea protected constructor(
         override suspend fun getKeyUnlockData(
             secureArea: SecureArea,
             alias: String,
+            algorithm: Algorithm,
             unlockReason: Reason
         ): KeyUnlockData {
             check(secureArea is CloudSecureArea)
@@ -972,11 +1130,9 @@ open class CloudSecureArea protected constructor(
                 throw KeyLockedException("Key is locked and PromptModel is not available to unlock interactively")
             }
             val passphraseConstraints = secureArea.getPassphraseConstraints()
-            val humanReadable = promptModel.toHumanReadable(unlockReason, passphraseConstraints)
             unlockData.passphrase = try {
                 promptModel.requestPassphrase(
-                    title = humanReadable.title,
-                    subtitle = humanReadable.subtitle,
+                    reason = unlockReason,
                     passphraseConstraints = passphraseConstraints,
                     passphraseEvaluator = { enteredPassphrase: String ->
                         when (val result = secureArea.checkPassphrase(enteredPassphrase)) {
@@ -1023,8 +1179,9 @@ open class CloudSecureArea protected constructor(
         //
         private const val PLATFORM_SECURE_AREA_IDENTIFIER_PREFIX = "CloudSecureArea_"
 
+
         /**
-         * Creates an instance of [CloudSecureArea].
+         * Creates an instance of [CloudSecureArea] using default [Crypto.secureRandom].
          *
          * The given [identifier] must start with `CloudSecureArea` and if the application is only using
          * a single instance of [CloudSecureArea], just using this string as the identifier is fine.
@@ -1048,12 +1205,36 @@ open class CloudSecureArea protected constructor(
             identifier: String,
             serverUrl: String,
             httpClientEngineFactory: HttpClientEngineFactory<*>
+        ): CloudSecureArea = create(
+            storage = storage,
+            identifier = identifier,
+            serverUrl = serverUrl,
+            httpClientEngineFactory = httpClientEngineFactory,
+            random = Crypto.secureRandom
+        )
+
+        /**
+         * Creates an instance of CloudSecureArea.
+         *
+         * @param storage the storage engine to use for storing key material.
+         * @param identifier an identifier for the Cloud Secure Area.
+         * @param serverUrl the URL the Cloud Secure Area is using.
+         * @param httpClientEngineFactory the factory for creating the Ktor HTTP client engine (e.g. CIO)
+         * @param random the random provider to use.
+         */
+        suspend fun create(
+            storage: Storage,
+            identifier: String,
+            serverUrl: String,
+            httpClientEngineFactory: HttpClientEngineFactory<*>,
+            random: Random
         ): CloudSecureArea {
             val secureArea = CloudSecureArea(
                 storage.getTable(tableSpec),
                 identifier,
                 serverUrl,
-                httpClientEngineFactory
+                httpClientEngineFactory,
+                random
             )
             secureArea.initialize()
             return secureArea

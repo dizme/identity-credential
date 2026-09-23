@@ -1,5 +1,6 @@
 package org.multipaz.mdoc.transport
 
+import kotlinx.coroutines.CancellationException
 import org.multipaz.cbor.Bstr
 import org.multipaz.cbor.Cbor
 import org.multipaz.cbor.Tagged
@@ -27,6 +28,7 @@ import kotlinx.io.buffered
 import kotlinx.io.bytestring.ByteStringBuilder
 import kotlinx.io.readByteArray
 import org.multipaz.crypto.Hkdf
+import org.multipaz.crypto.SecretKey
 import platform.CoreBluetooth.CBATTErrorSuccess
 import platform.CoreBluetooth.CBATTRequest
 import platform.CoreBluetooth.CBPeripheralManager
@@ -139,7 +141,7 @@ internal class BlePeripheralManagerIos: BlePeripheralManager {
 
     private fun handleIncomingData(chunk: ByteArray) {
         if (chunk.size < 1) {
-            throw Error("Invalid data length ${chunk.size} for Client2Server characteristic")
+            throw IllegalStateException("Invalid data length ${chunk.size} for Client2Server characteristic")
         }
         incomingMessage.append(chunk, 1, chunk.size)
         when {
@@ -160,7 +162,7 @@ internal class BlePeripheralManagerIos: BlePeripheralManager {
             }
 
             else -> {
-                throw Error("Invalid first byte ${chunk[0]} in Client2Server data chunk, " +
+                throw IllegalStateException("Invalid first byte ${chunk[0]} in Client2Server data chunk, " +
                             "expected 0 or 1")
             }
         }
@@ -174,7 +176,7 @@ internal class BlePeripheralManagerIos: BlePeripheralManager {
                 if (peripheralManager.state == CBPeripheralManagerStatePoweredOn) {
                     resumeWait()
                 } else {
-                    resumeWaitWithException(Error("Excepted poweredOn, got ${peripheralManager.state}"))
+                    resumeWaitWithException(IllegalStateException("Excepted poweredOn, got ${peripheralManager.state}"))
                 }
             }
         }
@@ -193,7 +195,7 @@ internal class BlePeripheralManagerIos: BlePeripheralManager {
                                 BleTransportConstants.STATE_CHARACTERISTIC_START.toByte()
                         ))) {
                             resumeWaitWithException(
-                                Error("Expected 0x01 to be written to state characteristic, got ${data.toHex()}")
+                                IllegalStateException("Expected 0x01 to be written to state characteristic, got ${data.toHex()}")
                             )
                         } else {
                             // Now that the central connected, figure out how big the buffer is for writes.
@@ -220,8 +222,9 @@ internal class BlePeripheralManagerIos: BlePeripheralManager {
                     val data = attRequest.value?.toByteArray() ?: byteArrayOf()
                     try {
                         handleIncomingData(data)
-                    } catch (e: Throwable) {
-                        onError(Error("Error processing incoming data", e))
+                    } catch (e: Exception) {
+                        if (e is CancellationException) throw e
+                        onError(IllegalStateException("Error processing incoming data", e))
                     }
                 } else {
                     Logger.w(TAG, "Unexpected write to characteristic with UUID " +
@@ -234,7 +237,7 @@ internal class BlePeripheralManagerIos: BlePeripheralManager {
             val attRequest = didReceiveReadRequest
             if (attRequest.characteristic == identCharacteristic) {
                 if (identValue == null) {
-                    onError(Error("Received request for ident before it's set.."))
+                    onError(IllegalStateException("Received request for ident before it's set.."))
                 } else {
                     attRequest.value = identValue!!.toNSData()
                     peripheralManager.respondToRequest(attRequest, CBATTErrorSuccess)
@@ -256,7 +259,7 @@ internal class BlePeripheralManagerIos: BlePeripheralManager {
             Logger.i(TAG, "peripheralManager didPublishL2CAPChannel")
             if (waitFor?.state == WaitState.PUBLISH_L2CAP_CHANNEL) {
                 if (error != null) {
-                    resumeWaitWithException(Error("peripheralManager didPublishL2CAPChannel failed", error.toKotlinError()))
+                    resumeWaitWithException(IllegalStateException("peripheralManager didPublishL2CAPChannel failed", error.toKotlinError()))
                 } else {
                     _l2capPsm = didPublishL2CAPChannel.toInt()
                     resumeWait()
@@ -402,7 +405,9 @@ internal class BlePeripheralManagerIos: BlePeripheralManager {
         val ikm = Cbor.encode(Tagged(24, Bstr(Cbor.encode(eSenderKey.toCoseKey().toDataItem()))))
         val info = "BLEIdent".encodeToByteArray()
         val salt = null
-        identValue = Hkdf.deriveKey(Algorithm.HMAC_SHA256, ikm, salt, info, 16)
+        identValue = SecretKey(ikm).use {
+            Hkdf.deriveKey(Algorithm.HMAC_SHA256, it, salt, info, 16).use { key -> key.encoded }
+        }
     }
 
     override suspend fun waitForStateCharacteristicWriteOrL2CAPClient() {
@@ -493,8 +498,9 @@ internal class BlePeripheralManagerIos: BlePeripheralManager {
                 val message = l2capSource!!.readByteArray(length)
                 incomingMessages.send(message)
             }
-        } catch (e: Throwable) {
-            onError(Error("Reading from L2CAP channel failed", e))
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            onError(IllegalStateException("Reading from L2CAP channel failed", e))
         }
     }
 

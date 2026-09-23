@@ -1,14 +1,19 @@
 package org.multipaz.testapp
 
+import android.content.Context
 import org.multipaz.compose.mdoc.MdocNdefService
 import org.multipaz.compose.prompt.PresentmentActivity
 import org.multipaz.mdoc.transport.MdocTransportOptions
+import org.multipaz.presentment.PresentmentModel
 import org.multipaz.util.Logger
 import kotlin.time.Clock
 
 private const val TAG = "TestAppMdocNdefService"
 
-class TestAppMdocNdefService: MdocNdefService() {
+class TestAppMdocNdefService(
+    applicationContext: Context,
+    sendResponse: (ByteArray) -> Unit
+): MdocNdefService(applicationContext, sendResponse) {
 
     //val promptModel = TransparentActivityPromptModel.Builder(
     //    theme = { content -> AppTheme(content) }
@@ -25,12 +30,13 @@ class TestAppMdocNdefService: MdocNdefService() {
         TestAppConfiguration.cryptoInit(app.settingsModel)
 
         val source = app.getPresentmentSource()
-        PresentmentActivity.presentmentModel.reset(
-            documentStore = source.documentStore,
-            documentTypeRepository = source.documentTypeRepository,
-            // TODO: if user is currently selecting a document, pass it here
-            preselectedDocuments = emptyList()
-        )
+        if (!PresentmentActivity.presentmentModel.isActive) {
+            PresentmentActivity.presentmentModel.reset(
+                source = source,
+                // TODO: if user is currently selecting a document, pass it here
+                preselectedDocuments = emptyList()
+            )
+        }
 
         return Settings(
             source = app.getPresentmentSource(),
@@ -46,7 +52,7 @@ class TestAppMdocNdefService: MdocNdefService() {
             transportOptions = MdocTransportOptions(
                 bleUseL2CAP = app.settingsModel.presentmentBleL2CapEnabled.value,
                 bleUseL2CAPInEngagement = app.settingsModel.presentmentBleL2CapInEngagementEnabled.value
-            )
+            ),
         )
     }
 }

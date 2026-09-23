@@ -64,8 +64,24 @@
                     <li><a class="dropdown-item" value="uri_scheme_openid4vp_29" href="#">
                         URI scheme (OpenID4VP 1.0)
                     </a></li>
+                    <li><a class="dropdown-item" value="uri_scheme_annex_a" href="#">
+                        URI scheme (18013-7 Annex A)
+                    </a></li>
                 </ul>
             </div>
+        </div>
+
+        <div class="mt-3">
+            <label for="issuer-identifiers-input" class="form-label">Issuer Identifiers (hex, comma separated):</label>
+            <input class="form-control" type="text" id="issuer-identifiers-input">
+        </div>
+
+        <div id="devicerequest-version-form" class="mt-3">
+            <label for="devicerequest-version-select" class="form-label">DeviceRequest Version:</label>
+            <select class="form-select" id="devicerequest-version-select" style="max-width: 200px;">
+                <option value="1.1" selected>1.1</option>
+                <option value="1.0">1.0</option>
+            </select>
         </div>
 
         <div id="openid4vp-sign-request" class="mb-3 w-50" hidden style="flex-basis: 40%;">

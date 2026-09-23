@@ -3,16 +3,20 @@ package org.multipaz.testapp.ui
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
@@ -28,19 +32,32 @@ import org.multipaz.compose.document.DocumentModel
 import org.multipaz.util.toBase64Url
 import kotlinx.coroutines.launch
 import org.multipaz.compose.datetime.formattedDateTime
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
+import org.multipaz.revocation.RevocationChecker
+import org.multipaz.trustmanagement.TrustManagerInterface
+import org.multipaz.util.Logger
+import org.multipaz.util.toHex
+
+private const val TAG = "CredentialViewerScreen"
 
 @Composable
 fun CredentialViewerScreen(
     documentModel: DocumentModel,
+    revocationChecker: RevocationChecker,
+    issuerTrustManager: TrustManagerInterface,
     documentId: String,
     credentialId: String,
     showToast: (message: String) -> Unit,
     onViewCertificateChain: (encodedCertificateData: String) -> Unit,
     onViewCredentialClaims: (documentId: String, credentialId: String) -> Unit,
+    onCredentialDelete: (documentId: String, credentialId: String) -> Unit
 ) {
     val coroutineScope = rememberCoroutineScope()
+    @Suppress("DEPRECATION")
+    val clipboardManager = LocalClipboardManager.current
     val documentInfos = documentModel.documentInfos.collectAsState().value
-    val documentInfo = documentInfos[documentId]
+    val documentInfo = documentInfos.find { it.document.identifier == documentId }
     val credentialInfo = documentInfo?.credentialInfos?.find { it.credential.identifier == credentialId  }
 
     val scrollState = rememberScrollState()
@@ -67,18 +84,42 @@ fun CredentialViewerScreen(
                     "Valid Until",
                     formattedDateTime(credentialInfo.credential.validUntil)
                 )
+                val issuerProvidedDataBytes = credentialInfo.credential.issuerProvidedData.toByteArray()
                 KeyValuePairText(
-                    "Issuer provided data",
-                    "${credentialInfo.credential.issuerProvidedData.size} bytes"
+                    keyText = "Issuer provided data",
+                    valueText = buildAnnotatedString {
+                        withStyle(style = SpanStyle(color = MaterialTheme.colorScheme.secondary)) {
+                            append("${issuerProvidedDataBytes.size} bytes. Click to copy")
+                        }
+                    },
+                    modifier = Modifier.clickable {
+                        val hexString = issuerProvidedDataBytes.toHex()
+                        clipboardManager.setText(AnnotatedString(hexString))
+                        Logger.iHex(TAG, "Issuer-provided data", issuerProvidedDataBytes)
+                        showToast("Copied issuer-provided data to clipboard")
+                    }
                 )
                 KeyValuePairText("Usage Count", credentialInfo.credential.usageCount.toString())
-                RevocationStatusSection(credentialInfo.credential)
+                RevocationStatusSection(revocationChecker, issuerTrustManager, credentialInfo.credential)
                 when (credentialInfo.credential) {
                     is MdocCredential -> {
                         val issuerSigned = Cbor.decode(credentialInfo.credential.issuerProvidedData.toByteArray())
                         val issuerAuth = issuerSigned["issuerAuth"].asCoseSign1
                         val msoBytes = issuerAuth.payload!!
-                        KeyValuePairText("MSO size", "${msoBytes.size} bytes")
+                        KeyValuePairText(
+                            keyText = "MSO size",
+                            valueText = buildAnnotatedString {
+                                withStyle(style = SpanStyle(color = MaterialTheme.colorScheme.secondary)) {
+                                    append("${msoBytes.size} bytes. Click to copy")
+                                }
+                            },
+                            modifier = Modifier.clickable {
+                                val hexString = msoBytes.toHex()
+                                clipboardManager.setText(AnnotatedString(hexString))
+                                Logger.iHex(TAG, "MSO", msoBytes)
+                                showToast("Copied MSO to clipboard")
+                            }
+                        )
                         KeyValuePairText(
                             "ISO mdoc DocType",
                             (credentialInfo.credential as MdocCredential).docType
@@ -101,6 +142,48 @@ fun CredentialViewerScreen(
                                     )
                                 }
                             }
+                        )
+                        val keyAuthorizationsText = try {
+                            val mso = (credentialInfo.credential as MdocCredential).mso
+                            val authorizedNamespaces = mso.deviceKeyAuthorizedNamespaces
+                            val authorizedDataElements = mso.deviceKeyAuthorizedDataElements
+                            if (authorizedNamespaces.isEmpty() && authorizedDataElements.isEmpty()) {
+                                AnnotatedString("None")
+                            } else {
+                                buildAnnotatedString {
+                                    var firstSection = true
+                                    if (authorizedNamespaces.isNotEmpty()) {
+                                        firstSection = false
+                                        withStyle(SpanStyle(fontWeight = FontWeight.SemiBold)) {
+                                            append("Namespaces:")
+                                        }
+                                        for (ns in authorizedNamespaces) {
+                                            append("\n• $ns")
+                                        }
+                                    }
+                                    if (authorizedDataElements.isNotEmpty()) {
+                                        if (!firstSection) {
+                                            append("\n\n")
+                                        }
+                                        withStyle(SpanStyle(fontWeight = FontWeight.SemiBold)) {
+                                            append("Data Elements:")
+                                        }
+                                        for ((ns, elements) in authorizedDataElements) {
+                                            append("\n• $ns:")
+                                            for (elem in elements) {
+                                                append("\n  - $elem")
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        } catch (e: Throwable) {
+                            Logger.w(TAG, "Error getting MSO key authorizations", e)
+                            AnnotatedString("Error parsing MSO")
+                        }
+                        KeyValuePairText(
+                            keyText = "Key Authorizations",
+                            valueText = keyAuthorizationsText
                         )
                     }
 
@@ -177,6 +260,33 @@ fun CredentialViewerScreen(
                             onViewCredentialClaims(documentId, credentialId)
                         }
                     }
+                )
+            }
+        }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 8.dp, horizontal = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Button(
+                modifier = Modifier.weight(1.0f),
+                onClick = {
+                    credentialInfo?.let {
+                        onCredentialDelete(
+                            credentialInfo.credential.document.identifier,
+                            credentialInfo.credential.identifier
+                        )
+                    }
+                },
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color.Red,
+                    contentColor = Color.White
+                )
+            ) {
+                Text(
+                    modifier = Modifier.padding(vertical = 8.dp),
+                    text = "Delete credential"
                 )
             }
         }

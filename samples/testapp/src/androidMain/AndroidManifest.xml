@@ -41,6 +41,12 @@
     <!-- For posting notifications -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <queries>
+        <intent>
+            <action android:name="android.support.customtabs.action.CustomTabsService" />
+        </intent>
+    </queries>
+
     <!-- For displaying name/icon of application requesting credential -->
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"
         tools:ignore="QueryAllPackagesPermission" />
@@ -57,7 +63,7 @@
         <activity
             android:exported="true"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|mnc|colorMode|density|fontScale|fontWeightAdjustment|keyboard|layoutDirection|locale|mcc|navigation|smallestScreenSize|touchscreen|uiMode"
-            android:launchMode="singleTop"
+            android:launchMode="singleTask"
             android:name=".MainActivity">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -111,13 +117,46 @@
                 <!-- Accept all hosts for any of the defined schemes above -->
                 <data android:host="*"/>
             </intent-filter>
+
+            <!-- This is for when the user attaches a supported USB-based external NFC Reader -->
+            <intent-filter>
+                <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
+            </intent-filter>
+            <meta-data android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"
+                android:resource="@xml/usb_nfc_readers" />
+
+            <!-- CredentialContainer support for application/vnd.multipaz.mpzpass MIME type and
+                 associated .mpzpass file extension
+            -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
+                <data android:mimeType="application/vnd.multipaz.mpzpass" />
+            </intent-filter>
+
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
+                <data android:mimeType="*/*" />
+                <data android:host="*" />
+                <data android:pathPattern=".*\\.mpzpass" />
+                <data android:pathPattern=".*\\..*\\.mpzpass" />
+                <data android:pathPattern=".*\\..*\\..*\\.mpzpass" />
+                <data android:pathPattern=".*\\..*\\..*\\..*\\.mpzpass" />
+            </intent-filter>
         </activity>
 
         <activity
             android:name=".TestAppCredentialManagerPresentmentActivity"
             android:exported="true"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|mnc|colorMode|density|fontScale|fontWeightAdjustment|keyboard|layoutDirection|locale|mcc|navigation|smallestScreenSize|touchscreen|uiMode"
-            android:theme="@android:style/Theme.Translucent"
+            android:theme="@style/NavigationActivityTheme"
             android:launchMode="singleInstance"
             android:excludeFromRecents="true">
             <intent-filter>
@@ -131,7 +170,7 @@
             android:name=".TestAppUriSchemePresentmentActivity"
             android:exported="true"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|mnc|colorMode|density|fontScale|fontWeightAdjustment|keyboard|layoutDirection|locale|mcc|navigation|smallestScreenSize|touchscreen|uiMode"
-            android:theme="@android:style/Theme.Translucent"
+            android:theme="@style/NavigationActivityTheme"
             android:launchMode="singleInstance"
             android:excludeFromRecents="true">
             <intent-filter>
@@ -141,23 +180,24 @@
                 <!--  Various OpenID4VP schemes -->
                 <data android:scheme="haip-vp"/>
                 <data android:scheme="openid4vp"/>
+                <!-- ISO/IEC TS 18013-7:2025 Annex A (and later) -->
+                <data android:scheme="mdoc"/>
                 <!-- Accept all hosts for any of the defined schemes above -->
                 <data android:host="*"/>
             </intent-filter>
         </activity>
 
         <service
-            android:name=".TestAppMdocNdefService"
+            android:name=".TestAppCombinedNfcService"
             android:exported="true"
             android:label="@string/nfc_ndef_service_description"
             android:permission="android.permission.BIND_NFC_SERVICE">
             <intent-filter>
                 <action android:name="android.nfc.cardemulation.action.HOST_APDU_SERVICE" />
             </intent-filter>
-
             <meta-data
                 android:name="android.nfc.cardemulation.host_apdu_service"
-                android:resource="@xml/nfc_ndef_service" />
+                android:resource="@xml/combined_nfc_service" />
         </service>
 
         <service
@@ -192,19 +232,6 @@
                 android:resource="@drawable/ic_stat_name"/>
         </service>
 
-        <service
-            android:name=".TestAppMdocNfcDataTransferService"
-            android:exported="true"
-            android:label="@string/nfc_ndef_service_description"
-            android:permission="android.permission.BIND_NFC_SERVICE">
-            <intent-filter>
-                <action android:name="android.nfc.cardemulation.action.HOST_APDU_SERVICE" />
-            </intent-filter>
-
-            <meta-data
-                android:name="android.nfc.cardemulation.host_apdu_service"
-                android:resource="@xml/mdoc_nfc_data_transfer_service" />
-        </service>
     </application>
 
 </manifest>

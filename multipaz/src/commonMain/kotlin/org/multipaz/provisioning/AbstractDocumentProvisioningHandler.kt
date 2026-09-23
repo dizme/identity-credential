@@ -21,12 +21,14 @@ interface AbstractDocumentProvisioningHandler {
      * @param issuerMetadata information about the credential issuer
      * @param documentAuthorizationData data that can be used to provision additional credentials
      *  (e.g. for credential refresh)
+     * @param appData optional application-specific data to store with the document
      * @return new [Document] to hold the provisioned credentials.
      */
     suspend fun createDocument(
         credentialMetadata: CredentialMetadata,
         issuerMetadata: ProvisioningMetadata,
-        documentAuthorizationData: ByteString?
+        documentAuthorizationData: ByteString?,
+        appData: ByteString? = null
     ): Document
 
     /**
@@ -53,7 +55,7 @@ interface AbstractDocumentProvisioningHandler {
     suspend fun cleanupDocumentOnError(document: Document, err: Throwable)
 
     /**
-     * Creates a set of pending key-bound credentials.
+     * Gets the pending key-bound credentials for a document.
      *
      * Provisioning will call [Credential.certify] method on these credentials once the data
      * comes from the issuer. When pending credentials are created, it is very important that their
@@ -64,33 +66,38 @@ interface AbstractDocumentProvisioningHandler {
      * to use custom and/or [SecureArea]-specific [CreateKeySettings] to have better control over
      * key properties.
      *
-     * TODO: propagate more metadata about issuer key requirements through [CredentialMetadata].
-     *
      * It is up to the implementation to determine the number of credentials to create, but it
      * should generally not exceed issuer limit given in [CredentialMetadata.maxBatchSize].
      *
-     * @param document [Document] for which credentials are being issued
-     * @param credentialMetadata information about credentials being issued
-     * @param createKeySettings suggested settings for the key to which credentials are bound
-     * @return a list of pending key-bound credentials
+     * @param document [Document] for which credentials are being issued.
+     * @param credentialMetadata information about credentials being issued.
+     * @param issuerMetadata information about the issuer of the credential.
+     * @param createKeySettings suggested settings for the key to which credentials are bound.
+     * @return a list of pending key-bound credentials, if any.
      */
-    suspend fun createKeyBoundCredentials(
+    suspend fun getPendingKeyBoundCredentials(
         document: Document,
         credentialMetadata: CredentialMetadata,
+        issuerMetadata: ProvisioningMetadata,
         createKeySettings: CreateKeySettings
     ): List<SecureAreaBoundCredential>
 
     /**
-     * Creates a pending keyless credential.
+     * Gets the pending keyless credentials.
      *
-     * @param document [Document] for which the credential is being issued
-     * @param credentialMetadata information about the credential being issued
-     * @return pending keyless credential
+     * It is up to the implementation to determine the number of credentials to create, but it
+     * should generally not exceed issuer limit given in [CredentialMetadata.maxBatchSize].
+     *
+     * @param document [Document] for which the credential is being issued.
+     * @param credentialMetadata information about the credential being issued.
+     * @param issuerMetadata information about the issuer of the credential.
+     * @return a list of pending keyless credentials, if any.
      */
-    suspend fun createKeylessCredential(
+    suspend fun getPendingKeylessCredentials(
         document: Document,
         credentialMetadata: CredentialMetadata,
-    ): Credential
+        issuerMetadata: ProvisioningMetadata
+    ): List<Credential>
 
     /**
      * Clean up after failed not-initial (e.g. credential refresh) provisioning.
@@ -101,4 +108,14 @@ interface AbstractDocumentProvisioningHandler {
      * @param err provisioning error
      */
     suspend fun cleanupCredentialsOnError(pendingCredentials: List<Credential>, err: Throwable)
+
+    /**
+     * Checks if there are credentials that should be fetched/refreshed for the document.
+     *
+     * This is useful for checking if network I/O should be performed during credential refresh.
+     *
+     * @param document [Document] for which credentials are being checked.
+     * @return `true` if there are credentials to refresh, `false` otherwise.
+     */
+    suspend fun haveCredentialsToRefresh(document: Document): Boolean
 }

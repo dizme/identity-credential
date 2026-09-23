@@ -8,10 +8,16 @@ import org.multipaz.securearea.SecureEnclaveKeyUnlockData
 import org.multipaz.util.UUID
 import org.multipaz.util.toByteArray
 import org.multipaz.util.toNSData
+import kotlin.random.Random
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.addressOf
+import kotlinx.cinterop.usePinned
+import kotlinx.io.bytestring.ByteString
 import kotlinx.io.bytestring.toNSData
 import platform.Foundation.NSData
 import platform.Foundation.NSUUID
+import platform.Security.SecRandomCopyBytes
+import platform.Security.kSecRandomDefault
 
 @OptIn(ExperimentalForeignApi::class)
 actual object Crypto {
@@ -27,9 +33,28 @@ actual object Crypto {
         EcCurve.P521,
     )
 
-    actual val supportedEncryptionAlgorithms = setOf(Algorithm.A128GCM, Algorithm.A192GCM, Algorithm.A256GCM)
+    actual val supportedEncryptionAlgorithms = setOf(
+        Algorithm.A128GCM,
+        Algorithm.A192GCM,
+        Algorithm.A256GCM,
+        Algorithm.A128CBC,
+        Algorithm.A192CBC,
+        Algorithm.A256CBC
+    )
+
+    actual val supportedMlDsaAlgorithms = setOf(
+        Algorithm.ML_DSA_65,
+        Algorithm.ML_DSA_87
+    )
+
+    actual val supportedMlKemAlgorithms = setOf(
+        Algorithm.ML_KEM_768,
+        Algorithm.ML_KEM_1024
+    )
 
     actual val provider: String = "CryptoKit"
+
+    actual val secureRandom: Random = IosSecureRandom()
 
     actual suspend fun digest(
         algorithm: Algorithm,
@@ -46,50 +71,85 @@ actual object Crypto {
 
     actual suspend fun mac(
         algorithm: Algorithm,
-        key: ByteArray,
+        key: SecretKey,
         message: ByteArray
     ): ByteArray {
+        key.checkNotDestroyed()
         return when (algorithm) {
-            Algorithm.HMAC_INSECURE_SHA1 -> SwiftBridge.hmacSha1(key.toNSData(), message.toNSData()).toByteArray()
-            Algorithm.HMAC_SHA256 -> SwiftBridge.hmacSha256(key.toNSData(), message.toNSData()).toByteArray()
-            Algorithm.HMAC_SHA384 -> SwiftBridge.hmacSha384(key.toNSData(), message.toNSData()).toByteArray()
-            Algorithm.HMAC_SHA512 -> SwiftBridge.hmacSha512(key.toNSData(), message.toNSData()).toByteArray()
+            Algorithm.HMAC_INSECURE_SHA1 -> SwiftBridge.hmacSha1(key.data.toNSData(), message.toNSData()).toByteArray()
+            Algorithm.HMAC_SHA256 -> SwiftBridge.hmacSha256(key.data.toNSData(), message.toNSData()).toByteArray()
+            Algorithm.HMAC_SHA384 -> SwiftBridge.hmacSha384(key.data.toNSData(), message.toNSData()).toByteArray()
+            Algorithm.HMAC_SHA512 -> SwiftBridge.hmacSha512(key.data.toNSData(), message.toNSData()).toByteArray()
             else -> throw IllegalArgumentException("Unsupported algorithm $algorithm")
         }
     }
 
     actual suspend fun encrypt(
         algorithm: Algorithm,
-        key: ByteArray,
+        key: SecretKey,
         nonce: ByteArray,
         messagePlaintext: ByteArray,
         aad: ByteArray?
     ): ByteArray {
-        return SwiftBridge.aesGcmEncrypt(
-            key.toNSData(),
-            messagePlaintext.toNSData(),
-            nonce.toNSData(),
-            aad?.toNSData()
-        ).toByteArray()
+        key.checkNotDestroyed()
+        val rawKey = key.data
+        when (algorithm) {
+            Algorithm.A128GCM, Algorithm.A128CBC -> require(rawKey.size == 16) { "Key size must be 16 bytes" }
+            Algorithm.A192GCM, Algorithm.A192CBC -> require(rawKey.size == 24) { "Key size must be 24 bytes" }
+            Algorithm.A256GCM, Algorithm.A256CBC -> require(rawKey.size == 32) { "Key size must be 32 bytes" }
+            else -> throw IllegalArgumentException("Unsupported algorithm $algorithm")
+        }
+        return when (algorithm) {
+            Algorithm.A128GCM, Algorithm.A192GCM, Algorithm.A256GCM -> {
+                SwiftBridge.aesGcmEncrypt(
+                    rawKey.toNSData(),
+                    messagePlaintext.toNSData(),
+                    nonce.toNSData(),
+                    aad?.toNSData()
+                ).toByteArray()
+            }
+            Algorithm.A128CBC, Algorithm.A192CBC, Algorithm.A256CBC -> {
+                SwiftBridge.aesCbcEncrypt(
+                    rawKey.toNSData(),
+                    messagePlaintext.toNSData(),
+                    nonce.toNSData()
+                ).toByteArray()
+            }
+            else -> throw IllegalArgumentException("Unsupported algorithm $algorithm")
+        }
     }
 
     actual suspend fun decrypt(
         algorithm: Algorithm,
-        key: ByteArray,
+        key: SecretKey,
         nonce: ByteArray,
         messageCiphertext: ByteArray,
         aad: ByteArray?
     ): ByteArray {
-        val ctLen = messageCiphertext.size
-        val ct = messageCiphertext.sliceArray(IntRange(0, ctLen - 16 - 1))
-        val tag = messageCiphertext.sliceArray(IntRange(ctLen - 16, ctLen - 1))
-        return SwiftBridge.aesGcmDecrypt(
-            key.toNSData(),
-            ct.toNSData(),
-            tag.toNSData(),
-            nonce.toNSData(),
-            aad?.toNSData()
-        )?.toByteArray() ?: throw IllegalStateException("Decryption failed")
+        key.checkNotDestroyed()
+        val rawKey = key.data
+        return when (algorithm) {
+            Algorithm.A128GCM, Algorithm.A192GCM, Algorithm.A256GCM -> {
+                val ctLen = messageCiphertext.size
+                val ct = messageCiphertext.sliceArray(IntRange(0, ctLen - 16 - 1))
+                val tag = messageCiphertext.sliceArray(IntRange(ctLen - 16, ctLen - 1))
+                SwiftBridge.aesGcmDecrypt(
+                    rawKey.toNSData(),
+                    ct.toNSData(),
+                    tag.toNSData(),
+                    nonce.toNSData(),
+                    aad?.toNSData()
+                )?.toByteArray() ?: throw IllegalStateException("Decryption failed")
+            }
+            Algorithm.A128CBC, Algorithm.A192CBC, Algorithm.A256CBC -> {
+                SwiftBridge.aesCbcDecrypt(
+                    rawKey.toNSData(),
+                    messageCiphertext.toNSData(),
+                    nonce.toNSData()
+                )?.toByteArray() ?: throw IllegalStateException("Decryption failed")
+            }
+            else -> throw IllegalArgumentException("Unsupported algorithm $algorithm")
+        }
     }
 
     actual suspend fun checkSignature(
@@ -112,6 +172,57 @@ actual object Crypto {
         }
     }
 
+    actual suspend fun checkSignature(
+        publicKey: RsaPublicKey,
+        message: ByteArray,
+        algorithm: Algorithm,
+        signature: RsaSignature
+    ) {
+        val algName = when (algorithm.joseAlgorithmIdentifier) {
+            "RS256" -> "RS256"
+            "RS384" -> "RS384"
+            "RS512" -> "RS512"
+            "PS256" -> "PS256"
+            "PS384" -> "PS384"
+            "PS512" -> "PS512"
+            else -> throw IllegalArgumentException("Unsupported RSA algorithm $algorithm")
+        }
+        val verified = SwiftBridge.rsaVerifySignature(
+            publicKey.toPkcs1().toNSData(),
+            algName,
+            message.toNSData(),
+            signature.signature.toNSData()
+        )
+        if (!verified) {
+            throw SignatureVerificationException("Signature verification failed")
+        }
+    }
+
+    actual suspend fun checkSignature(
+        publicKey: MlDsaPublicKey,
+        message: ByteArray,
+        algorithm: Algorithm,
+        signature: MlDsaSignature
+    ) {
+        require(algorithm == publicKey.algorithm) {
+            "Signature algorithm $algorithm doesn't match key algorithm ${publicKey.algorithm}"
+        }
+        val algName = when (algorithm) {
+            Algorithm.ML_DSA_65 -> "ML-DSA-65"
+            Algorithm.ML_DSA_87 -> "ML-DSA-87"
+            else -> throw IllegalArgumentException("Unsupported ML-DSA algorithm $algorithm")
+        }
+        val verified = SwiftBridge.mldsaVerifySignature(
+            algName,
+            publicKey.encoded.toByteArray().toNSData(),
+            message.toNSData(),
+            signature.signature.toNSData()
+        )
+        if (!verified) {
+            throw SignatureVerificationException("ML-DSA signature verification failed")
+        }
+    }
+
     actual suspend fun createEcPrivateKey(curve: EcCurve): EcPrivateKey {
         val ret = SwiftBridge.createEcPrivateKey(curve.coseCurveIdentifier.toLong())
         if (ret.isEmpty()) {
@@ -122,6 +233,55 @@ actual object Crypto {
         val x = pubKeyBytes.sliceArray(IntRange(0, pubKeyBytes.size/2 - 1))
         val y = pubKeyBytes.sliceArray(IntRange(pubKeyBytes.size/2, pubKeyBytes.size - 1))
         return EcPrivateKeyDoubleCoordinate(curve, privKeyBytes, x, y)
+    }
+
+    actual suspend fun createRsaPrivateKey(keySizeBits: Int): RsaPrivateKey {
+        val ret = SwiftBridge.rsaCreatePrivateKey(keySizeBits.toLong())
+        if (ret.isEmpty()) {
+            throw IllegalStateException("Failed to generate RSA key")
+        }
+        val privKeyBytes = (ret[0] as NSData).toByteArray()
+        val pubKeyBytes = (ret[1] as NSData).toByteArray()
+        val pubKey = RsaPublicKey.fromPkcs1(pubKeyBytes)
+        return RsaPrivateKey.fromPkcs1(privKeyBytes, pubKey)
+    }
+
+    actual suspend fun createMlDsaPrivateKey(
+        algorithm: Algorithm
+    ): MlDsaPrivateKey {
+        val algName = when (algorithm) {
+            Algorithm.ML_DSA_44 -> throw IllegalArgumentException("ML-DSA-44 is not supported on iOS")
+            Algorithm.ML_DSA_65 -> "ML-DSA-65"
+            Algorithm.ML_DSA_87 -> "ML-DSA-87"
+            else -> throw IllegalArgumentException("Unsupported ML-DSA algorithm $algorithm")
+        }
+        val ret = SwiftBridge.mldsaCreatePrivateKey(algName)
+        if (ret.isEmpty()) {
+            throw IllegalStateException("Failed to generate ML-DSA key (requires iOS 26+)")
+        }
+        val seed = (ret[0] as NSData).toByteArray()
+        val pubBytes = (ret[1] as NSData).toByteArray()
+        val publicKey = MlDsaPublicKey(algorithm, ByteString(pubBytes))
+        return MlDsaPrivateKey(algorithm, ByteString(seed), publicKey)
+    }
+
+    actual suspend fun createMlKemPrivateKey(
+        algorithm: Algorithm
+    ): MlKemPrivateKey {
+        val algName = when (algorithm) {
+            Algorithm.ML_KEM_512 -> throw IllegalArgumentException("ML-KEM-512 is not supported on iOS")
+            Algorithm.ML_KEM_768 -> "ML-KEM-768"
+            Algorithm.ML_KEM_1024 -> "ML-KEM-1024"
+            else -> throw IllegalArgumentException("Unsupported ML-KEM algorithm $algorithm")
+        }
+        val ret = SwiftBridge.mlkemCreatePrivateKey(algName)
+        if (ret.isEmpty()) {
+            throw IllegalStateException("Failed to generate ML-KEM key (requires iOS 26+)")
+        }
+        val seed = (ret[0] as NSData).toByteArray()
+        val pubBytes = (ret[1] as NSData).toByteArray()
+        val publicKey = MlKemPublicKey(algorithm, ByteString(pubBytes))
+        return MlKemPrivateKey(algorithm, ByteString(seed), publicKey)
     }
 
     actual suspend fun sign(
@@ -140,20 +300,106 @@ actual object Crypto {
         return EcSignature(r, s)
     }
 
+    actual suspend fun sign(
+        key: RsaPrivateKey,
+        signatureAlgorithm: Algorithm,
+        message: ByteArray
+    ): RsaSignature {
+        val algName = when (signatureAlgorithm.joseAlgorithmIdentifier) {
+            "RS256" -> "RS256"
+            "RS384" -> "RS384"
+            "RS512" -> "RS512"
+            "PS256" -> "PS256"
+            "PS384" -> "PS384"
+            "PS512" -> "PS512"
+            else -> throw IllegalArgumentException("Unsupported RSA signing algorithm $signatureAlgorithm")
+        }
+        val signature = SwiftBridge.rsaSign(
+            key.toPkcs1().toNSData(),
+            algName,
+            message.toNSData()
+        )?.toByteArray() ?: throw IllegalStateException("RSA signing failed")
+        return RsaSignature(signature)
+    }
+
+    actual suspend fun sign(
+        key: MlDsaPrivateKey,
+        signatureAlgorithm: Algorithm,
+        message: ByteArray
+    ): MlDsaSignature {
+        require(signatureAlgorithm == key.algorithm) {
+            "Signature algorithm $signatureAlgorithm doesn't match key algorithm ${key.algorithm}"
+        }
+        val algName = when (key.algorithm) {
+            Algorithm.ML_DSA_65 -> "ML-DSA-65"
+            Algorithm.ML_DSA_87 -> "ML-DSA-87"
+            else -> throw IllegalArgumentException("Unsupported ML-DSA algorithm ${key.algorithm}")
+        }
+        val sig = SwiftBridge.mldsaSign(
+            algName,
+            key.encoded.toByteArray().toNSData(),
+            key.publicKey.encoded.toByteArray().toNSData(),
+            message.toNSData()
+        )?.toByteArray() ?: throw IllegalStateException("ML-DSA signing failed (requires iOS 26+)")
+        return MlDsaSignature(sig)
+    }
+
+    actual suspend fun kemEncapsulate(
+        recipientPublicKey: MlKemPublicKey
+    ): KemResult {
+        val algName = when (recipientPublicKey.algorithm) {
+            Algorithm.ML_KEM_768 -> "ML-KEM-768"
+            Algorithm.ML_KEM_1024 -> "ML-KEM-1024"
+            else -> throw IllegalArgumentException("Unsupported ML-KEM algorithm ${recipientPublicKey.algorithm}")
+        }
+        val ret = SwiftBridge.mlkemEncapsulate(
+            algName,
+            recipientPublicKey.encoded.toByteArray().toNSData()
+        ) ?: throw IllegalStateException("ML-KEM encapsulation failed (requires iOS 26+)")
+        val secret = (ret[0] as NSData).toByteArray()
+        val ciphertext = (ret[1] as NSData).toByteArray()
+        val sharedSecret = SecureByteString(secret)
+        secret.secureZero()
+        return KemResult(sharedSecret = sharedSecret, ciphertext = ciphertext)
+    }
+
+    actual suspend fun kemDecapsulate(
+        key: MlKemPrivateKey,
+        ciphertext: ByteArray
+    ): SecureByteString {
+        val algName = when (key.algorithm) {
+            Algorithm.ML_KEM_768 -> "ML-KEM-768"
+            Algorithm.ML_KEM_1024 -> "ML-KEM-1024"
+            else -> throw IllegalArgumentException("Unsupported ML-KEM algorithm ${key.algorithm}")
+        }
+        val secret = SwiftBridge.mlkemDecapsulate(
+            algName,
+            key.encoded.toByteArray().toNSData(),
+            key.publicKey.encoded.toByteArray().toNSData(),
+            ciphertext.toNSData()
+        )?.toByteArray() ?: throw IllegalStateException("ML-KEM decapsulation failed (requires iOS 26+)")
+        val sharedSecret = SecureByteString(secret)
+        secret.secureZero()
+        return sharedSecret
+    }
+
     actual suspend fun keyAgreement(
         key: EcPrivateKey,
         otherKey: EcPublicKey
-    ): ByteArray {
+    ): SecureByteString {
         require(otherKey.curve == key.curve) { "Other key for ECDH is not ${key.curve.name}" }
         val otherKeyRaw = when (otherKey) {
             is EcPublicKeyDoubleCoordinate -> otherKey.x + otherKey.y
             is EcPublicKeyOkp -> otherKey.x
         }
-        return SwiftBridge.ecKeyAgreement(
+        val secret = SwiftBridge.ecKeyAgreement(
             key.curve.coseCurveIdentifier.toLong(),
             key.d.toNSData(),
             otherKeyRaw.toNSData()
         )?.toByteArray() ?: throw UnsupportedOperationException("Curve is not supported")
+        val sharedSecret = SecureByteString(secret)
+        secret.secureZero()
+        return sharedSecret
     }
 
     internal fun secureEnclaveCreateEcPrivateKey(
@@ -195,19 +441,115 @@ actual object Crypto {
         keyBlob: ByteArray,
         otherKey: EcPublicKey,
         keyUnlockData: SecureEnclaveKeyUnlockData?
-    ): ByteArray {
+    ): SecureByteString {
         val otherKeyRaw = when (otherKey) {
             is EcPublicKeyDoubleCoordinate -> otherKey.x + otherKey.y
             is EcPublicKeyOkp -> otherKey.x
         }
-        return SwiftBridge.secureEnclaveEcKeyAgreement(
+        val raw = SwiftBridge.secureEnclaveEcKeyAgreement(
             keyBlob.toNSData(),
             otherKeyRaw.toNSData(),
             keyUnlockData?.authenticationContext as objcnames.classes.LAContext?
         )?.toByteArray() ?: throw KeyLockedException("Unable to unlock key")
+        try {
+            return SecureByteString(raw)
+        } finally {
+            raw.secureZero()
+        }
     }
 
-    internal actual suspend fun validateCertChain(certChain: X509CertChain): Boolean {
+    internal val secureEnclaveIsPqcSupported: Boolean
+        get() = SwiftBridge.secureEnclaveIsPqcSupported()
+
+    internal fun secureEnclaveCreateMlDsaPrivateKey(
+        algorithm: Algorithm,
+        accessControlCreateFlags: Long
+    ): Pair<ByteArray, MlDsaPublicKey> {
+        val algName = when (algorithm) {
+            Algorithm.ML_DSA_65 -> "ML-DSA-65"
+            Algorithm.ML_DSA_87 -> "ML-DSA-87"
+            else -> throw IllegalArgumentException("Unsupported ML-DSA algorithm $algorithm")
+        }
+        val ret = SwiftBridge.secureEnclaveCreateMlDsaPrivateKey(
+            algName,
+            accessControlCreateFlags
+        )
+        if (ret.isEmpty()) {
+            throw IllegalStateException("Error creating ML-DSA key - on iOS simulator?")
+        }
+        val keyBlob = (ret[0] as NSData).toByteArray()
+        val pubKeyBytes = (ret[1] as NSData).toByteArray()
+        val pubKey = MlDsaPublicKey(algorithm, ByteString(pubKeyBytes))
+        return Pair(keyBlob, pubKey)
+    }
+
+    internal fun secureEnclaveMlDsaSign(
+        algorithm: Algorithm,
+        keyBlob: ByteArray,
+        message: ByteArray,
+        keyUnlockData: SecureEnclaveKeyUnlockData?
+    ): MlDsaSignature {
+        val algName = when (algorithm) {
+            Algorithm.ML_DSA_65 -> "ML-DSA-65"
+            Algorithm.ML_DSA_87 -> "ML-DSA-87"
+            else -> throw IllegalArgumentException("Unsupported ML-DSA algorithm $algorithm")
+        }
+        val signature = SwiftBridge.secureEnclaveMlDsaSign(
+            algName,
+            keyBlob.toNSData(),
+            message.toNSData(),
+            keyUnlockData?.authenticationContext as objcnames.classes.LAContext?
+        )?.toByteArray() ?: throw KeyLockedException("Unable to unlock key")
+        return MlDsaSignature(signature)
+    }
+
+    internal fun secureEnclaveCreateMlKemPrivateKey(
+        algorithm: Algorithm,
+        accessControlCreateFlags: Long
+    ): Pair<ByteArray, MlKemPublicKey> {
+        val algName = when (algorithm) {
+            Algorithm.ML_KEM_768 -> "ML-KEM-768"
+            Algorithm.ML_KEM_1024 -> "ML-KEM-1024"
+            else -> throw IllegalArgumentException("Unsupported ML-KEM algorithm $algorithm")
+        }
+        val ret = SwiftBridge.secureEnclaveCreateMlKemPrivateKey(
+            algName,
+            accessControlCreateFlags
+        )
+        if (ret.isEmpty()) {
+            throw IllegalStateException("Error creating ML-KEM key - on iOS simulator?")
+        }
+        val keyBlob = (ret[0] as NSData).toByteArray()
+        val pubKeyBytes = (ret[1] as NSData).toByteArray()
+        val pubKey = MlKemPublicKey(algorithm, ByteString(pubKeyBytes))
+        return Pair(keyBlob, pubKey)
+    }
+
+    internal fun secureEnclaveMlKemDecapsulate(
+        algorithm: Algorithm,
+        keyBlob: ByteArray,
+        ciphertext: ByteArray,
+        keyUnlockData: SecureEnclaveKeyUnlockData?
+    ): SecureByteString {
+        val algName = when (algorithm) {
+            Algorithm.ML_KEM_768 -> "ML-KEM-768"
+            Algorithm.ML_KEM_1024 -> "ML-KEM-1024"
+            else -> throw IllegalArgumentException("Unsupported ML-KEM algorithm $algorithm")
+        }
+        val raw = SwiftBridge.secureEnclaveMlKemDecapsulate(
+            algName,
+            keyBlob.toNSData(),
+            ciphertext.toNSData(),
+            keyUnlockData?.authenticationContext as objcnames.classes.LAContext?
+        )?.toByteArray() ?: throw KeyLockedException("Unable to unlock key")
+        try {
+            return SecureByteString(raw)
+        } finally {
+            raw.secureZero()
+        }
+    }
+
+    internal actual suspend fun validateCertChainSignatures(certChain: X509CertChain): Boolean {
         val certificates = certChain.certificates
         for (i in 1..certificates.lastIndex) {
             val toVerify = certificates[i - 1]
@@ -224,3 +566,61 @@ actual object Crypto {
         return true
     }
 }
+
+@OptIn(ExperimentalForeignApi::class)
+private class IosSecureRandom : Random() {
+    override fun nextBits(bitCount: Int): Int {
+        require(bitCount in 0..32) { "bitCount must be between 0 and 32" }
+        if (bitCount == 0) return 0
+        val bytes = ByteArray(4)
+        nextBytes(bytes)
+        val intValue = (bytes[0].toInt() and 0xFF shl 24) or
+                (bytes[1].toInt() and 0xFF shl 16) or
+                (bytes[2].toInt() and 0xFF shl 8) or
+                (bytes[3].toInt() and 0xFF)
+        return intValue ushr (32 - bitCount)
+    }
+
+    override fun nextBytes(array: ByteArray, fromIndex: Int, toIndex: Int): ByteArray {
+        require(fromIndex in 0..array.size && toIndex in 0..array.size && fromIndex <= toIndex) {
+            "fromIndex ($fromIndex) or toIndex ($toIndex) out of range [0, ${array.size}]"
+        }
+        val length = toIndex - fromIndex
+        if (length == 0) return array
+        array.usePinned { pinned ->
+            val status = SecRandomCopyBytes(
+                kSecRandomDefault,
+                length.toULong(),
+                pinned.addressOf(fromIndex)
+            )
+            check(status == 0) { "SecRandomCopyBytes failed with status $status" }
+        }
+        return array
+    }
+
+    override fun nextBytes(array: ByteArray): ByteArray =
+        nextBytes(array, 0, array.size)
+
+    override fun nextBytes(size: Int): ByteArray =
+        nextBytes(ByteArray(size))
+
+    override fun nextInt(): Int {
+        val bytes = ByteArray(4)
+        nextBytes(bytes)
+        return (bytes[0].toInt() and 0xFF shl 24) or
+                (bytes[1].toInt() and 0xFF shl 16) or
+                (bytes[2].toInt() and 0xFF shl 8) or
+                (bytes[3].toInt() and 0xFF)
+    }
+
+    override fun nextLong(): Long {
+        val bytes = ByteArray(8)
+        nextBytes(bytes)
+        var result = 0L
+        for (b in bytes) {
+            result = (result shl 8) or (b.toLong() and 0xFF)
+        }
+        return result
+    }
+}
+

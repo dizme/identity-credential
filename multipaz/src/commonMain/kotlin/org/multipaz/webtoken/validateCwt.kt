@@ -11,7 +11,7 @@ import org.multipaz.cose.CoseNumberLabel
 import org.multipaz.cose.CoseTextLabel
 import org.multipaz.cose.toCoseLabel
 import org.multipaz.crypto.Algorithm
-import org.multipaz.crypto.EcPublicKey
+import org.multipaz.crypto.PublicKey
 import org.multipaz.crypto.SignatureVerificationException
 import org.multipaz.crypto.X509CertChain
 import org.multipaz.rpc.backend.BackendEnvironment
@@ -52,33 +52,35 @@ import kotlin.time.Instant
  *
  * [WebTokenCheck.CHALLENGE] defines the nonce/challenge check using the value of the specified
  * property. The value given to this key in [checks] map is used as a property name in the body
- * part of the CWT. That property must exist. Its value is passed to [Challenge.validateAndConsume]
- * method.
+ * part of the CWT. That property must exist. Its value is passed to [nonceValidator] function.
  *
  * @param cwt CWT to validate
  * @param cwtName name for the kind of CWT being validated, this is used to generate more meaningful
- *    exception messages
+ *  exception messages
  * @param publicKey public key to use to check signature, either publicKey or [WebTokenCheck.TRUST]
- *    must be used.
+ *  must be used.
  * @param checks validation checks to perform.
  * @param maxValidity when `exp` is not present determines expiration time based on `iat` claim;
- *     when `exp` claim is present, determines how far in the future it can be.
+ *  when `exp` claim is present, determines how far in the future it can be.
  * @param certificateChainValidator optional function to validate certificate chain in CWT; if
- *     the certificate chain is not valid it should throw [InvalidRequestException] exception,
- *     the returned value should indicate if the chain is trusted (in which case
- *     [WebTokenCheck.TRUST] check is not performed) or not ([WebTokenCheck.TRUST] still applies).
- * @param clock clock that determines current time to check for expiration.
+ *  the certificate chain is not valid it should throw [InvalidRequestException] exception,
+ *  the returned value should indicate if the chain is trusted (in which case
+ *  [WebTokenCheck.TRUST] check is not performed) or not ([WebTokenCheck.TRUST] still applies).
+ * @param atTime time instant for expiration check.
+ * @param nonceValidator function that must throw [ChallengeInvalidException] if nonce/challenge
+ *  is not valid; this is used with [WebTokenCheck.CHALLENGE] check.
  * @throws ChallengeInvalidException when nonce or challenge check fails (see [WebTokenCheck.CHALLENGE])
  * @throws InvalidRequestException when any other validation fails
  */
 suspend fun validateCwt(
     cwt: ByteArray,
     cwtName: String,
-    publicKey: EcPublicKey?,
+    publicKey: PublicKey? = null,
     checks: Map<WebTokenCheck, String> = mapOf(),
     maxValidity: Duration = 10.hours,
     certificateChainValidator: (suspend (chain: X509CertChain, atTime: Instant) -> Boolean)? = null,
-    clock: Clock = Clock.System
+    atTime: Instant = Clock.System.now(),
+    nonceValidator: suspend (nonce: String) -> Unit = Challenge::validateAndConsume
 ): CborMap {
     val cbor = Cbor.decode(cwt)
     val unwrapped = if (cbor is Tagged && cbor.tagNumber == Tagged.COSE_SIGN1) {
@@ -91,30 +93,28 @@ suspend fun validateCwt(
     val body = Cbor.decode(sign1.payload!!) as? CborMap
         ?: throw IllegalArgumentException("$cwtName: not a valid CWT")
 
-    val now = clock.now()
-
     val expiration = body[WebTokenClaim.Exp] ?: run {
         if (maxValidity == Duration.INFINITE) {
-            now + 1.seconds
+            atTime + 1.seconds
         } else {
             val iat = body[WebTokenClaim.Iat]
                 ?: throw InvalidRequestException("$cwtName: either 'exp' or 'iat' is required")
-            if (iat > now) {
+            if (iat > atTime) {
                 // Allow no more than 5 seconds clock mismatch
-                if (iat > now + 5.seconds) {
+                if (iat > atTime + 5.seconds) {
                     throw InvalidRequestException("$cwtName: 'iat' is in future")
                 }
-                now + maxValidity
+                atTime + maxValidity
             } else {
                 iat + maxValidity
             }
         }
     }
 
-    if (expiration < now) {
+    if (expiration < atTime) {
         throw InvalidRequestException("$cwtName: expired")
     }
-    if (maxValidity != Duration.INFINITE && expiration > now + maxValidity) {
+    if (maxValidity != Duration.INFINITE && expiration > atTime + maxValidity) {
         throw InvalidRequestException("$cwtName: expiration is too far in the future")
     }
 
@@ -132,7 +132,8 @@ suspend fun validateCwt(
                 body[claim]
             }
             if (fieldValue != expectedValue) {
-                throw InvalidRequestException("$cwtName: '${claim.strKey}' is incorrect or missing")
+                throw InvalidRequestException("$cwtName: '${claim.strKey}' is incorrect or missing. " +
+                        "Expected `$expectedValue`, got `$fieldValue`")
             }
         }
     }
@@ -144,15 +145,24 @@ suspend fun validateCwt(
     val caValidated = try {
         certificateChain != null &&
             (certificateChainValidator ?: ::basicCertificateChainValidator)
-                .invoke(certificateChain, now)
+                .invoke(certificateChain, atTime)
     } catch (err: InvalidRequestException) {
         throw InvalidRequestException("$cwtName: ${err.message}")
     }
 
     val caName = checks[WebTokenCheck.TRUST]
     val key = if (caName == null) {
-        require(publicKey != null || caValidated)
-        publicKey ?: certificateChain!!.certificates.first().ecPublicKey
+        if (publicKey == null && !caValidated) {
+            throw InvalidRequestException("$cwtName: could not check signature, no public key found")
+        }
+        if (certificateChain == null|| certificateChain.certificates.isEmpty()) {
+            publicKey!!
+        } else {
+            if (publicKey != null) {
+                certificateChain.certificates.last().verify(publicKey)
+            }
+            certificateChain.certificates.first().publicKey
+        }
     } else {
         val issuer = body[WebTokenClaim.Iss]
         if (certificateChain != null) {
@@ -180,7 +190,7 @@ suspend fun validateCwt(
                     throw InvalidRequestException("$cwtName: signature check failed: ${err.message}")
                 }
             }
-            first.ecPublicKey
+            first.publicKey
         } else {
             val kid = sign1.protectedHeaders[Cose.COSE_LABEL_KID.toCoseLabel]?.asBstr?.decodeToString()
                 ?: sign1.unprotectedHeaders[Cose.COSE_LABEL_KID.toCoseLabel]?.asBstr?.decodeToString()
@@ -210,7 +220,7 @@ suspend fun validateCwt(
         if (nonce !is Tstr) {
             throw InvalidRequestException("$cwtName: '$nonceName' is invalid")
         }
-        Challenge.validateAndConsume(nonce.asTstr)
+        nonceValidator.invoke(nonce.asTstr)
     }
 
     val jtiPartition = checks[WebTokenCheck.IDENT]

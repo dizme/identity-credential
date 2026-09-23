@@ -3,6 +3,7 @@ package org.multipaz.verification
 import kotlinx.io.bytestring.ByteString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.add
@@ -10,6 +11,7 @@ import kotlinx.serialization.json.addJsonObject
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
@@ -19,10 +21,12 @@ import org.multipaz.cbor.Bstr
 import org.multipaz.cbor.Cbor
 import org.multipaz.cbor.DataItem
 import org.multipaz.cbor.Simple
+import org.multipaz.cbor.Tagged
 import org.multipaz.cbor.Tstr
 import org.multipaz.cbor.addCborArray
 import org.multipaz.cbor.addCborMap
 import org.multipaz.cbor.buildCborArray
+import org.multipaz.cbor.toDataItem
 import org.multipaz.claim.JsonClaim
 import org.multipaz.claim.MdocClaim
 import org.multipaz.crypto.Algorithm
@@ -31,17 +35,24 @@ import org.multipaz.crypto.EcPublicKey
 import org.multipaz.crypto.Hpke
 import org.multipaz.crypto.JsonWebEncryption
 import org.multipaz.crypto.AsymmetricKey
+import org.multipaz.crypto.EcCurve
+import org.multipaz.crypto.EcPrivateKey
 import org.multipaz.documenttype.DocumentTypeRepository
+import org.multipaz.mdoc.request.DeviceRequest
 import org.multipaz.mdoc.request.DeviceRequestInfo
 import org.multipaz.mdoc.request.DocRequestInfo
 import org.multipaz.mdoc.request.DocumentSet
+import org.multipaz.mdoc.request.TransactionsInfo
 import org.multipaz.mdoc.request.UseCase
 import org.multipaz.mdoc.request.ZkRequest
 import org.multipaz.mdoc.request.buildDeviceRequest
+import org.multipaz.mdoc.request.buildDeviceRequestFromDcql
 import org.multipaz.mdoc.response.DeviceResponse
+import org.multipaz.mdoc.util.mdocVersionCompareTo
 import org.multipaz.mdoc.zkp.ZkSystemRepository
 import org.multipaz.mdoc.zkp.ZkSystemSpec
 import org.multipaz.openid.OpenID4VP
+import org.multipaz.presentment.TransactionData
 import org.multipaz.request.JsonRequestedClaim
 import org.multipaz.request.MdocRequestedClaim
 import org.multipaz.sdjwt.SdJwt
@@ -49,8 +60,11 @@ import org.multipaz.sdjwt.SdJwtKb
 import org.multipaz.util.Logger
 import org.multipaz.util.fromBase64Url
 import org.multipaz.util.toBase64Url
+import org.multipaz.util.zlibInflate
 import kotlin.collections.component1
 import kotlin.collections.component2
+import kotlin.coroutines.cancellation.CancellationException
+import kotlin.random.Random
 import kotlin.time.Instant
 
 private const val TAG = "VerificationUtil"
@@ -69,7 +83,7 @@ object VerificationUtil {
      * - org-iso-mdoc
      * - openid4vp
      * - openid4vp-v1-signed
-     * - openid4v4-v1-unsigned
+     * - openid4vp-v1-unsigned
      *
      * This can be used on the server-side to generate the request. The resulting [JsonObject] can be serialized
      * to a string using [Json.encodeToString] and sent to the browser or requesting app which can pass it to
@@ -82,37 +96,54 @@ object VerificationUtil {
      * @param nonce the nonce to use. For OpenID4VP, this will be base64url-encoded without padding. For mdoc-api
      *   this will be used as is.
      * @param origin the origin to use.
-     * @param clientId the client id to use, must be non-null for signed requests.
      * @param responseEncryptionKey the key to encrypt the response against or `null` to not encrypt the response.
      *   Note that in some protocols encryption of the response is mandatory and this will throw [IllegalArgumentException]
      *   if this is `null` for such protocols
-     * @param readerAuthenticationKey an optional key to use for reader authentication and its
-     *    certificate chain.
+     * @param verifierIdentities a list of verifier identities used to sign the request; empty list
+     *  for unsigned request
      * @param zkSystemSpecs if non-empty, request a ZK proof using these systems.
+     * @param jsonTransactionData JSON-formatted transaction data, *before* base64url encoding,
+     *   see OpenID4VP 1.0 section 8.4.
+     * @param cborTransactionData CBOR-formatted transaction data
+     * @param docRequestOtherInfo additional data to add to `requestInfo` map in ISO 18013-7.
+     * @param issuerIdentifiers optional list of issuer Authority Key Identifiers to match against.
+     * @param deviceRequestVersion the version to use or `null` to automatically determine which
+     *   version to use.
      * @return a [JsonObject] with the request.
      */
+    @Throws(CancellationException::class)
     suspend fun generateDcRequestMdoc(
         exchangeProtocols: List<String>,
         docType: String,
         claims: List<MdocRequestedClaim>,
         nonce: ByteString,
         origin: String,
-        clientId: String?,
         responseEncryptionKey: EcPublicKey?,
-        readerAuthenticationKey: AsymmetricKey.X509Compatible?,
-        zkSystemSpecs: List<ZkSystemSpec>
+        verifierIdentities: List<VerifierIdentity>,
+        zkSystemSpecs: List<ZkSystemSpec>,
+        jsonTransactionData: List<String> = emptyList(),
+        cborTransactionData: TransactionsInfo? = null,
+        docRequestOtherInfo: Map<String, DataItem> = emptyMap(),
+        issuerIdentifiers: List<ByteString> = emptyList(),
+        deviceRequestVersion: String? = null
     ): JsonObject {
         val requests = exchangeProtocols.map { exchangeProtocol ->
             generateSingleRequest(
                 exchangeProtocol = exchangeProtocol,
                 docType = docType,
                 claims = claims,
+                docFormat = null,
+                dataElementIdentifierMapping = emptyMap(),
                 nonce = nonce,
                 origin = origin,
-                clientId = clientId,
                 responseEncryptionKey = responseEncryptionKey,
-                readerAuthenticationKey = readerAuthenticationKey,
-                zkSystemSpecs = zkSystemSpecs
+                verifierIdentities = verifierIdentities,
+                zkSystemSpecs = zkSystemSpecs,
+                jsonTransactionData = jsonTransactionData,
+                cborTransactionData = cborTransactionData,
+                docRequestOtherInfo = docRequestOtherInfo,
+                issuerIdentifiers = issuerIdentifiers,
+                deviceRequestVersion = deviceRequestVersion
             )
         }
         return buildJsonObject {
@@ -120,16 +151,88 @@ object VerificationUtil {
         }
     }
 
-    private suspend fun generateSingleRequest(
-        exchangeProtocol: String,
-        docType: String,
-        claims: List<MdocRequestedClaim>,
+    /**
+     * Utility function to generate a W3C Digital Credentials API request for requesting credentials.
+     *
+     * The request can expressed for multiple exchange protocols simultaneously, for example OpenID4VP 1.0 and
+     * ISO/IEC 18013:2025 Annex C. In the ISO 18013-5 case the DCQL is converted using the
+     * [buildDeviceRequestFromDcql].
+     *
+     * The following exchange protocols are supported by this function
+     * - org-iso-mdoc
+     * - openid4vp
+     * - openid4vp-v1-signed
+     * - openid4vp-v1-unsigned
+     *
+     * This can be used on the server-side to generate the request. The resulting [JsonObject] can be serialized
+     * to a string using [Json.encodeToString] and sent to the browser or requesting app which can pass it to
+     * `navigator.credentials.get()` or its native Credential Manager implementation.
+     *
+     * @param exchangeProtocols a list of W3C Exchange Protocol strings to generate requests for. The order of
+     *   requests in the resulting JSON will match the order in this list.
+     * @param dcql the DCQL to use.
+     * @param nonce the nonce to use. For OpenID4VP, this will be base64url-encoded without padding. For mdoc-api
+     *   this will be used as is.
+     * @param origin the origin to use.
+     * @param responseEncryptionKey the key to encrypt the response against or `null` to not encrypt the response.
+     *   Note that in some protocols encryption of the response is mandatory and this will throw [IllegalArgumentException]
+     *   if this is `null` for such protocols
+     * @param verifierIdentities a list of verifier identities used to sign the request; empty list
+     *  for unsigned request
+     * @param jsonTransactionData JSON-formatted transaction data, *before* base64url encoding,
+     *   see OpenID4VP 1.0 section 8.4.
+     * @param cborTransactionData transaction data encoded for use in requestInfo map in ISO 18013-5.
+     * @param state optional state parameter defined in OpenID4VP and ISO 18013-7 that is then
+     *   included in the presentation
+     * @param deviceRequestVersion the version to use or `null` to automatically determine which
+     *   version to use.
+     * @throws IllegalArgumentException if [dcql] contains features not supported by [DeviceRequest], for
+     *   example a request for credentials that aren't ISO mdocs.
+     * @return a [JsonObject] with the request.
+     */
+    @Throws(IllegalArgumentException::class, CancellationException::class)
+    suspend fun generateDcRequestDcql(
+        exchangeProtocols: List<String>,
+        dcql: JsonObject,
         nonce: ByteString,
         origin: String,
-        clientId: String?,
         responseEncryptionKey: EcPublicKey?,
-        readerAuthenticationKey: AsymmetricKey.X509Compatible?,
-        zkSystemSpecs: List<ZkSystemSpec>
+        verifierIdentities: List<VerifierIdentity>,
+        jsonTransactionData: List<String> = emptyList(),
+        cborTransactionData: Map<String, TransactionsInfo> = emptyMap(),
+        state: String? = null,
+        deviceRequestVersion: String? = null
+    ): JsonObject {
+        val requests = exchangeProtocols.map { exchangeProtocol ->
+            generateSingleRequestDcql(
+                exchangeProtocol = exchangeProtocol,
+                dcql = dcql,
+                nonce = nonce,
+                origin = origin,
+                responseEncryptionKey = responseEncryptionKey,
+                verifierIdentities = verifierIdentities,
+                jsonTransactionData = jsonTransactionData,
+                cborTransactionData = cborTransactionData,
+                state = state,
+                deviceRequestVersion = deviceRequestVersion
+            )
+        }
+        return buildJsonObject {
+            put("requests", JsonArray(requests))
+        }
+    }
+
+    internal suspend fun generateSingleRequestDcql(
+        exchangeProtocol: String,
+        dcql: JsonObject,
+        nonce: ByteString,
+        origin: String,
+        responseEncryptionKey: EcPublicKey?,
+        verifierIdentities: List<VerifierIdentity>,
+        jsonTransactionData: List<String>,
+        cborTransactionData: Map<String, TransactionsInfo>,
+        state: String?,
+        deviceRequestVersion: String? = null
     ): JsonObject = buildJsonObject {
         put("protocol", exchangeProtocol)
         when (exchangeProtocol) {
@@ -145,13 +248,111 @@ object VerificationUtil {
                             OpenID4VP.Version.DRAFT_29
                         },
                         origin = origin,
-                        clientId = clientId,
                         nonce = nonce.toByteArray().toBase64Url(),
+                        state = state,
                         responseEncryptionKey = responseEncryptionKey,
-                        requestSigningKey = readerAuthenticationKey,
+                        verifierIdentities = verifierIdentities,
                         responseMode = OpenID4VP.ResponseMode.DC_API,
                         responseUri = null,
-                        dclqQuery = calcDcqlMdoc(docType, claims, zkSystemSpecs)
+                        dcqlQuery = dcql,
+                        jsonTransactionData = jsonTransactionData
+                    )
+                )
+            }
+
+            "org-iso-mdoc" -> {
+                if (responseEncryptionKey == null) {
+                    throw IllegalArgumentException("Response encryption is mandatory for org-iso-mdoc")
+                }
+                val encryptionInfo = buildCborArray {
+                    add("dcapi")
+                    addCborMap {
+                        put("nonce", nonce.toByteArray())
+                        put("recipientPublicKey", responseEncryptionKey.toCoseKey().toDataItem())
+                    }
+                }
+                val base64EncryptionInfo = Cbor.encode(encryptionInfo).toBase64Url()
+                val dcapiInfo = buildCborArray {
+                    add(base64EncryptionInfo)
+                    add(origin)
+                }
+                val dcapiInfoDigest = Crypto.digest(Algorithm.SHA256, Cbor.encode(dcapiInfo))
+                val sessionTranscript = buildCborArray {
+                    add(Simple.NULL) // DeviceEngagementBytes
+                    add(Simple.NULL) // EReaderKeyBytes
+                    addCborArray {
+                        add("dcapi")
+                        add(dcapiInfoDigest)
+                    }
+                }
+                val isVersion10 = deviceRequestVersion != null && deviceRequestVersion.mdocVersionCompareTo("1.1") < 0
+                val encodedDeviceRequest = Cbor.encode(
+                    buildDeviceRequestFromDcql(
+                        sessionTranscript = sessionTranscript,
+                        dcql = dcql,
+                        transactions = cborTransactionData,
+                        version = deviceRequestVersion,
+                    ) {
+                        if (!isVersion10) {
+                            verifierIdentities.forEach { readerIdentity ->
+                                addReaderAuthAll(readerKey = readerIdentity.key)
+                            }
+                        }
+                    }.toDataItem()
+                )
+                Logger.dCbor(TAG, "deviceRequest", encodedDeviceRequest)
+                val dr = DeviceRequest.fromDataItem(Cbor.decode(encodedDeviceRequest))
+                dr.verifyReaderAuthentication(sessionTranscript)
+                val base64DeviceRequest = encodedDeviceRequest.toBase64Url()
+                putJsonObject("data") {
+                    put("deviceRequest", base64DeviceRequest)
+                    put("encryptionInfo", base64EncryptionInfo)
+                }
+            }
+
+            else -> throw IllegalArgumentException("Unsupported exchange protocol $exchangeProtocol")
+        }
+    }
+
+    private suspend fun generateSingleRequest(
+        exchangeProtocol: String,
+        docType: String,
+        claims: List<MdocRequestedClaim>,
+        docFormat: String?,
+        dataElementIdentifierMapping: Map<String, JsonArray>,
+        nonce: ByteString,
+        origin: String,
+        responseEncryptionKey: EcPublicKey?,
+        verifierIdentities: List<VerifierIdentity>,
+        zkSystemSpecs: List<ZkSystemSpec>,
+        jsonTransactionData: List<String>,
+        cborTransactionData: TransactionsInfo?,
+        docRequestOtherInfo: Map<String, DataItem>,
+        issuerIdentifiers: List<ByteString> = emptyList(),
+        deviceRequestVersion: String? = null
+    ): JsonObject = buildJsonObject {
+        put("protocol", exchangeProtocol)
+        when (exchangeProtocol) {
+            "openid4vp",
+            "openid4vp-v1-unsigned",
+            "openid4vp-v1-signed",
+            "openid4vp-v1-multisigned"-> {
+                put(
+                    "data",
+                    OpenID4VP.generateRequest(
+                        version = if (exchangeProtocol == "openid4vp") {
+                            OpenID4VP.Version.DRAFT_24
+                        } else {
+                            OpenID4VP.Version.DRAFT_29
+                        },
+                        origin = origin,
+                        nonce = nonce.toByteArray().toBase64Url(),
+                        responseEncryptionKey = responseEncryptionKey,
+                        verifierIdentities = verifierIdentities,
+                        responseMode = OpenID4VP.ResponseMode.DC_API,
+                        responseUri = null,
+                        dcqlQuery = calcDcqlMdoc(docType, claims, zkSystemSpecs, issuerIdentifiers),
+                        jsonTransactionData = jsonTransactionData
                     )
                 )
             }
@@ -187,7 +388,7 @@ object VerificationUtil {
                         .put(claim.dataElementName, claim.intentToRetain)
                 }
 
-                val zkRequest = if (zkSystemSpecs.size > 0) {
+                val zkRequest = if (zkSystemSpecs.isNotEmpty()) {
                     ZkRequest(
                         systemSpecs = zkSystemSpecs,
                         zkRequired = false
@@ -195,11 +396,14 @@ object VerificationUtil {
                 } else {
                     null
                 }
+                val isVersion10 = deviceRequestVersion != null && deviceRequestVersion.mdocVersionCompareTo("1.1") < 0
+                val readerKey = if (isVersion10) verifierIdentities.firstOrNull()?.key else null
                 val encodedDeviceRequest = Cbor.encode(buildDeviceRequest(
                     sessionTranscript = sessionTranscript,
+                    version = deviceRequestVersion,
                     // TODO: UseCases is optional even in a 1.1 request but iOS 26 currently assumes it's set.
                     //   This has been reported to Apple so this can be removed once their bug-fix is out.
-                    deviceRequestInfo = DeviceRequestInfo(
+                    deviceRequestInfo = if (isVersion10) null else DeviceRequestInfo.fromValues(
                         useCases = listOf(UseCase(
                             mandatory = true,
                             documentSets = listOf(
@@ -211,24 +415,34 @@ object VerificationUtil {
                         ))
                     )
                 ) {
-                    if (readerAuthenticationKey != null) {
-                        addDocRequest(
-                            docType = docType,
-                            nameSpaces = itemsToRequest,
-                            docRequestInfo = DocRequestInfo(
-                                zkRequest = zkRequest
-                            ),
-                            readerKey = readerAuthenticationKey,
-                        )
-                        addReaderAuthAll(readerKey = readerAuthenticationKey)
-                    } else {
-                        addDocRequest(
-                            docType = docType,
-                            nameSpaces = itemsToRequest,
-                            docRequestInfo = DocRequestInfo(
-                                zkRequest = zkRequest
-                            ),
-                        )
+                    addDocRequest(
+                        docType = docType,
+                        nameSpaces = itemsToRequest,
+                        docRequestInfo = if (isVersion10) {
+                            if (cborTransactionData != null || docRequestOtherInfo.isNotEmpty()) {
+                                DocRequestInfo(
+                                    transactionData = cborTransactionData,
+                                    otherInfo = docRequestOtherInfo
+                                )
+                            } else {
+                                null
+                            }
+                        } else {
+                            DocRequestInfo(
+                                zkRequest = zkRequest,
+                                docFormat = docFormat,
+                                dataElementIdentifierMapping = dataElementIdentifierMapping,
+                                transactionData = cborTransactionData,
+                                otherInfo = docRequestOtherInfo,
+                                issuerIdentifiers = issuerIdentifiers
+                            )
+                        },
+                        readerKey = readerKey
+                    )
+                    if (!isVersion10) {
+                        verifierIdentities.forEach { readerIdentity ->
+                            addReaderAuthAll(readerKey = readerIdentity.key)
+                        }
                     }
                 }.toDataItem())
                 val base64DeviceRequest = encodedDeviceRequest.toBase64Url()
@@ -245,14 +459,14 @@ object VerificationUtil {
     /**
      * Utility function to generate a W3C Digital Credentials API request for requesting a single SD-JWT credential.
      *
-     * The request can expressed for multiple exchange protocols simultaneously, for example OpenID4VP 1.0 and
+     * The request can be expressed for multiple exchange protocols simultaneously, for example OpenID4VP 1.0 and
      * ISO/IEC 18013:2025 Annex C.
      *
      * The following exchange protocols are supported by this function
      * - org-iso-mdoc
      * - openid4vp
      * - openid4vp-v1-signed
-     * - openid4v4-v1-unsigned
+     * - openid4vp-v1-unsigned
      *
      * This can be used on the server-side to generate the request. The resulting [JsonObject] can be serialized
      * to a string using [Json.encodeToString] and sent to the browser or requesting app which can pass it to
@@ -265,31 +479,79 @@ object VerificationUtil {
      * @param nonce the nonce to use. For OpenID4VP, this will be base64url-encoded without padding. For mdoc-api
      *   this will be used as is.
      * @param origin the origin to use.
-     * @param clientId the client id to use, must be non-null for signed requests.
      * @param responseEncryptionKey the key to encrypt the response against or `null` to not encrypt the response.
      *   Note that in some protocols encryption of the response is mandatory and this will throw [IllegalArgumentException]
      *   if this is `null` for such protocols
-     * @param readerAuthenticationKey an optional key to use for reader authentication and its
-     *    certificate chain.
+     * @param verifierIdentities a list of verifier identities used to sign the request; empty list
+     *  for unsigned request
+     * @param jsonTransactionData JSON-formatted transaction data, *before* base64url encoding,
+     *   see OpenID4VP 1.0 section 8.4.
+     * @param cborTransactionData transaction data encoded for use in requestInfo map in ISO 18013-5.
+     * @param issuerIdentifiers optional list of issuer Authority Key Identifiers to match against.
+     * @param deviceRequestVersion the version to use or `null` to automatically determine which
+     *   version to use.
      * @return a [JsonObject] with the request.
      */
+    @Throws(CancellationException::class)
     suspend fun generateDcRequestSdJwt(
         exchangeProtocols: List<String>,
         vct: List<String>,
         claims: List<JsonRequestedClaim>,
         nonce: ByteString,
         origin: String,
-        clientId: String?,
         responseEncryptionKey: EcPublicKey?,
-        readerAuthenticationKey: AsymmetricKey?
+        verifierIdentities: List<VerifierIdentity>,
+        jsonTransactionData: List<String> = emptyList(),
+        cborTransactionData: TransactionsInfo? = null,
+        issuerIdentifiers: List<ByteString> = emptyList(),
+        deviceRequestVersion: String? = null
     ): JsonObject {
         val requests = exchangeProtocols.map { exchangeProtocol ->
             buildJsonObject {
                 put("protocol", exchangeProtocol)
                 when (exchangeProtocol) {
+                    "org-iso-mdoc" -> {
+                        // TODO: 18013-5 request protocol only supports requesting a single VCT right now
+                        require(vct.size == 1) { "Only a single VCT is supported right now" }
+                        val docType = vct.first()
+
+                        val mapping = mutableMapOf<String, JsonArray>()
+                        val mdocClaims = claims.map { jsonRequestedClaim ->
+                            val flattenedPath = jsonRequestedClaim.claimPath.joinToString(separator = "_") { it.jsonPrimitive.content }
+                            val dataElementName = "sdjwtvc_$flattenedPath"
+                            mapping[dataElementName] = JsonArray(jsonRequestedClaim.claimPath)
+                            MdocRequestedClaim(
+                                docType = docType,
+                                namespaceName = "_",
+                                dataElementName = dataElementName,
+                                intentToRetain = false,  // TODO: maybe have caller pass a value
+                            )
+                        }
+                        put(
+                            "data",
+                            generateSingleRequest(
+                                exchangeProtocol = exchangeProtocol,
+                                docType = docType,
+                                claims = mdocClaims,
+                                docFormat = "dc+sd-jwt",
+                                dataElementIdentifierMapping = mapping,
+                                nonce = nonce,
+                                origin = origin,
+                                responseEncryptionKey = responseEncryptionKey,
+                                verifierIdentities = verifierIdentities,
+                                zkSystemSpecs = emptyList(),
+                                cborTransactionData = cborTransactionData,
+                                jsonTransactionData = jsonTransactionData,
+                                docRequestOtherInfo = emptyMap(),
+                                issuerIdentifiers = issuerIdentifiers,
+                                deviceRequestVersion = deviceRequestVersion
+                            )["data"] as JsonObject
+                        )
+                    }
                     "openid4vp",
                     "openid4vp-v1-unsigned",
-                    "openid4vp-v1-signed" -> {
+                    "openid4vp-v1-signed",
+                    "openid4vp-v1-multisigned" -> {
                         put(
                             "data",
                             OpenID4VP.generateRequest(
@@ -299,13 +561,13 @@ object VerificationUtil {
                                     OpenID4VP.Version.DRAFT_29
                                 },
                                 origin = origin,
-                                clientId = clientId,
                                 nonce = nonce.toByteArray().toBase64Url(),
                                 responseEncryptionKey = responseEncryptionKey,
-                                requestSigningKey = readerAuthenticationKey,
+                                verifierIdentities = verifierIdentities,
                                 responseMode = OpenID4VP.ResponseMode.DC_API,
                                 responseUri = null,
-                                dclqQuery = calcDcqlSdJwt(vct, claims)
+                                dcqlQuery = calcDcqlSdJwt(vct, claims, issuerIdentifiers),
+                                jsonTransactionData = jsonTransactionData
                             )
                         )
                     }
@@ -321,7 +583,8 @@ object VerificationUtil {
     private fun calcDcqlMdoc(
         docType: String,
         claims: List<MdocRequestedClaim>,
-        zkSystemSpecs: List<ZkSystemSpec>
+        zkSystemSpecs: List<ZkSystemSpec>,
+        issuerIdentifiers: List<ByteString> = emptyList()
     ) = buildJsonObject {
         putJsonArray("credentials") {
             addJsonObject {
@@ -347,6 +610,18 @@ object VerificationUtil {
                         }
                     }
                 }
+                if (issuerIdentifiers.isNotEmpty()) {
+                    putJsonArray("trusted_authorities") {
+                        addJsonObject {
+                            put("type", "aki")
+                            putJsonArray("values") {
+                                issuerIdentifiers.forEach { aki ->
+                                    add(JsonPrimitive(aki.toByteArray().toBase64Url()))
+                                }
+                            }
+                        }
+                    }
+                }
                 putJsonArray("claims") {
                     for (claim in claims) {
                         addJsonObject {
@@ -364,7 +639,8 @@ object VerificationUtil {
 
     private fun calcDcqlSdJwt(
         vct: List<String>,
-        claims: List<JsonRequestedClaim>
+        claims: List<JsonRequestedClaim>,
+        issuerIdentifiers: List<ByteString> = emptyList()
     ) = buildJsonObject {
         putJsonArray("credentials") {
             addJsonObject {
@@ -380,6 +656,18 @@ object VerificationUtil {
                         }
                     )
                 }
+                if (issuerIdentifiers.isNotEmpty()) {
+                    putJsonArray("trusted_authorities") {
+                        addJsonObject {
+                            put("type", "aki")
+                            putJsonArray("values") {
+                                issuerIdentifiers.forEach { aki ->
+                                    add(JsonPrimitive(aki.toByteArray().toBase64Url()))
+                                }
+                            }
+                        }
+                    }
+                }
                 putJsonArray("claims") {
                     for (claim in claims) {
                         addJsonObject {
@@ -390,6 +678,55 @@ object VerificationUtil {
                             }
                         }
                     }
+                }
+            }
+        }
+    }
+
+    /**
+     * Injects `trusted_authorities` with the provided [issuerIdentifiers] into each credential in [dcql]
+     * that does not already have `trusted_authorities`.
+     *
+     * @param dcql the DCQL query object to inject issuer identifiers into.
+     * @param issuerIdentifiers the list of Authority Key Identifiers to inject.
+     * @return the updated DCQL query object with `trusted_authorities` included.
+     */
+    fun injectIssuerIdentifiersIntoDcql(
+        dcql: JsonObject,
+        issuerIdentifiers: List<ByteString>
+    ): JsonObject {
+        if (issuerIdentifiers.isEmpty()) return dcql
+        val credentialsArray = dcql["credentials"]?.jsonArray ?: return dcql
+        val newCredentials = buildJsonArray {
+            for (cred in credentialsArray) {
+                val credObj = cred.jsonObject
+                if (credObj.containsKey("trusted_authorities")) {
+                    add(credObj)
+                } else {
+                    addJsonObject {
+                        for ((k, v) in credObj) {
+                            put(k, v)
+                        }
+                        putJsonArray("trusted_authorities") {
+                            addJsonObject {
+                                put("type", "aki")
+                                putJsonArray("values") {
+                                    issuerIdentifiers.forEach { aki ->
+                                        add(JsonPrimitive(aki.toByteArray().toBase64Url()))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return buildJsonObject {
+            for ((k, v) in dcql) {
+                if (k == "credentials") {
+                    put("credentials", newCredentials)
+                } else {
+                    put(k, v)
                 }
             }
         }
@@ -410,8 +747,7 @@ object VerificationUtil {
         origin: String,
         responseEncryptionKey: AsymmetricKey?,
     ): DcResponse {
-        val exchangeProtocol = response["protocol"]!!.jsonPrimitive.content
-        when (exchangeProtocol) {
+        when (val exchangeProtocol = response["protocol"]!!.jsonPrimitive.content) {
             "openid4vp",
             "openid4vp-v1-signed",
             "openid4vp-v1-unsigned" -> {
@@ -454,7 +790,7 @@ object VerificationUtil {
                     }
                 }
                 val encodedHandoverInfo = Cbor.encode(handoverInfo)
-                Logger.iCbor(TAG, "handoverInfo", encodedHandoverInfo)
+                Logger.dCbor(TAG, "handoverInfo", encodedHandoverInfo)
                 val encodedHandoverInfoDigest = Crypto.digest(Algorithm.SHA256, encodedHandoverInfo)
                 val sessionTranscript = buildCborArray {
                     add(Simple.NULL) // DeviceEngagementBytes
@@ -464,7 +800,7 @@ object VerificationUtil {
                         add(encodedHandoverInfoDigest)
                     }
                 }
-                Logger.iCbor(TAG, "sessionTranscript", Cbor.encode(sessionTranscript))
+                Logger.dCbor(TAG, "sessionTranscript", Cbor.encode(sessionTranscript))
                 return OpenID4VPDcResponse(
                     vpToken = vpToken,
                     sessionTranscript = sessionTranscript
@@ -529,43 +865,54 @@ object VerificationUtil {
      *
      * @param now the current time.
      * @param vpToken the `vp_token` according to OpenID4VP 1.0.
-     * @param sessionTranscript the ISO mdoc `SessionTranscript` CBOR.
+     * @param sessionTranscript the ISO mdoc `SessionTranscript` CBOR, required if there are any
+     *  ISO mdoc credentials were presented.
      * @param nonce the nonce used in the request.
      * @param documentTypeRepository a [DocumentTypeRepository] or `null`.
      * @param zkSystemRepository a [ZkSystemRepository] used for verifying ZKP proofs or `null`.
+     * @param transactionDataMap maps credential id in the query to the list of transactions
+     *  for that credential
+     * @param queryData maps credential id in the query to information about the credential query
+     *  in the request.
      * @return a list of [VerifiedPresentation], one for each credential in the response.
      */
     suspend fun verifyOpenID4VPResponse(
         now: Instant,
         vpToken: JsonObject,
-        sessionTranscript: DataItem,
-        nonce: ByteString,
+        sessionTranscript: DataItem?,
+        nonce: String,
         documentTypeRepository: DocumentTypeRepository?,
         zkSystemRepository: ZkSystemRepository?,
+        transactionDataMap: Map<String, List<TransactionData<*>>> = emptyMap(),
+        queryData: Map<String, QueryData>
     ): List<VerifiedPresentation> {
         val verifiedPresentations = mutableListOf<VerifiedPresentation>()
         for ((credId, credValue) in vpToken.entries) {
             val creds = credValue as? JsonArray ?: JsonArray(listOf(credValue))
+            val transactionData = transactionDataMap[credId] ?: listOf()
             for (cred in creds) {
                 val credBase64 = cred.jsonPrimitive.content
-                // Simple heuristic to determine if this is JSON or CBOR
-                if (credBase64.startsWith("ey")) {
+                val isSdJwt = queryData.let { it[credId] is SdJwtQueryData }
+                if (isSdJwt) {
                     val sdjwtVerifiedPresentations = verifySdJwtPresentation(
-                        now = now,
                         compactSerialization = credBase64,
                         nonce = nonce,
                         documentTypeRepository = documentTypeRepository,
+                        transactionData = transactionData,
+                        identifier = credId
                     )
                     verifiedPresentations.add(sdjwtVerifiedPresentations)
                 } else {
-                    val mdocVerifiedPresentations = verifyMdocDeviceResponse(
+                    val mdocVerifiedPresentations = verifySingleDocMdocDeviceResponse(
                         now = now,
                         deviceResponse = Cbor.decode(credBase64.fromBase64Url()),
-                        sessionTranscript = sessionTranscript,
-                        eReaderKey = null,
+                        sessionTranscript = sessionTranscript!!,
                         documentTypeRepository = documentTypeRepository,
-                        zkSystemRepository = zkSystemRepository
+                        zkSystemRepository = zkSystemRepository,
+                        transactionData = transactionData,
+                        vpTokenIdentifier = credId
                     )
+                    check(mdocVerifiedPresentations.size == 1)
                     verifiedPresentations.addAll(mdocVerifiedPresentations)
                 }
             }
@@ -576,17 +923,17 @@ object VerificationUtil {
     /**
      * Generates [VerifiedPresentation] from an SD-JWT / SD-JWT+KB presentation.
      *
-     * @param now the current time.
      * @param compactSerialization the compact serialization of the SD-JWT or SD-JWT+KB.
      * @param nonce the nonce used in the request.
      * @param documentTypeRepository a [DocumentTypeRepository] or `null`.
      * @return a [VerifiedPresentation] instance.
      */
     suspend fun verifySdJwtPresentation(
-        now: Instant,
         compactSerialization: String,
-        nonce: ByteString,
+        nonce: String,
         documentTypeRepository: DocumentTypeRepository?,
+        transactionData: List<TransactionData<*>>,
+        identifier: String? = null
     ): VerifiedPresentation {
         val (sdJwt, sdJwtKb) = if (compactSerialization.endsWith("~")) {
             Pair(SdJwt.fromCompactSerialization(compactSerialization), null)
@@ -596,15 +943,14 @@ object VerificationUtil {
         }
 
         val issuerCertChain = sdJwt.x5c
-        if (issuerCertChain == null) {
-            throw IllegalStateException("Issuer-signed key not in `x5c` in header")
-        }
+            ?: throw IllegalStateException("Issuer-signed key not in `x5c` in header")
         val processedPayload = if (sdJwtKb != null) {
             sdJwtKb.verify(
                 issuerKey = issuerCertChain.certificates.first().ecPublicKey,
-                checkNonce = { nonceInCredential -> nonceInCredential == nonce.toByteArray().toBase64Url() },
+                checkNonce = { nonceInCredential -> nonceInCredential == nonce },
                 checkAudience = { true }, // TODO
-                checkCreationTime = { true }
+                checkCreationTime = { true },
+                transactionData = transactionData
             )
         } else {
             sdJwt.verify(
@@ -618,25 +964,42 @@ object VerificationUtil {
         val signedAt = processedPayload["iat"]?.jsonPrimitive?.intOrNull?.let { Instant.fromEpochSeconds(it.toLong()) }
         val dt = documentTypeRepository?.getDocumentTypeForJson(vct)
 
-
         val claims = mutableListOf<JsonClaim>()
         for ((claimName, claimValue) in processedPayload) {
             val jsonAttr = dt?.jsonDocumentType?.getDocumentAttribute(claimName)
             claims.add(JsonClaim(
                 displayName = jsonAttr?.displayName ?: claimName,
                 attribute = jsonAttr,
+                vct = vct,
                 claimPath = JsonArray(listOf(JsonPrimitive(claimName))),
                 value = claimValue
             ))
+        }
+
+        val transactionResults = if (transactionData.isEmpty() || sdJwtKb == null) {
+            null
+        } else {
+            buildMap<String, JsonElement> {
+                for (transaction in transactionData) {
+                    val responseClaims = sdJwtKb.jwtBody[transaction.type.kbJwtResponseClaimName]?.jsonObject ?: emptyMap()
+                    transaction.verifySdJwtResponse(responseClaims)
+                    sdJwtKb.jwtBody[transaction.type.kbJwtResponseClaimName]?.let {
+                        put(transaction.type.identifier, it)
+                    }
+                }
+            }
         }
 
         val deviceSignedClaims = mutableListOf<JsonClaim>()
         if (sdJwtKb != null) {
             for ((claimName, claimValue) in sdJwtKb.jwtBody) {
                 val jsonAttr = dt?.jsonDocumentType?.getDocumentAttribute(claimName)
+                // TODO: should we pass claims that we know were transaction results? Right now
+                //  we pass everything.
                 claims.add(JsonClaim(
-                    displayName = jsonAttr?.displayName ?: claimName + " (Device Signed)",
+                    displayName = jsonAttr?.displayName ?: "$claimName (Device Signed)",
                     attribute = jsonAttr,
+                    vct = vct,
                     claimPath = JsonArray(listOf(JsonPrimitive(claimName))),
                     value = claimValue
                 ))
@@ -652,7 +1015,11 @@ object VerificationUtil {
             validUntil = validUntil,
             signedAt = signedAt,
             expectedUpdate = null,  // Not defined for SD-JWT
-            vct = vct
+            vct = vct,
+            transactionResponses = transactionResults,
+            vpTokenIdentifier = identifier,
+            transactionData = transactionData,
+            revocationStatus = sdJwt.revocationStatus
         )
     }
 
@@ -665,6 +1032,7 @@ object VerificationUtil {
      * @param eReaderKey the ephemeral reader key, if 18013-5 session encryption is used.
      * @param documentTypeRepository a [DocumentTypeRepository] or `null`.
      * @param zkSystemRepository a [ZkSystemRepository] used for verifying ZKP proofs or `null`.
+     * @param request request that produced this response, only required for transaction processing
      * @return a list of [VerifiedPresentation], one for each document in the response.
      */
     suspend fun verifyMdocDeviceResponse(
@@ -674,15 +1042,68 @@ object VerificationUtil {
         eReaderKey: AsymmetricKey?,
         documentTypeRepository: DocumentTypeRepository?,
         zkSystemRepository: ZkSystemRepository?,
+        request: DeviceRequest?,
     ): List<VerifiedPresentation> {
-        val dr = DeviceResponse.fromDataItem(deviceResponse)
-        dr.verify(
+        val deviceResponse = DeviceResponse.fromDataItem(deviceResponse)
+        deviceResponse.verify(
             sessionTranscript = sessionTranscript,
             eReaderKey = eReaderKey,
+            deviceRequest = request,
+            documentTypeRepository = documentTypeRepository,
             atTime = now
         )
+        return createVerifiedPresentationList(
+            deviceResponse = deviceResponse,
+            sessionTranscript = sessionTranscript,
+            documentTypeRepository = documentTypeRepository,
+            zkSystemRepository = zkSystemRepository
+        )
+    }
+
+    /**
+     * Generates [VerifiedPresentation] from an ISO 18013-5 response.
+     *
+     * @param now the current time.
+     * @param deviceResponse the `DeviceResponse` CBOR.
+     * @param sessionTranscript the ISO mdoc `SessionTranscript` CBOR.
+     * @param documentTypeRepository a [DocumentTypeRepository] or `null`.
+     * @param zkSystemRepository a [ZkSystemRepository] used for verifying ZKP proofs or `null`.
+     * @return a list of [VerifiedPresentation], one for each document in the response.
+     */
+    internal suspend fun verifySingleDocMdocDeviceResponse(
+        now: Instant,
+        deviceResponse: DataItem,
+        sessionTranscript: DataItem,
+        documentTypeRepository: DocumentTypeRepository?,
+        zkSystemRepository: ZkSystemRepository?,
+        transactionData: List<TransactionData<*>>,
+        vpTokenIdentifier: String
+    ): List<VerifiedPresentation> {
+        val deviceResponse = DeviceResponse.fromDataItem(deviceResponse)
+        deviceResponse.verifySingleDoc(
+            sessionTranscript = sessionTranscript,
+            transactionData = transactionData,
+            atTime = now
+        )
+        return createVerifiedPresentationList(
+            deviceResponse = deviceResponse,
+            sessionTranscript = sessionTranscript,
+            documentTypeRepository = documentTypeRepository,
+            zkSystemRepository = zkSystemRepository,
+            vpTokenIdentifier = vpTokenIdentifier
+        )
+    }
+
+    private suspend fun createVerifiedPresentationList(
+        deviceResponse: DeviceResponse,
+        sessionTranscript: DataItem,
+        documentTypeRepository: DocumentTypeRepository?,
+        zkSystemRepository: ZkSystemRepository?,
+        vpTokenIdentifier: String? = null
+    ): List<VerifiedPresentation> {
         val verifiedPresentations = mutableListOf<VerifiedPresentation>()
-        for (document in dr.documents) {
+        for (document in deviceResponse.documents) {
+            val transactionResponses = document.transactionResponse
             val dt = documentTypeRepository?.getDocumentTypeForMdoc(document.docType)
             val issuerSignedClaims = mutableListOf<MdocClaim>()
             document.issuerNamespaces.data.forEach { (namespaceName, issuerSignedItemsMap) ->
@@ -692,9 +1113,10 @@ object VerificationUtil {
                         MdocClaim(
                             displayName = mdocAttr?.attribute?.displayName ?: dataElementName,
                             attribute = mdocAttr?.attribute,
+                            docType = document.docType,
                             namespaceName = namespaceName,
                             dataElementName = dataElementName,
-                            value = issuerSignedItem.dataElementValue
+                            value = issuerSignedItem.dataElementValue,
                         )
                     )
                 }
@@ -708,6 +1130,7 @@ object VerificationUtil {
                         MdocClaim(
                             displayName = mdocAttr?.attribute?.displayName ?: dataElementName,
                             attribute = mdocAttr?.attribute,
+                            docType = document.docType,
                             namespaceName = namespaceName,
                             dataElementName = dataElementName,
                             value = dataElementValue
@@ -725,11 +1148,15 @@ object VerificationUtil {
                     validUntil = document.mso.validUntil,
                     expectedUpdate = document.mso.expectedUpdate,
                     signedAt = document.mso.signedAt,
-                    docType = document.docType
+                    docType = document.docType,
+                    transactionResponses = transactionResponses.ifEmpty { null },
+                    vpTokenIdentifier = vpTokenIdentifier,
+                    transactionData = document.transactionData,
+                    revocationStatus = document.mso.revocationStatus
                 )
             )
         }
-        for (zkDocument in dr.zkDocuments) {
+        for (zkDocument in deviceResponse.zkDocuments) {
             val zkSystemSpec = zkSystemRepository?.getAllZkSystemSpecs()?.find {
                 it.id == zkDocument.documentData.zkSystemSpecId
             } ?: throw IllegalStateException("Zk System '${zkDocument.documentData.zkSystemSpecId}' was not found.")
@@ -746,6 +1173,7 @@ object VerificationUtil {
             if (zkDocument.documentData.msoX5chain == null) {
                 throw IllegalStateException("Expected x5chain for the issuer")
             }
+
             val issuerSignedClaims = mutableListOf<MdocClaim>()
             for ((namespaceName, dataElements) in zkDocument.documentData.issuerSigned) {
                 for ((dataElementName, value) in dataElements) {
@@ -754,9 +1182,10 @@ object VerificationUtil {
                         MdocClaim(
                             displayName = mdocAttr?.attribute?.displayName ?: dataElementName,
                             attribute = mdocAttr?.attribute,
+                            docType = zkDocument.documentData.docType,
                             namespaceName = namespaceName,
                             dataElementName = dataElementName,
-                            value = value
+                            value = value,
                         )
                     )
                 }
@@ -770,6 +1199,7 @@ object VerificationUtil {
                         MdocClaim(
                             displayName = mdocAttr?.attribute?.displayName ?: dataElementName,
                             attribute = mdocAttr?.attribute,
+                            docType = zkDocument.documentData.docType,
                             namespaceName = namespaceName,
                             dataElementName = dataElementName,
                             value = value
@@ -780,7 +1210,7 @@ object VerificationUtil {
 
             verifiedPresentations.add(
                 MdocVerifiedPresentation(
-                    documentSignerCertChain = zkDocument.documentData.msoX5chain!!,
+                    documentSignerCertChain = zkDocument.documentData.msoX5chain,
                     issuerSignedClaims = issuerSignedClaims,
                     deviceSignedClaims = deviceSignedClaims,
                     zkpUsed = true,
@@ -788,11 +1218,311 @@ object VerificationUtil {
                     validUntil = null,
                     expectedUpdate = null,
                     signedAt = null,
-                    docType = zkDocument.documentData.docType
+                    docType = zkDocument.documentData.docType,
+                    transactionResponses = null,
+                    vpTokenIdentifier = vpTokenIdentifier,
+                    transactionData = listOf()  // No transactions for ZKP
+                )
+            )
+        }
+
+        for (document in deviceResponse.otherDocuments) {
+            if (document.docFormat != "dc+sd-jwt") {
+                Logger.w(TAG, "Unknown docFormat ${document.docFormat}")
+                continue
+            }
+            val sdJwtKbCompactSerialization = document.data.toByteArray().zlibInflate().decodeToString()
+
+            val sessionTranscriptBytes = Tagged(
+                tagNumber = Tagged.ENCODED_CBOR,
+                taggedItem = Bstr(Cbor.encode(sessionTranscript))
+            )
+            val nonce = Crypto.digest(Algorithm.SHA256, Cbor.encode(sessionTranscriptBytes))
+
+            // TODO: we want this routine (createVerifiedPresentationList) to just extract
+            //  the data, rather than deal with all verification details (including transactions),
+            //  like we do for mdoc and zkp, we will need to split verifySdJwtPresentation into
+            //  verification and and data extraction for this
+            verifiedPresentations.add(
+                verifySdJwtPresentation(
+                    compactSerialization = sdJwtKbCompactSerialization,
+                    nonce = nonce.toBase64Url(),
+                    documentTypeRepository = documentTypeRepository,
+                    transactionData = document.transactionData
                 )
             )
         }
 
         return verifiedPresentations
+    }
+
+    /**
+     * Makes a request for credential presentation using
+     * [W3C Digital Credentials API](https://www.w3.org/TR/digital-credentials)
+     *
+     * Single DC request can contain sections for several protocols, the response always
+     * comes using only one of the requested protocols.
+     *
+     * @param requestTypes list of request types that should be created; multiple requests can
+     *  be created and sent, typically only one of these requests will be responded to
+     * @param dcql DCQL representation of the request, this gives the list of needed credentials
+     *   and which claims are needed from each credential
+     * @param origin protocol and authority of the server that makes the request (e.g.
+     *   `https://example.com:8000`) or an appropriate platform-specific origin for
+     *   app-to-app requests
+     * @param verifierIdentities a list of verifier identities used to sign the request; empty list
+     *  for unsigned request
+     * @param transactionData transaction data in OpenID4VP JSON format
+     *   (before Base64Url encoding), note that credentialId uses credential ids used in DCQL
+     * @param nonce nonce to use, for OpenID4VP it will be Base64Url encoded
+     * @param encryptResponse true if response must be encrypted
+     * @param deviceEngagement ISO 18013-5 device engagement data
+     * @param handover ISO 18013-5 handover data
+     * @param documentTypeRepository repository that contains all transaction types for
+     *   transaction data that are used in the request; if no transaction data is used it can
+     *   be `null`
+     * @param state optional state parameter for OpenID4VP protocol
+     * @return a pair of the DC request and the session that is needed to process the response
+     *  to that request
+     */
+    suspend fun generateVerificationSessionForDcql(
+        requestTypes: Collection<VerificationSession.RequestType>,
+        dcql: String,
+        verifierIdentities: List<VerifierIdentity> = listOf(),
+        origin: String? = null,
+        transactionData: List<String>? = null,
+        nonce: ByteString = ByteString(Crypto.secureRandom.nextBytes(18)),
+        encryptResponse: Boolean = true,
+        responseUri: String? = null,
+        documentTypeRepository: DocumentTypeRepository? = null,
+        deviceEngagement: ByteString? = null,
+        handover: DataItem? = null,
+        eReaderKey: EcPrivateKey? = null,
+        state: String? = null
+    ): VerificationSession {
+        val encryptionPrivateKey = if (encryptResponse) {
+            Crypto.createEcPrivateKey(EcCurve.P256)
+        } else {
+            null
+        }
+        val dcqlJson = Json.parseToJsonElement(dcql).jsonObject
+        val nonceStr = nonce.toByteArray().toBase64Url()
+
+        val docRequestTransactions = if (transactionData.isNullOrEmpty()) {
+            null
+        } else {
+            lazy {
+                documentTypeRepository!!.parseJsonTransactions(transactionData.map {
+                    it.encodeToByteArray().toBase64Url()
+                }).mapValues { (_, transactionData) ->
+                    TransactionsInfo(
+                        data = transactionData.associate { data ->
+                            data.type.iso18013RequestInfoIdentifier to data.serializeIso18013Request()
+                        }
+                    )
+                }
+            }
+        }
+
+        suspend fun createOpenIDRequest(
+            responseMode: OpenID4VP.ResponseMode,
+            responseUri: String? = null,
+            version: OpenID4VP.Version = OpenID4VP.Version.DRAFT_29,
+            verifierIdentities: List<VerifierIdentity>
+        ): String = OpenID4VP.generateRequest(
+            version = version,
+            dcqlQuery = dcqlJson,
+            jsonTransactionData = transactionData ?: emptyList(),
+            nonce = nonceStr,
+            state = state,
+            origin = origin
+                ?: throw IllegalArgumentException("'origin' is required for OpenID4VP"),
+            responseEncryptionKey = encryptionPrivateKey?.publicKey,
+            verifierIdentities = verifierIdentities,
+            responseMode = responseMode,
+            responseUri = responseUri
+        ).toString()
+
+        suspend fun createIso18013Request(
+            sessionTranscript: DataItem
+        ): DataItem = buildDeviceRequestFromDcql(
+            sessionTranscript = sessionTranscript,
+            dcql = dcqlJson,
+            transactions = docRequestTransactions?.value ?: emptyMap()
+        ) {
+            verifierIdentities.forEach { addReaderAuthAll(it.key) }
+        }.toDataItem()
+
+        val requests = requestTypes.map { requestType ->
+            when (requestType) {
+                VerificationSession.RequestType.DC_OPENID4VP ->
+                    VerificationSession.DcOpenID4VPRequest(
+                        requestorId = origin
+                            ?: throw IllegalArgumentException("'origin' is required for DC API"),
+                        responseEncryptionKey = encryptionPrivateKey,
+                        openID4VPRequest = createOpenIDRequest(
+                            responseMode = OpenID4VP.ResponseMode.DC_API,
+                            verifierIdentities = verifierIdentities
+                        )
+                    )
+
+                VerificationSession.RequestType.DC_OPENID4VP_DRAFT_24 ->
+                    VerificationSession.DcOpenID4VPDraft24Request(
+                        requestorId = origin
+                            ?: throw IllegalArgumentException("'origin' is required for DC API"),
+                        responseEncryptionKey = encryptionPrivateKey,
+                        openID4VPRequest = createOpenIDRequest(
+                            responseMode = OpenID4VP.ResponseMode.DC_API,
+                            version = OpenID4VP.Version.DRAFT_24,
+                            verifierIdentities = verifierIdentities
+                        )
+                    )
+
+                VerificationSession.RequestType.OPENID4VP_URI_SCHEME -> {
+                    VerificationSession.OpenID4VPUriSchemeRequest(
+                        requestorId = verifierIdentities.first().clientId
+                            ?: throw IllegalArgumentException("clientId is required for OpenID4VCI"),
+                        responseEncryptionKey = encryptionPrivateKey,
+                        openID4VPRequest = createOpenIDRequest(
+                            responseMode = OpenID4VP.ResponseMode.DIRECT_POST,
+                            responseUri = responseUri
+                                ?: throw IllegalArgumentException("responseUri must be specified"),
+                            verifierIdentities = verifierIdentities.subList(0, 1)
+                        )
+                    )
+                }
+
+                VerificationSession.RequestType.DC_ISO_18013 -> {
+                    if (encryptionPrivateKey == null) {
+                        throw IllegalArgumentException("encryptResponse must be true")
+                    }
+                    val encryptionInfo = buildCborArray {
+                        add("dcapi")
+                        addCborMap {
+                            put("nonce", nonce.toByteArray())
+                            put("recipientPublicKey", encryptionPrivateKey.publicKey.toCoseKey().toDataItem())
+                        }
+                    }
+                    VerificationSession.DcIso18013Request(
+                        origin = origin
+                            ?: throw IllegalArgumentException("'origin' is required for DC API"),
+                        responseEncryptionKey = encryptionPrivateKey,
+                        deviceRequest = createIso18013Request(
+                            sessionTranscript = dcSessionTranscript(
+                                encryptionInfo,
+                                origin
+                            )
+                        ),
+                        encryptionInfo = encryptionInfo
+                    )
+                }
+
+                VerificationSession.RequestType.ISO_18013_PROXIMITY -> {
+                    val sessionTranscript = proximitySessionTranscript(
+                        deviceEngagement = deviceEngagement!!,
+                        handover = handover!!,
+                        eReaderKey = eReaderKey!!.publicKey
+                    )
+                    VerificationSession.Iso18013ProximityRequest(
+                        deviceEngagement = deviceEngagement,
+                        handover = handover,
+                        eDeviceKey = eReaderKey,
+                        deviceRequest = createIso18013Request(
+                            sessionTranscript = sessionTranscript
+                        )
+                    )
+                }
+            }
+        }
+
+        return VerificationSession(requests)
+    }
+
+    internal fun proximitySessionTranscript(
+        deviceEngagement: ByteString,
+        eReaderKey: EcPublicKey,
+        handover: DataItem
+    ): DataItem {
+        val encodedEReaderKey = Cbor.encode(eReaderKey.toCoseKey().toDataItem())
+        return buildCborArray {
+            add(Tagged(Tagged.ENCODED_CBOR, deviceEngagement.toByteArray().toDataItem()))
+            add(Tagged(Tagged.ENCODED_CBOR, encodedEReaderKey.toDataItem()))
+            add(handover)
+        }
+    }
+
+    internal suspend fun dcSessionTranscript(
+        encryptionInfo: DataItem,
+        origin: String
+    ): DataItem {
+        val encodedEncryptionInfo = Cbor.encode(encryptionInfo)
+        val dcapiInfo = buildCborArray {
+            add(encodedEncryptionInfo.toBase64Url())
+            add(origin)
+        }
+        val dcapiInfoDigest = Crypto.digest(Algorithm.SHA256, Cbor.encode(dcapiInfo))
+        return buildCborArray {
+            add(Simple.NULL) // DeviceEngagementBytes
+            add(Simple.NULL) // EReaderKeyBytes
+            addCborArray {
+                add("dcapi")
+                add(dcapiInfoDigest)
+            }
+        }
+    }
+
+    internal suspend fun vpSessionTranscriptDraft24(
+        origin: String,
+        clientId: String,
+        nonce: String
+    ): DataItem {
+        val handoverInfo = Cbor.encode(
+            buildCborArray {
+                add(origin)
+                add(clientId)
+                add(nonce)
+            }
+        )
+        val handoverInfoDigest = Crypto.digest(Algorithm.SHA256, handoverInfo)
+        return buildCborArray {
+            add(Simple.NULL) // DeviceEngagementBytes
+            add(Simple.NULL) // EReaderKeyBytes
+            addCborArray {
+                add("OpenID4VPDCAPIHandover")
+                add(handoverInfoDigest)
+            }
+        }
+    }
+
+    internal suspend fun vpSessionTranscript(
+        encryptionPrivateKey: EcPrivateKey?,
+        requestorId: String,
+        nonce: String,
+        responseUri: String?
+    ): DataItem {
+        val jwkThumbPrint = encryptionPrivateKey?.publicKey
+            ?.toJwkThumbprint(Algorithm.SHA256)?.toByteArray()?.toDataItem()
+        val handoverInfo = Cbor.encode(
+            buildCborArray {
+                add(requestorId)
+                add(nonce)
+                add(jwkThumbPrint ?: Simple.NULL)
+                responseUri?.let { add(it) }
+            }
+        )
+        val handoverInfoDigest = Crypto.digest(Algorithm.SHA256, handoverInfo)
+        return buildCborArray {
+            add(Simple.NULL) // DeviceEngagementBytes
+            add(Simple.NULL) // EReaderKeyBytes
+            addCborArray {
+                val handoverId = if (responseUri == null) {
+                    "OpenID4VPDCAPIHandover"
+                } else {
+                    "OpenID4VPHandover"
+                }
+                add(handoverId)
+                add(handoverInfoDigest)
+            }
+        }
     }
 }

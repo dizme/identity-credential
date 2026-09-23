@@ -1,5 +1,6 @@
 package org.multipaz.secure_area_test_app.ui
 
+import kotlinx.coroutines.CancellationException
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -41,6 +42,10 @@ import androidx.compose.ui.window.Dialog
 import org.multipaz.cbor.Cbor
 import org.multipaz.crypto.Crypto
 import org.multipaz.crypto.EcCurve
+import org.multipaz.crypto.EcSignature
+import org.multipaz.crypto.MlDsaSignature
+import org.multipaz.crypto.MlKemPublicKey
+import org.multipaz.crypto.RsaSignature
 import org.multipaz.securearea.KeyAttestation
 import org.multipaz.securearea.PassphraseConstraints
 import org.multipaz.securearea.cloud.CloudCreateKeySettings
@@ -114,7 +119,8 @@ fun CloudSecureAreaScreen(
                         connectText =
                             "Connected to ${cloudSecureArea!!.serverUrl}"
                         connectColor = Color.Blue
-                    } catch (e: Throwable) {
+                    } catch (e: Exception) {
+                        if (e is CancellationException) throw e
                         e.printStackTrace()
                         cloudSecureArea = null
                         showToast("${e.message}")
@@ -160,7 +166,8 @@ fun CloudSecureAreaScreen(
                                 onViewCertificate(Cbor.encode(attestation.certChain!!.toDataItem()).toBase64Url())
                             }
                         }
-                    } catch (e: Throwable) {
+                    } catch (e: Exception) {
+                        if (e is CancellationException) throw e
                         e.printStackTrace()
                         showToast("${e.message}")
                     }
@@ -184,6 +191,21 @@ fun CloudSecureAreaScreen(
             Algorithm.ESB512,
             Algorithm.ED25519,
             Algorithm.ED448,
+            Algorithm.RS256_2048,
+            Algorithm.RS256_3072,
+            Algorithm.RS256_4096,
+            Algorithm.RS384_3072,
+            Algorithm.RS384_4096,
+            Algorithm.RS512_4096,
+            Algorithm.PS256_2048,
+            Algorithm.PS256_3072,
+            Algorithm.PS256_4096,
+            Algorithm.PS384_3072,
+            Algorithm.PS384_4096,
+            Algorithm.PS512_4096,
+            Algorithm.ML_DSA_44,
+            Algorithm.ML_DSA_65,
+            Algorithm.ML_DSA_87,
             Algorithm.ECDH_P256,
             Algorithm.ECDH_P384,
             Algorithm.ECDH_P521,
@@ -193,6 +215,9 @@ fun CloudSecureAreaScreen(
             Algorithm.ECDH_BRAINPOOLP512R1,
             Algorithm.ECDH_X25519,
             Algorithm.ECDH_X448,
+            Algorithm.ML_KEM_512,
+            Algorithm.ML_KEM_768,
+            Algorithm.ML_KEM_1024,
         )) {
             for ((passphraseRequired, passphraseDescription) in arrayOf(
                 Pair(false, ""),
@@ -207,8 +232,12 @@ fun CloudSecureAreaScreen(
                         CloudUserAuthType.BIOMETRIC
                     ), "- Auth (PIN or Biometric)")
                 )) {
-                    // For brevity, only do passphrase and auth for first item (P-256 Signature)
-                    if (!(algorithm.curve!! == EcCurve.P256 && algorithm.isSigning)) {
+                    // For brevity, only do passphrase and auth for P-256 Signature, RSA-2048, ML-DSA-44, and ML-KEM-768
+                    if (!(algorithm.curve == EcCurve.P256 && algorithm.isSigning) &&
+                        algorithm != Algorithm.RS256_2048 &&
+                        algorithm != Algorithm.ML_DSA_44 &&
+                        algorithm != Algorithm.ML_KEM_768
+                    ) {
                         if (userAuthRequired || passphraseRequired) {
                             continue
                         }
@@ -430,7 +459,8 @@ private suspend fun csaTest(
         csaTestUnguarded(
             algorithm, authRequired, authTypes, passphraseRequired, showToast
         )
-    } catch (e: Throwable) {
+    } catch (e: Exception) {
+        if (e is CancellationException) throw e
         showToast("${e.message}")
     }
 }
@@ -463,24 +493,54 @@ private suspend fun csaTestUnguarded(
             "data".encodeToByteArray()
         )
         val t1 = Clock.System.now()
+        val sigInfo = when (signature) {
+            is EcSignature -> "r=${signature.r.toHex()} s=${signature.s.toHex()}"
+            is RsaSignature -> "sig=${signature.signature.toHex()}"
+            is MlDsaSignature -> "sig=${signature.signature.toHex()}"
+        }
         Logger.d(
             TAG,
-            "Made signature with key " +
-                    "r=${signature.r.toHex()} s=${signature.s.toHex()}",
+            "Made signature with key $sigInfo"
         )
-        showToast("EC signature in (${t1 - t0})")
-    } else {
-        val otherKeyPairForEcdh = Crypto.createEcPrivateKey(algorithm.curve!!)
+        showToast("Signature in (${t1 - t0})")
+    } else if (algorithm.isKeyEncapsulation) {
+        val keyInfo = cloudSecureArea!!.getKeyInfo("testKey")
+        val kemResult = Crypto.kemEncapsulate(keyInfo.publicKey as MlKemPublicKey)
         val t0 = Clock.System.now()
-        val Zab = cloudSecureArea!!.keyAgreement(
+        val sharedSecret = cloudSecureArea!!.kemDecapsulate(
             "testKey",
-            otherKeyPairForEcdh.publicKey
+            kemResult.ciphertext
         )
         val t1 = Clock.System.now()
-        Logger.dHex(
-            TAG,
-            "Calculated ECDH",
-            Zab)
-        showToast("ECDH in (${t1 - t0})")
+        sharedSecret.use {
+            Logger.dHex(
+                TAG,
+                "Decapsulated shared secret",
+                it.encoded
+            )
+            if (kemResult.sharedSecret.encoded.contentEquals(it.encoded)) {
+                showToast("KEM in (${t1 - t0})")
+            } else {
+                showToast("KEM failed: secret mismatch")
+            }
+        }
+        kemResult.close()
+    } else {
+        Crypto.createEcPrivateKey(algorithm.curve!!).use { otherKeyPairForEcdh ->
+            val t0 = Clock.System.now()
+            val Zab = cloudSecureArea!!.keyAgreement(
+                "testKey",
+                otherKeyPairForEcdh.publicKey
+            )
+            val t1 = Clock.System.now()
+            Zab.use {
+                Logger.dHex(
+                    TAG,
+                    "Calculated ECDH",
+                    it.encoded
+                )
+            }
+            showToast("ECDH in (${t1 - t0})")
+        }
     }
 }

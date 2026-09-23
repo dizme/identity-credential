@@ -4,9 +4,9 @@ import io.ktor.client.engine.HttpClientEngineFactory
 import io.ktor.client.engine.js.Js
 import multipazproject.samples.testapp.generated.resources.Res
 import multipazproject.samples.testapp.generated.resources.app_icon
-import org.multipaz.nfc.NfcTagReader
-import org.multipaz.prompt.PromptModel
-import org.multipaz.prompt.WebPromptModel
+import org.multipaz.document.Document
+import org.multipaz.document.DocumentBadge
+import org.multipaz.presentment.PresentmentSource
 import org.multipaz.util.Platform
 
 actual object TestAppConfiguration {
@@ -14,10 +14,6 @@ actual object TestAppConfiguration {
     actual val appName = "Multipaz Test App"
 
     actual val appIcon = Res.drawable.app_icon
-
-    actual val promptModel: PromptModel by lazy {
-        WebPromptModel.Builder().apply { addCommonDialogs() }.build()
-    }
 
     actual val platform = TestAppPlatform.WASMJS
 
@@ -52,5 +48,10 @@ actual object TestAppConfiguration {
         TODO("Add support for WasmJS")
     }
 
-    actual suspend fun getExternalNfcTagReaders(): List<NfcTagReader> = emptyList()
+    actual suspend fun launchQuickAccessWallet(
+        source: PresentmentSource,
+        initiallySelectedDocumentId: String?
+    ) {
+        throw NotImplementedError("Not implemented on this platform")
+    }
 }

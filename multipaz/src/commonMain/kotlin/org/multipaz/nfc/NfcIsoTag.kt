@@ -6,6 +6,7 @@ import org.multipaz.util.putUInt16
 import kotlinx.coroutines.delay
 import kotlinx.io.bytestring.ByteString
 import kotlinx.io.bytestring.buildByteString
+import org.multipaz.util.Logger
 import kotlin.time.Duration
 
 /**
@@ -49,9 +50,10 @@ abstract class NfcIsoTag {
      * Selects an application according to ISO 7816-4 clause 11.2.2.
      *
      * @param applicationId the application to select, e.g. [Nfc.NDEF_APPLICATION_ID].
+     * @return the response APDU.
      * @throws NfcCommandFailedException if the command fails.
      */
-    suspend fun selectApplication(applicationId: ByteString) {
+    suspend fun selectApplication(applicationId: ByteString): ResponseApdu {
         // ISO 7816-4 clause 11.2.2
         val response = transceive(
             CommandApdu(
@@ -66,6 +68,7 @@ abstract class NfcIsoTag {
         if (response.status != Nfc.RESPONSE_STATUS_SUCCESS) {
             throw NfcCommandFailedException("Error selecting application, status ${response.statusHexString}", response.status)
         }
+        return response
     }
 
     /**
@@ -183,14 +186,17 @@ abstract class NfcIsoTag {
      * @param ndefMessage the message to write.
      * @param wtInt Minimum waiting time as per NFC Forum Tag NDEF Exchange Protocol section 4.1.6.
      * @param nWait Maximum number of waiting time extensions as per NFC Forum Tag NDEF Exchange Protocol section 4.1.7.
+     * @param onMessageSent Optional callback to make when the message has been sent.
      * @return the message which was read.
      */
     suspend fun ndefTransact(
         ndefMessage: NdefMessage,
         wtInt: Int,
-        nWait: Int
+        nWait: Int,
+        onMessageSent: (suspend () -> Unit)? = null
     ): NdefMessage {
         val encodedNdefMessage = ndefMessage.encode()
+        Logger.dHex(TAG, "ndefTransact: Sending NDEF message", encodedNdefMessage)
 
         // See Type 4 Tag Technical Specification Version 1.2 section 7.5.5 NDEF Write Procedure
         // for how this is done.
@@ -234,8 +240,16 @@ abstract class NfcIsoTag {
         val tWait = Duration.fromWtInt(wtInt)
         delay(tWait)
 
+        if (onMessageSent != null) {
+            onMessageSent()
+        }
+
         // Now read NDEF file...
-        return ndefReadMessage(wtInt, nWait)
+        val responseMessage = ndefReadMessage(wtInt, nWait)
+        if (Logger.isDebugEnabled) {
+            Logger.dHex(TAG, "ndefTransact: Received NDEF message", responseMessage.encode())
+        }
+        return responseMessage
     }
 
     companion object {

@@ -1,5 +1,6 @@
 package org.multipaz.testapp.ui
 
+import kotlinx.coroutines.CancellationException
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -22,31 +23,36 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.dropShadow
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.shadow.Shadow
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
-import kotlinx.io.bytestring.ByteString
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.multipaz.cbor.DataItem
 import org.multipaz.claim.organizeByNamespace
 import org.multipaz.compose.datetime.formattedDateTime
 import org.multipaz.compose.decodeImage
-import org.multipaz.crypto.AsymmetricKey
 import org.multipaz.crypto.EcPrivateKey
+import org.multipaz.crypto.EcPublicKey
+import org.multipaz.crypto.MlDsaPublicKey
+import org.multipaz.crypto.MlKemPublicKey
+import org.multipaz.crypto.RsaPublicKey
 import org.multipaz.crypto.X509CertChain
 import org.multipaz.documenttype.DocumentAttributeType
 import org.multipaz.documenttype.DocumentTypeRepository
 import org.multipaz.mdoc.zkp.ZkSystemRepository
-import org.multipaz.trustmanagement.TrustManager
+import org.multipaz.trustmanagement.TrustManagerInterface
 import org.multipaz.util.Logger
 import org.multipaz.util.fromBase64Url
 import org.multipaz.verification.JsonVerifiedPresentation
 import org.multipaz.verification.MdocVerifiedPresentation
-import org.multipaz.verification.VerificationUtil.verifyMdocDeviceResponse
-import org.multipaz.verification.VerificationUtil.verifyOpenID4VPResponse
 import org.multipaz.testapp.ShowResponseMetadata
+import org.multipaz.verification.VerificationSession
 import kotlin.time.Clock
 import kotlin.time.Duration
 import kotlin.time.DurationUnit
@@ -101,11 +107,10 @@ private data class VerificationResult(
 fun ShowResponse(
     vpToken: JsonObject?,
     deviceResponse: DataItem?,
-    sessionTranscript: DataItem,
-    nonce: ByteString?,
+    session: VerificationSession,
     eReaderKey: EcPrivateKey?,
     metadata: ShowResponseMetadata?,
-    issuerTrustManager: TrustManager,
+    issuerTrustManager: TrustManagerInterface,
     documentTypeRepository: DocumentTypeRepository?,
     zkSystemRepository: ZkSystemRepository?,
     onViewCertChain: ((certChain: X509CertChain) -> Unit)?
@@ -120,10 +125,9 @@ fun ShowResponse(
             try {
                 verficationResult.value = parseResponse(
                     now = now,
-                    vpToken = vpToken,
+                    dcResponse = vpToken,
                     deviceResponse = deviceResponse,
-                    sessionTranscript = sessionTranscript,
-                    nonce = nonce,
+                    session = session,
                     eReaderKey = eReaderKey,
                     metadata = metadata,
                     documentTypeRepository = documentTypeRepository,
@@ -131,7 +135,8 @@ fun ShowResponse(
                     issuerTrustManager = issuerTrustManager,
                     onViewCertChain = onViewCertChain
                 )
-            } catch (e: Throwable) {
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
                 Logger.e(TAG, "Error parsing response", e)
                 verificationError.value = e
             }
@@ -207,43 +212,32 @@ fun ShowResponse(
 
 private suspend fun parseResponse(
     now: Instant,
-    vpToken: JsonObject?,
+    dcResponse: JsonObject?,
     deviceResponse: DataItem?,
-    sessionTranscript: DataItem,
-    nonce: ByteString?,
+    session: VerificationSession,
     eReaderKey: EcPrivateKey?,
     metadata: ShowResponseMetadata?,
     documentTypeRepository: DocumentTypeRepository?,
     zkSystemRepository: ZkSystemRepository?,
-    issuerTrustManager: TrustManager,
+    issuerTrustManager: TrustManagerInterface,
     onViewCertChain: ((certChain: X509CertChain) -> Unit)?
 ): VerificationResult {
     val sections = mutableListOf<Section>()
     var lines: MutableList<Line>
 
-    val verifiedPresentations = if (deviceResponse != null) {
-        verifyMdocDeviceResponse(
-            now = now,
-            deviceResponse = deviceResponse,
-            sessionTranscript = sessionTranscript,
-            eReaderKey = eReaderKey?.let {
-                AsymmetricKey.anonymous(it, it.curve.defaultKeyAgreementAlgorithm)
-            },
-            documentTypeRepository = documentTypeRepository,
-            zkSystemRepository = zkSystemRepository
-        )
-    } else if (vpToken != null) {
-        verifyOpenID4VPResponse(
-            now = now,
-            vpToken = vpToken,
-            sessionTranscript = sessionTranscript,
-            nonce = nonce!!,
-            documentTypeRepository = documentTypeRepository,
-            zkSystemRepository = zkSystemRepository
-        )
+    val presentationRecord = if (deviceResponse != null) {
+        session.processIso18013ProximityResponse(deviceResponse = deviceResponse)
+    } else if (dcResponse != null) {
+        session.processDcResponse(dcResponse = dcResponse)
     } else {
-        throw IllegalStateException("Either deviceResponse or vpToken must be non-null")
+        throw IllegalStateException("Either deviceResponse or dcResponse must be non-null")
     }
+
+    val verifiedPresentations = presentationRecord.verify(
+        now,
+        documentTypeRepository = documentTypeRepository,
+        zkSystemRepository = zkSystemRepository
+    )
 
     if (metadata != null) {
         lines = mutableListOf()
@@ -251,6 +245,18 @@ private suspend fun parseResponse(
         lines.add(Line("Transfer Protocol", ValueText(metadata.transferProtocol)))
         lines.add(Line("Request size", ValueSize(metadata.requestSize)))
         lines.add(Line("Response size", ValueSize(metadata.responseSize)))
+        metadata.nfcHybridTransportStats?.let { stats ->
+            lines.add(Line("Number of messages sent",
+                ValueText("${stats.numSent} (${stats.numSentViaNfc} on NFC, ${stats.numSentViaTransport} on Transport)")
+            ))
+            lines.add(Line("Number of messages received",
+                ValueText("${stats.numReceived} (${stats.numReceivedFirstOnNfc} first on NFC, " +
+                        "${stats.numReceivedFirstOnTransport} first on Transport)")
+            ))
+            lines.add(Line("NFC disconnected during transaction",
+                ValueText("${stats.nfcDisconnectedDuringTransaction}")
+            ))
+        }
         lines.add(Line("Tap to engagement received", ValueDuration(
             metadata.durationMsecNfcTapToEngagement?.toDuration(DurationUnit.MILLISECONDS)
         )))
@@ -279,12 +285,18 @@ private suspend fun parseResponse(
             is MdocVerifiedPresentation -> {
                 lines.add(Line("Credential format", ValueText("ISO mdoc")))
                 lines.add(Line("DocType", ValueText(vp.docType)))
-                lines.add(Line("Issuer DS curve", ValueText(vp.documentSignerCertChain.certificates.first().ecPublicKey.curve.name)))
+                val mdocDsKeyDesc = when (val pk = vp.documentSignerCertChain.certificates.first().publicKey) {
+                    is EcPublicKey -> pk.curve.name
+                    is RsaPublicKey -> "RSA (${pk.modulus.size * 8} bits)"
+                    is MlDsaPublicKey -> pk.algorithm.name
+                    is MlKemPublicKey -> pk.algorithm.name
+                }
+                lines.add(Line("Issuer DS key", ValueText(mdocDsKeyDesc)))
                 val trustResult =
                     issuerTrustManager.verify(vp.documentSignerCertChain.certificates, now)
                 if (trustResult.isTrusted) {
                     val tpName =
-                        trustResult.trustPoints.first().metadata?.displayName?.let { " ($it)" } ?: ""
+                        trustResult.trustPoints.first().metadata.displayName?.let { " ($it)" } ?: ""
                     lines.add(Line("Issuer Trusted", ValueText("Yes$tpName")))
                 } else {
                     lines.add(Line("Issuer Trusted", ValueText("No")))
@@ -325,12 +337,18 @@ private suspend fun parseResponse(
             is JsonVerifiedPresentation -> {
                 lines.add(Line("Credential format", ValueText("IETF SD-JWT VC")))
                 lines.add(Line("Verifiable Credential Type", ValueText(vp.vct)))
-                lines.add(Line("Issuer DS curve", ValueText(vp.documentSignerCertChain.certificates.first().ecPublicKey.curve.name)))
+                val sdJwtDsKeyDesc = when (val pk = vp.documentSignerCertChain.certificates.first().publicKey) {
+                    is EcPublicKey -> pk.curve.name
+                    is RsaPublicKey -> "RSA (${pk.modulus.size * 8} bits)"
+                    is MlDsaPublicKey -> pk.algorithm.name
+                    is MlKemPublicKey -> pk.algorithm.name
+                }
+                lines.add(Line("Issuer DS key", ValueText(sdJwtDsKeyDesc)))
                 val trustResult =
                     issuerTrustManager.verify(vp.documentSignerCertChain.certificates, now)
                 if (trustResult.isTrusted) {
                     val tpName =
-                        trustResult.trustPoints.first().metadata?.displayName?.let { " ($it)" } ?: ""
+                        trustResult.trustPoints.first().metadata.displayName?.let { " ($it)" } ?: ""
                     lines.add(Line("Issuer Trusted", ValueText("Yes$tpName")))
                 } else {
                     lines.add(Line("Issuer Trusted", ValueText("No")))
@@ -385,7 +403,7 @@ private fun EntryList(
 ) {
     if (title != null) {
         Text(
-            modifier = modifier.padding(top = 16.dp, bottom = 8.dp),
+            modifier = modifier.padding(start = 15.dp, top = 15.dp, end = 15.dp, bottom = 0.dp),
             text = title,
             style = MaterialTheme.typography.bodyMedium,
             fontWeight = FontWeight.Bold,
@@ -393,29 +411,43 @@ private fun EntryList(
         )
     }
 
-    for (n in entries.indices) {
-        val section = entries[n]
-        val isFirst = (n == 0)
-        val isLast = (n == entries.size - 1)
-        val rounded = 16.dp
-        val firstRounded = if (isFirst) rounded else 0.dp
-        val endRound = if (isLast) rounded else 0.dp
-        Column(
-            modifier = modifier
-                .fillMaxWidth()
-                .clip(shape = RoundedCornerShape(firstRounded, firstRounded, endRound, endRound))
-                .background(MaterialTheme.colorScheme.surfaceContainerLowest)
-                .padding(8.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            CompositionLocalProvider(
-                LocalContentColor provides MaterialTheme.colorScheme.onSurface
+    Column(
+        modifier = Modifier
+            .padding(15.dp)
+            .dropShadow(
+                shape = RoundedCornerShape(16.dp),
+                shadow = Shadow(
+                    radius = 10.dp,
+                    spread = 5.dp,
+                    color = Color.Black.copy(alpha = 0.05f),
+                    offset = DpOffset(x = 0.dp, 2.dp)
+                )
+            ),
+    ) {
+        for (n in entries.indices) {
+            val section = entries[n]
+            val isFirst = (n == 0)
+            val isLast = (n == entries.size - 1)
+            val rounded = 16.dp
+            val firstRounded = if (isFirst) rounded else 0.dp
+            val endRound = if (isLast) rounded else 0.dp
+            Column(
+                modifier = modifier
+                    .fillMaxWidth()
+                    .clip(shape = RoundedCornerShape(firstRounded, firstRounded, endRound, endRound))
+                    .background(MaterialTheme.colorScheme.surfaceContainerLowest)
+                    .padding(8.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                section()
+                CompositionLocalProvider(
+                    LocalContentColor provides MaterialTheme.colorScheme.onSurface
+                ) {
+                    section()
+                }
             }
-        }
-        if (!isLast) {
-            Spacer(modifier = Modifier.height(2.dp))
+            if (!isLast) {
+                Spacer(modifier = Modifier.height(1.dp))
+            }
         }
     }
 }

@@ -1,5 +1,7 @@
 package org.multipaz.compose.document
 
+import androidx.compose.ui.graphics.ImageBitmap
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -8,59 +10,103 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.launch
+import kotlinx.io.bytestring.ByteString
+import org.multipaz.cbor.Cbor
+import org.multipaz.cbor.DataItem
+import org.multipaz.cbor.buildCborMap
+import org.multipaz.cbor.putCborMap
 import org.multipaz.compose.branding.Branding
+import org.multipaz.compose.cards.CardBadge
 import org.multipaz.compose.decodeImage
 import org.multipaz.credential.Credential
 import org.multipaz.credential.SecureAreaBoundCredential
+import org.multipaz.crypto.Algorithm
+import org.multipaz.crypto.Crypto
 import org.multipaz.document.Document
+import org.multipaz.document.DocumentAdded
+import org.multipaz.document.DocumentBadge
 import org.multipaz.document.DocumentDeleted
 import org.multipaz.document.DocumentEvent
 import org.multipaz.document.DocumentStore
+import org.multipaz.document.DocumentUpdated
 import org.multipaz.documenttype.DocumentTypeRepository
+import org.multipaz.storage.StorageTable
 import org.multipaz.util.Logger
+import org.multipaz.util.LruCache
+
+private const val TAG = "DocumentModel"
+
+private data class DocumentModelStorageData(
+    var sortingOrder: Map<String, Int> = emptyMap()
+) {
+    fun toDataItem(): DataItem {
+        return buildCborMap {
+            putCborMap("documentOrder") {
+                for((key, value) in sortingOrder) {
+                    put(key, value)
+                }
+            }
+        }
+    }
+
+    companion object {
+        fun fromDataItem(dataItem: DataItem): DocumentModelStorageData {
+            var sortingOrder = emptyMap<String, Int>()
+            try {
+                if (dataItem.hasKey("documentOrder")) {
+                    sortingOrder = dataItem["documentOrder"].asMap.map { (key, value) ->
+                        key.asTstr to value.asNumber.toInt()
+                    }.toMap()
+                }
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                Logger.e(TAG, "Error decoding sortingOrder", e)
+            }
+            return DocumentModelStorageData(sortingOrder)
+        }
+    }
+}
 
 /**
  * Model that loads documents from a [DocumentStore] and keeps them updated.
  *
- * It exposes a [StateFlow] of all documents as [DocumentInfo]
- * and listens to live updates from the store. If a [Document] has no cardArt the model
- * creates a default stock cardArt.
+ * This model exposes a [StateFlow] of all documents as [DocumentInfo]
+ * and listens to live updates from the store. If a [Document] has no card art the model
+ * creates a default card art using [Branding.renderFallbackCardArt]. The model also
+ * maintains a persistent order of documents and applications can call e.g.
+ * [setDocumentPosition] to change the order.
  *
- * @param scope launches coroutines
- * @param documentStore the [DocumentStore] which manages [Document] and [Credential] instances.
- * @param documentTypeRepository a [DocumentTypeRepository] with information about document types or `null`.
+ * Use [DocumentModel.create] to create an instance.
  */
-class DocumentModel(
-    val scope: CoroutineScope = CoroutineScope(Dispatchers.Default),
-    val documentStore: DocumentStore,
-    val documentTypeRepository: DocumentTypeRepository?,
+class DocumentModel private constructor(
+    private val documentStore: DocumentStore,
+    private val documentTypeRepository: DocumentTypeRepository?,
+    private val documentOrderKey: String = "org.multipaz.DocumentModel.orderingKey",
+    private val badgeFunction: suspend (document: Document) -> List<DocumentBadge>,
 ) {
-    private val _documentInfos = MutableStateFlow<Map<String, DocumentInfo>>(emptyMap())
+    private val scope: CoroutineScope = CoroutineScope(Dispatchers.Default)
+    private val _documentInfos = MutableStateFlow<List<DocumentInfo>>(emptyList())
+    private lateinit var table: StorageTable
+    private lateinit var storageData: DocumentModelStorageData
 
     /**
-     * A map from [Document] identifier to [DocumentInfo].
+     * A list of [DocumentInfo] for the documents in [documentStore].
      */
-    val documentInfos: StateFlow<Map<String, DocumentInfo>> = _documentInfos.asStateFlow()
+    val documentInfos: StateFlow<List<DocumentInfo>> = _documentInfos.asStateFlow()
 
-    init {
-        scope.launch {
-            val docIds = documentStore.listDocumentIds()
-            docIds.forEach { documentId ->
-                updateDocumentInfo(documentId)
-            }
+    private suspend fun initialize() {
+        storageData = documentStore.getTags().get<ByteString>(documentOrderKey)?.let {
+            DocumentModelStorageData.fromDataItem(Cbor.decode(it.toByteArray()))
+        } ?: DocumentModelStorageData()
 
-            documentStore.eventFlow
-                .onEach { event ->
-                    Logger.i(
-                        TAG,
-                        "DocumentStore event ${event::class.simpleName} ${event.documentId}"
-                    )
-                    updateDocumentInfo(event = event)
-
-                }
-                .launchIn(scope)
+        val docIds = documentStore.listDocumentIds()
+        docIds.forEach { documentId ->
+            updateDocumentInfo(documentId, DocumentAdded(documentId))
         }
+
+        documentStore.eventFlow
+            .onEach { event -> updateDocumentInfo(event = event) }
+            .launchIn(scope)
     }
 
     private suspend fun updateDocumentInfo(
@@ -68,42 +114,189 @@ class DocumentModel(
         event: DocumentEvent? = null,
     ) {
         val id = event?.documentId ?: documentId ?: return
-        if (event is DocumentDeleted) {
-            _documentInfos.update { current ->
-                current
-                    .toMutableMap()
-                    .apply { remove(id) }
-                    .sortedMap()
-            }
-        } else {
-            documentStore.lookupDocument(id)?.let { document ->
-                _documentInfos.update { current ->
-                    current
-                        .toMutableMap()
-                        .apply { this[id] = document.toDocumentInfo() }
-                        .sortedMap()
+        when (event) {
+            is DocumentAdded -> {
+                documentStore.lookupDocument(id)?.let { document ->
+                    _documentInfos.update { current ->
+                        current
+                            .toMutableList()
+                            .apply {
+                                add(document.toDocumentInfo())
+                            }.sorted()
+                    }
                 }
             }
+            is DocumentDeleted -> {
+                _documentInfos.update { current ->
+                    current
+                        .toMutableList()
+                        .apply {
+                            find { documentInfo -> documentInfo.document.identifier == id }?.let {
+                                remove(it)
+                            }
+                        }.sorted()
+                }
+            }
+            is DocumentUpdated -> {
+                documentStore.lookupDocument(id)?.let { document ->
+                    _documentInfos.update { current ->
+                        current
+                            .toMutableList()
+                            .apply {
+                                val existingDocumentInfo =
+                                    find { documentInfo -> documentInfo.document.identifier == id }
+                                if (existingDocumentInfo == null) {
+                                    Logger.w(TAG, "Didn't find DocumentInfo for document with id $id")
+                                } else {
+                                    try {
+                                        val newDocumentInfo = document.toDocumentInfo()
+                                        if (newDocumentInfo != existingDocumentInfo) {
+                                            remove(existingDocumentInfo)
+                                            add(newDocumentInfo)
+                                        } else {
+                                            Logger.w(TAG, "DocumentInfo for document with id $id didn't change")
+                                        }
+                                    } catch (e: Exception) {
+                                        if (e is CancellationException) throw e
+                                        Logger.w(TAG, "Error generating DocumentInfo", e)
+                                    }
+                                }
+                            }.sorted()
+                    }
+                }
+            }
+            null -> {}
         }
     }
 
+    /**
+     * The list of document IDs in their current display order.
+     */
+    val documentOrder: List<String>
+        get() = _documentInfos.value.map { it.document.identifier }
+
+    private fun List<DocumentInfo>.sorted(): List<DocumentInfo> {
+        return this.sortedWith { a, b ->
+            val sa = storageData.sortingOrder[a.document.identifier]
+            val sb = storageData.sortingOrder[b.document.identifier]
+            if (sa != null && sb != null) {
+                if (sa != sb) {
+                    return@sortedWith sa.compareTo(sb)
+                }
+            } else if (sa != null) {
+                return@sortedWith -1
+            } else if (sb != null) {
+                return@sortedWith 1
+            }
+            return@sortedWith a.document.created.compareTo(b.document.created)
+        }
+    }
+
+    /**
+     * Sets the ordering of documents in the model.
+     *
+     * Any documents in the store that are not included in [documentOrder] will be placed
+     * after the specified documents, maintaining their relative order.
+     *
+     * @param documentOrder the list of document IDs in the desired order.
+     */
+    suspend fun setDocumentOrder(documentOrder: List<String>) {
+        val newOrder = mutableListOf<String>()
+        val seen = mutableSetOf<String>()
+        for (id in documentOrder) {
+            if (seen.add(id)) {
+                newOrder.add(id)
+            }
+        }
+        for (docInfo in _documentInfos.value) {
+            if (seen.add(docInfo.document.identifier)) {
+                newOrder.add(docInfo.document.identifier)
+            }
+        }
+        val sortingOrder = newOrder.mapIndexed { index, id -> id to index }.toMap()
+        storageData.sortingOrder = sortingOrder
+        documentStore.getTags().edit {
+            set(documentOrderKey, ByteString(Cbor.encode(storageData.toDataItem())))
+        }
+        _documentInfos.value = _documentInfos.value.sorted()
+    }
+
+    /**
+     * Sets the position of a document.
+     *
+     * @param documentInfo the [DocumentInfo] to set the position for.
+     * @param position the new position, zero-based.
+     * @throws IllegalArgumentException if [documentInfo] doesn't exist in the model or if [position]
+     *   exceeds the number of documents in the store.
+     */
+    suspend fun setDocumentPosition(
+        documentInfo: DocumentInfo,
+        position: Int
+    ) {
+        val currentOrder = documentOrder.toMutableList()
+        val id = documentInfo.document.identifier
+        if (!currentOrder.remove(id)) {
+            throw IllegalArgumentException("Passed in documentInfo is not in list")
+        }
+        if (position < 0 || position > currentOrder.size) {
+            throw IllegalArgumentException("Position $position is out of range 0..${currentOrder.size}")
+        }
+        currentOrder.add(position, id)
+        setDocumentOrder(currentOrder)
+    }
+
+    // Use a simple LRU cache to avoid decoding the same cardArt over and over again
+    private val cardArtCache = LruCache<ByteString, ImageBitmap>(5)
+
     private suspend fun Document.toDocumentInfo(): DocumentInfo {
-        cardArt?.let {
+        cardArt?.let { it ->
+            val image = it.toByteArray()
+            val imageSha256 = ByteString(Crypto.digest(Algorithm.SHA256, image))
+            var cardArt = cardArtCache.get(imageSha256)
+            if (cardArt == null) {
+                cardArt = decodeImage(image)
+                cardArtCache.put(imageSha256, cardArt)
+            }
             return DocumentInfo(
                 document = this,
-                cardArt = decodeImage(it.toByteArray()),
+                cardArt = cardArt,
+                badges = badgeFunction(this).map { docBadge -> CardBadge.fromDocumentBadge(docBadge) },
                 credentialInfos = buildCredentialInfos(documentTypeRepository)
             )
         }
         return DocumentInfo(
             document = this,
             cardArt = Branding.Current.value.renderFallbackCardArt(this),
+            badges = badgeFunction(this).map { docBadge -> CardBadge.fromDocumentBadge(docBadge) },
             credentialInfos = buildCredentialInfos(documentTypeRepository)
         )
     }
 
     companion object {
-        private const val TAG = "DocumentModel"
+        /**
+         * Creates a [DocumentModel] instance.
+         *
+         * @param documentStore the [DocumentStore] which manages [Document] and [Credential] instances.
+         * @param documentTypeRepository a [DocumentTypeRepository] with information about document types or `null`.
+         * @param documentOrderKey the name of the key to use for storing the document order in the [Tags] object
+         *   associated with  [documentStore].
+         * @param badgeFunction a function that takes a [Document] and returns a list of badges to show.
+         */
+        suspend fun create(
+            documentStore: DocumentStore,
+            documentTypeRepository: DocumentTypeRepository?,
+            documentOrderKey: String = "org.multipaz.DocumentModel.orderingKey",
+            badgeFunction: suspend (document: Document) -> List<DocumentBadge> = { emptyList() }
+        ): DocumentModel {
+            val documentModel = DocumentModel(
+                documentStore = documentStore,
+                documentTypeRepository = documentTypeRepository,
+                documentOrderKey = documentOrderKey,
+                badgeFunction = badgeFunction
+            )
+            documentModel.initialize()
+            return documentModel
+        }
 
         private suspend fun Document.buildCredentialInfos(
             documentTypeRepository: DocumentTypeRepository?
@@ -120,7 +313,13 @@ class DocumentModel(
                     false
                 }
                 val claims = if (credential.isCertified) {
-                    credential.getClaims(documentTypeRepository)
+                    try {
+                        credential.getClaims(documentTypeRepository)
+                    } catch (err: IllegalStateException) {
+                        Logger.e(TAG,
+                            "Error reading claims: '${identifier}.${credential.identifier}'", err)
+                        emptyList()
+                    }
                 } else {
                     emptyList()
                 }
@@ -132,12 +331,6 @@ class DocumentModel(
                 )
             }
         }
-
-        private fun Map<String, DocumentInfo>.sortedMap(): Map<String, DocumentInfo> =
-            this.entries
-                .sortedWith { a, b ->
-                    Document.Comparator.compare(a.value.document, b.value.document)
-                }
-                .associate { it.toPair() }
     }
 }
+

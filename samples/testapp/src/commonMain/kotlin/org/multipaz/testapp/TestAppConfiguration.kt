@@ -1,10 +1,11 @@
 package org.multipaz.testapp
 
 import io.ktor.client.engine.HttpClientEngineFactory
-import org.multipaz.storage.Storage
 import org.jetbrains.compose.resources.DrawableResource
-import org.multipaz.nfc.NfcTagReader
-import org.multipaz.prompt.PromptModel
+import org.multipaz.document.Document
+import org.multipaz.document.DocumentBadge
+import org.multipaz.presentment.PresentmentSource
+import org.multipaz.storage.Storage
 
 enum class TestAppPlatform(val displayName: String) {
     ANDROID("Android"),
@@ -17,8 +18,6 @@ expect object TestAppConfiguration {
     val appName: String
 
     val appIcon: DrawableResource
-
-    val promptModel: PromptModel
 
     val platform: TestAppPlatform
 
@@ -40,5 +39,8 @@ expect object TestAppConfiguration {
 
     suspend fun getAppToAppOrigin(): String
 
-    suspend fun getExternalNfcTagReaders(): List<NfcTagReader>
+    suspend fun launchQuickAccessWallet(
+        source: PresentmentSource,
+        initiallySelectedDocumentId: String?
+    )
 }

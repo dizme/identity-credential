@@ -19,6 +19,8 @@ plugins {
 val projectVersionCode: Int by rootProject.extra
 val projectVersionName: String by rootProject.extra
 
+val disableWebTargets = project.properties["disable.web.targets"]?.toString()?.toBoolean() ?: false
+
 // If changing it here, it must also be changed in XCode "Signing and Capabilities", under
 // "Associated Domains"
 val applinkHost = "apps.multipaz.org"
@@ -45,10 +47,12 @@ kotlin {
         }
     }
 
-    wasmJs {
-        browser {
+    if (!disableWebTargets) {
+        wasmJs {
+            browser {
+            }
+            binaries.executable()
         }
-        binaries.executable()
     }
 
     listOf(
@@ -57,11 +61,25 @@ kotlin {
         iosSimulatorArm64()
     ).forEach { iosTarget ->
         iosTarget.binaries.framework {
+            freeCompilerArgs += listOf(
+                // This is how we specify the minimum iOS version as 26.0
+                "-Xoverride-konan-properties=" +
+                        "osVersionMin.ios_arm64=26.0;" +
+                        "osVersionMin.ios_simulator_arm64=26.0;" +
+                        "osVersionMin.ios_x64=26.0",
+                // Uncomment the following to get Garbage Collection logging when using the framework:
+                //
+                // "-Xruntime-logs=gc=info"
+            )
+            linkerOpts("-lsqlite3")
             baseName = "Multipaz"
             isStatic = true
             export(project(":multipaz"))
             export(project(":multipaz-doctypes"))
+            export(project(":multipaz-utopia"))
             export(project(":multipaz-longfellow"))
+            export(project(":multipaz-dcapi"))
+            export(project(":multipaz-swiftui"))
             export(libs.ktor.client.darwin)
             export(libs.kotlinx.io.bytestring)
             export(libs.kotlinx.datetime)
@@ -82,7 +100,10 @@ kotlin {
 
                 api(project(":multipaz"))
                 api(project(":multipaz-doctypes"))
+                api(project(":multipaz-utopia"))
                 api(project(":multipaz-longfellow"))
+                api(project(":multipaz-dcapi"))
+                api(project(":multipaz-swiftui"))
                 api(libs.ktor.client.darwin)
                 api(libs.kotlinx.io.bytestring)
                 api(libs.kotlinx.datetime)
@@ -116,9 +137,11 @@ kotlin {
             }
         }
 
-        val wasmJsMain by getting {
-            dependencies {
-                implementation(libs.ktor.client.js)
+        if (!disableWebTargets) {
+            val wasmJsMain by getting {
+                dependencies {
+                    implementation(libs.ktor.client.js)
+                }
             }
         }
 
@@ -132,6 +155,7 @@ kotlin {
                 implementation(compose.components.resources)
                 implementation(compose.components.uiToolingPreview)
                 implementation(compose.materialIconsExtended)
+                implementation(libs.jetbrains.navigationevent.compose)
                 implementation(libs.jetbrains.navigation.compose)
                 implementation(libs.jetbrains.navigation.runtime)
                 implementation(libs.jetbrains.lifecycle.viewmodel.compose)
@@ -143,7 +167,9 @@ kotlin {
                 implementation(project(":multipaz-compose"))
                 implementation(project(":multipaz-dcapi"))
                 implementation(project(":multipaz-doctypes"))
+                implementation(project(":multipaz-utopia"))
                 implementation(project(":multipaz-longfellow"))
+                implementation(project(":multipaz-swiftui"))
                 implementation(libs.kotlinx.datetime)
                 implementation(libs.kotlinx.io.core)
                 implementation(libs.ktor.client.core)
@@ -153,6 +179,8 @@ kotlin {
                 implementation(libs.ktor.serialization.kotlinx.json)
                 implementation(libs.coil.compose)
                 implementation(libs.coil.ktor3)
+                implementation(libs.haze)
+                implementation(libs.haze.materials)
             }
         }
     }
@@ -168,7 +196,7 @@ android {
     defaultConfig {
         applicationId = "org.multipaz.testapp"
         manifestPlaceholders["applinkHost"] = applinkHost
-        minSdk = libs.versions.android.minSdk.get().toInt()
+        minSdk = 29
         targetSdk = libs.versions.android.targetSdk.get().toInt()
         versionCode = projectVersionCode
         versionName = projectVersionName
@@ -228,8 +256,6 @@ tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().all {
 tasks["compileKotlinIosX64"].dependsOn("kspCommonMainKotlinMetadata")
 tasks["compileKotlinIosArm64"].dependsOn("kspCommonMainKotlinMetadata")
 tasks["compileKotlinIosSimulatorArm64"].dependsOn("kspCommonMainKotlinMetadata")
-tasks["compileKotlinWasmJs"].dependsOn("kspCommonMainKotlinMetadata")
-
-subprojects {
-	apply(plugin = "org.jetbrains.dokka")
+if (!disableWebTargets) {
+    tasks["compileKotlinWasmJs"].dependsOn("kspCommonMainKotlinMetadata")
 }

@@ -1,5 +1,6 @@
 package org.multipaz.mdoc.transport
 
+import kotlinx.coroutines.CancellationException
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothGattCallback
@@ -16,6 +17,7 @@ import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.os.Build
 import android.os.ParcelUuid
+import android.widget.Toast
 import androidx.annotation.RequiresApi
 import org.multipaz.cbor.Bstr
 import org.multipaz.cbor.Cbor
@@ -37,17 +39,21 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.io.bytestring.ByteStringBuilder
 import kotlinx.io.bytestring.buildByteString
 import org.multipaz.crypto.Hkdf
+import org.multipaz.crypto.SecretKey
 import org.multipaz.util.appendByteArray
 import org.multipaz.util.appendUInt32
 import org.multipaz.util.getUInt32
 import java.io.InputStream
+import kotlin.compareTo
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.math.min
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
@@ -115,6 +121,11 @@ internal class BleCentralManagerAndroid : BleCentralManager {
             state,
             continuation,
         )
+        continuation.invokeOnCancellation {
+            if (waitFor?.continuation === continuation) {
+                waitFor = null
+            }
+        }
     }
 
     private fun clearWaitCondition() {
@@ -154,13 +165,15 @@ internal class BleCentralManagerAndroid : BleCentralManager {
             Logger.i(TAG, "Closing deferred L2CAP socket (via init)")
             try {
                 deferredCloseSocket?.close()
-            } catch (e: Throwable) {
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
                 Logger.e(TAG, "Error closing L2CAP socket (via init)", e)
             }
             deferredCloseSocket = null
             try {
                 deferredCloseJob?.cancel()
-            } catch (e: Throwable) {
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
                 Logger.e(TAG, "Error canceling deferred closing job (via init)", e)
             }
             deferredCloseJob = null
@@ -169,7 +182,12 @@ internal class BleCentralManagerAndroid : BleCentralManager {
 
     private class ConnectionFailedException(
         message: String
-    ) : Throwable(message)
+    ) : Exception(message)
+
+    private class ServiceDiscoveryFailedException(
+        message: String,
+        cause: Throwable? = null,
+    ) : Exception(message, cause)
 
     private val scanCallback: ScanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
@@ -181,8 +199,9 @@ internal class BleCentralManagerAndroid : BleCentralManager {
                 } else {
                     Logger.w(TAG, "onScanResult but not waiting")
                 }
-            } catch (error: Throwable) {
-                onError(Error("onScanResult failed", error))
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                onError(IllegalStateException("onScanResult failed", error))
             }
         }
 
@@ -190,12 +209,13 @@ internal class BleCentralManagerAndroid : BleCentralManager {
             Logger.d(TAG, "onScanFailed: errorCode=$errorCode")
             try {
                 if (waitFor?.state == WaitState.PERIPHERAL_DISCOVERED) {
-                    resumeWaitWithException(Error("BLE scan failed with error code $errorCode"))
+                    resumeWaitWithException(IllegalStateException("BLE scan failed with error code $errorCode"))
                 } else {
                     Logger.w(TAG, "onScanFailed but not waiting")
                 }
-            } catch (error: Throwable) {
-                onError(Error("onScanFailed failed", error))
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                onError(IllegalStateException("onScanFailed failed", error))
             }
         }
     }
@@ -219,7 +239,7 @@ internal class BleCentralManagerAndroid : BleCentralManager {
                             // See connectToPeripheral() for retries based on this exception
                             resumeWaitWithException(ConnectionFailedException("Failed to connect to peripheral"))
                         } else {
-                            throw Error("Peripheral unexpectedly disconnected")
+                            throw IllegalStateException("Peripheral unexpectedly disconnected")
                         }
                     }
 
@@ -227,8 +247,9 @@ internal class BleCentralManagerAndroid : BleCentralManager {
                         Logger.w(TAG, "onConnectionStateChange(): Unexpected newState $newState")
                     }
                 }
-            } catch (error: Throwable) {
-                onError(Error("onConnectionStateChange failed", error))
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                onError(IllegalStateException("onConnectionStateChange failed", error))
             }
         }
 
@@ -237,10 +258,10 @@ internal class BleCentralManagerAndroid : BleCentralManager {
             try {
                 if (waitFor?.state == WaitState.REQUEST_MTU) {
                     if (status != BluetoothGatt.GATT_SUCCESS) {
-                        resumeWaitWithException(Error("Expected GATT_SUCCESS but got $status"))
+                        resumeWaitWithException(IllegalStateException("Expected GATT_SUCCESS but got $status"))
                     } else {
                         if (mtu < 22) {
-                            resumeWaitWithException(Error("Unexpected MTU size $mtu"))
+                            resumeWaitWithException(IllegalStateException("Unexpected MTU size $mtu"))
                         } else {
                             maxCharacteristicSize = min(mtu - 3, 512)
                             Logger.i(
@@ -253,8 +274,9 @@ internal class BleCentralManagerAndroid : BleCentralManager {
                 } else {
                     Logger.w(TAG, "onMtuChanged but not waiting")
                 }
-            } catch (error: Throwable) {
-                onError(Error("onMtuChanged failed", error))
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                onError(IllegalStateException("onMtuChanged failed", error))
             }
         }
 
@@ -263,15 +285,18 @@ internal class BleCentralManagerAndroid : BleCentralManager {
             try {
                 if (waitFor?.state == WaitState.PERIPHERAL_DISCOVER_SERVICES) {
                     if (status != BluetoothGatt.GATT_SUCCESS) {
-                        resumeWaitWithException(Error("Expected GATT_SUCCESS but got $status"))
+                        resumeWaitWithException(
+                            ServiceDiscoveryFailedException("Expected GATT_SUCCESS but got $status")
+                        )
                     } else {
                         resumeWait()
                     }
                 } else {
                     Logger.w(TAG, "onServicesDiscovered but not waiting")
                 }
-            } catch (error: Throwable) {
-                onError(Error("onServicesDiscovered failed", error))
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                onError(IllegalStateException("onServicesDiscovered failed", error))
             }
         }
 
@@ -290,12 +315,12 @@ internal class BleCentralManagerAndroid : BleCentralManager {
                     if (waitFor?.state == WaitState.GET_L2CAP_PSM) {
                         if (status != BluetoothGatt.GATT_SUCCESS) {
                             resumeWaitWithException(
-                                Error("onCharacteristicRead: Expected GATT_SUCCESS but got $status")
+                                IllegalStateException("onCharacteristicRead: Expected GATT_SUCCESS but got $status")
                             )
                         } else {
                             if (value.size != 4) {
                                 resumeWaitWithException(
-                                    Error("onCharacteristicRead: Expected four bytes for PSM, got ${value.size}")
+                                    IllegalStateException("onCharacteristicRead: Expected four bytes for PSM, got ${value.size}")
                                 )
                             }
                             _l2capPsm = value.getUInt32(0).toInt()
@@ -310,14 +335,14 @@ internal class BleCentralManagerAndroid : BleCentralManager {
                     if (waitFor?.state == WaitState.GET_READER_IDENT) {
                         if (status != BluetoothGatt.GATT_SUCCESS) {
                             resumeWaitWithException(
-                                Error("onCharacteristicRead: Expected GATT_SUCCESS but got $status")
+                                IllegalStateException("onCharacteristicRead: Expected GATT_SUCCESS but got $status")
                             )
                         }
                         if (expectedIdentValue contentEquals value) {
                             resumeWait()
                         } else {
                             resumeWaitWithException(
-                                Error(
+                                IllegalStateException(
                                     "onCharacteristicRead: Expected ${expectedIdentValue!!.toHex()} " +
                                             "for ident, got ${value.toHex()} instead"
                                 )
@@ -327,8 +352,9 @@ internal class BleCentralManagerAndroid : BleCentralManager {
                         Logger.w(TAG, "onCharacteristicRead for ident but not waiting")
                     }
                 }
-            } catch (error: Throwable) {
-                onError(Error("onCharacteristicRead failed", error))
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                onError(IllegalStateException("onCharacteristicRead failed", error))
             }
         }
 
@@ -351,7 +377,7 @@ internal class BleCentralManagerAndroid : BleCentralManager {
             Logger.d(TAG, "onCharacteristicWrite: characteristic=${characteristic?.uuid ?: ""} status=$status")
             if (waitFor?.state == WaitState.CHARACTERISTIC_WRITE_COMPLETED) {
                 if (status != BluetoothGatt.GATT_SUCCESS) {
-                    resumeWaitWithException(Error("onCharacteristicWrite: Expected GATT_SUCCESS but got $status"))
+                    resumeWaitWithException(IllegalStateException("onCharacteristicWrite: Expected GATT_SUCCESS but got $status"))
                 } else {
                     resumeWait()
                 }
@@ -368,7 +394,7 @@ internal class BleCentralManagerAndroid : BleCentralManager {
             Logger.d(TAG, "onDescriptorWrite: descriptor=${descriptor?.uuid ?: ""} status=$status")
             if (waitFor?.state == WaitState.WRITE_TO_DESCRIPTOR) {
                 if (status != BluetoothGatt.GATT_SUCCESS) {
-                    resumeWaitWithException(Error("Expected GATT_SUCCESS but got $status"))
+                    resumeWaitWithException(IllegalStateException("Expected GATT_SUCCESS but got $status"))
                 } else {
                     resumeWait()
                 }
@@ -397,8 +423,9 @@ internal class BleCentralManagerAndroid : BleCentralManager {
                         Logger.w(TAG, "Ignoring unexpected write to state characteristic")
                     }
                 }
-            } catch (error: Throwable) {
-                onError(Error("onCharacteristicChanged failed", error))
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                onError(IllegalStateException("onCharacteristicChanged failed", error))
             }
         }
 
@@ -419,7 +446,7 @@ internal class BleCentralManagerAndroid : BleCentralManager {
 
     private fun handleIncomingData(chunk: ByteArray) {
         if (chunk.size < 1) {
-            throw Error("Invalid data length ${chunk.size} for Server2Client characteristic")
+            throw IllegalStateException("Invalid data length ${chunk.size} for Server2Client characteristic")
         }
         incomingMessage.append(chunk, 1, chunk.size)
         when {
@@ -444,7 +471,7 @@ internal class BleCentralManagerAndroid : BleCentralManager {
             }
 
             else -> {
-                throw Error(
+                throw IllegalStateException(
                     "Invalid first byte ${chunk[0]} in Server2Client data chunk, " +
                             "expected 0 or 1"
                 )
@@ -497,6 +524,18 @@ internal class BleCentralManagerAndroid : BleCentralManager {
             //
             Logger.i(TAG, "Failed to find peripheral after $retryCount attempt(s) of 10 secs. Restarting scan.")
         }
+        // Defensively cancel Classic Discovery.
+        if (bluetoothManager.adapter.isDiscovering) {
+            try {
+                Logger.i(TAG, "Calling cancelDiscovery()")
+                bluetoothManager.adapter.cancelDiscovery()
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                Logger.w(TAG, "Ignoring error when calling cancelDiscovery", e)
+            }
+        }
+        // Give the radio time to actually transition out of the scanning state.
+        delay(150.milliseconds)
     }
 
     override suspend fun connectToPeripheral() {
@@ -537,13 +576,46 @@ internal class BleCentralManagerAndroid : BleCentralManager {
 
     override suspend fun peripheralDiscoverServices(uuid: UUID) {
         check(device != null && gatt != null)
-        suspendCancellableCoroutine<Boolean> { continuation ->
-            setWaitCondition(WaitState.PERIPHERAL_DISCOVER_SERVICES, continuation)
-            gatt!!.discoverServices()
-        }
-        service = gatt!!.getService(uuid.toJavaUuid())
-        if (service == null) {
-            throw Error("No service with the given UUID")
+
+        // Service discovery sometimes fails initially if services have not yet
+        // been updated or populated by the peripheral/stack. We implement a retry loop.
+        var retryCount = 0
+        while (true) {
+            try {
+                suspendCancellableCoroutine<Boolean> { continuation ->
+                    setWaitCondition(WaitState.PERIPHERAL_DISCOVER_SERVICES, continuation)
+                    if (!gatt!!.discoverServices()) {
+                        resumeWaitWithException(
+                            ServiceDiscoveryFailedException("discoverServices() returned false")
+                        )
+                    }
+                }
+                service = gatt!!.getService(uuid.toJavaUuid())
+                if (service == null) {
+                    val discoveredUuids = gatt!!.services.map { it.uuid }
+                    throw ServiceDiscoveryFailedException(
+                        "No service with UUID $uuid. Discovered services: $discoveredUuids"
+                    )
+                }
+                break
+            } catch (error: ServiceDiscoveryFailedException) {
+                if (retryCount < 10) {
+                    retryCount++
+                    Logger.w(
+                        TAG,
+                        "Failed discovering service with UUID $uuid after $retryCount attempt(s), " +
+                                "retrying in 500 msec: ${error.message}"
+                    )
+                    delay(500.milliseconds)
+                } else {
+                    Logger.w(
+                        TAG,
+                        "Failed discovering service with UUID $uuid after $retryCount attempts. " +
+                                "Giving up."
+                    )
+                    throw IllegalStateException("No service with the given UUID", error)
+                }
+            }
         }
     }
 
@@ -551,22 +623,22 @@ internal class BleCentralManagerAndroid : BleCentralManager {
         check(device != null && gatt != null && service != null)
         characteristicState = service!!.getCharacteristic(stateCharacteristicUuid.toJavaUuid())
         if (characteristicState == null) {
-            throw Error("State characteristic not found")
+            throw IllegalStateException("State characteristic not found")
         }
         characteristicClient2Server =
             service!!.getCharacteristic(client2ServerCharacteristicUuid.toJavaUuid())
         if (characteristicClient2Server == null) {
-            throw Error("Client2Server characteristic not found")
+            throw IllegalStateException("Client2Server characteristic not found")
         }
         characteristicServer2Client =
             service!!.getCharacteristic(server2ClientCharacteristicUuid.toJavaUuid())
         if (characteristicServer2Client == null) {
-            throw Error("Server2Client characteristic not found")
+            throw IllegalStateException("Server2Client characteristic not found")
         }
         if (identCharacteristicUuid != null) {
             characteristicIdent = service!!.getCharacteristic(identCharacteristicUuid!!.toJavaUuid())
             if (characteristicIdent == null) {
-                throw Error("Ident characteristic not found")
+                throw IllegalStateException("Ident characteristic not found")
             }
         }
         if (l2capCharacteristicUuid != null) {
@@ -590,7 +662,9 @@ internal class BleCentralManagerAndroid : BleCentralManager {
         val ikm = Cbor.encode(Tagged(24, Bstr(Cbor.encode(eSenderKey.toCoseKey().toDataItem()))))
         val info = "BLEIdent".encodeToByteArray()
         val salt = null
-        expectedIdentValue = Hkdf.deriveKey(Algorithm.HMAC_SHA256, ikm, salt, info, 16)
+        expectedIdentValue = SecretKey(ikm).use {
+            Hkdf.deriveKey(Algorithm.HMAC_SHA256, it, salt, info, 16).use { key -> key.encoded }
+        }
 
         suspendCancellableCoroutine<Boolean> { continuation ->
             setWaitCondition(WaitState.GET_READER_IDENT, continuation)
@@ -608,10 +682,10 @@ internal class BleCentralManagerAndroid : BleCentralManager {
             val clientCharacteristicConfigUuid = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 
             if (!gatt!!.setCharacteristicNotification(characteristic, true)) {
-                throw Error("Error setting notification")
+                throw IllegalStateException("Error setting notification")
             }
             val descriptor = characteristic.getDescriptor(clientCharacteristicConfigUuid.toJavaUuid())
-                ?: throw Error("Error getting clientCharacteristicConfig descriptor")
+                ?: throw IllegalStateException("Error getting clientCharacteristicConfig descriptor")
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 val rc = gatt!!.writeDescriptor(
@@ -619,14 +693,14 @@ internal class BleCentralManagerAndroid : BleCentralManager {
                     BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
                 )
                 if (rc != BluetoothStatusCodes.SUCCESS) {
-                    throw Error("Error writing to clientCharacteristicConfig descriptor rc=$rc")
+                    throw IllegalStateException("Error writing to clientCharacteristicConfig descriptor rc=$rc")
                 }
             } else {
                 @Suppress("DEPRECATION")
                 descriptor.setValue(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
                 @Suppress("DEPRECATION")
                 if (!gatt!!.writeDescriptor(descriptor)) {
-                    throw Error("Error writing to clientCharacteristicConfig descriptor")
+                    throw IllegalStateException("Error writing to clientCharacteristicConfig descriptor")
                 }
             }
         }
@@ -651,14 +725,14 @@ internal class BleCentralManagerAndroid : BleCentralManager {
                     BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
                 )
                 if (rc != BluetoothStatusCodes.SUCCESS) {
-                    throw Error("Error writing to characteristic ${characteristic.uuid}, rc=$rc")
+                    throw IllegalStateException("Error writing to characteristic ${characteristic.uuid}, rc=$rc")
                 }
             } else {
                 @Suppress("DEPRECATION")
                 characteristic.setValue(value)
                 @Suppress("DEPRECATION")
                 if (!gatt!!.writeCharacteristic(characteristic)) {
-                    throw Error("Error writing to characteristic ${characteristic.uuid}")
+                    throw IllegalStateException("Error writing to characteristic ${characteristic.uuid}")
                 }
             }
         }
@@ -705,7 +779,8 @@ internal class BleCentralManagerAndroid : BleCentralManager {
                 Logger.i(TAG, "Closing deferred L2CAP socket (via delay)")
                 try {
                     deferredCloseSocket?.close()
-                } catch (e: Throwable) {
+                } catch (e: Exception) {
+                    if (e is CancellationException) throw e
                     Logger.e(TAG, "Error closing L2CAP socket (via delay)", e)
                 }
                 deferredCloseSocket = null
@@ -734,10 +809,79 @@ internal class BleCentralManagerAndroid : BleCentralManager {
         }
     }
 
+
+    private suspend fun callWithRetry(
+        maxRetries: Int = 10,
+        initialDelay: Duration = 500.milliseconds,
+        maxDelay: Duration = 4.seconds,
+        action: suspend () -> Unit,
+        cleanupOnFailure: suspend () -> Unit
+    ) {
+        var currentDelay = initialDelay
+        var numTries = 0
+        while (true) {
+            try {
+                numTries++
+                action()
+                return
+            } catch (e: Exception) {
+                cleanupOnFailure()
+
+                // Re-throw CancellationException immediately so coroutine cancellation works
+                if (e is CancellationException) throw e
+
+                if (numTries >= maxRetries) {
+                    throw IllegalStateException("Failed after $maxRetries attempts", e)
+                }
+
+                Logger.i(TAG, "Failed (Attempt $numTries), trying again in $currentDelay. Error: ${e.message}")
+                delay(currentDelay)
+                currentDelay = (currentDelay.inWholeMilliseconds * 2).milliseconds
+                if (currentDelay > maxDelay) {
+                    currentDelay = maxDelay
+                }
+            }
+        }
+    }
+
     @RequiresApi(api = Build.VERSION_CODES.Q)
-    private fun connectL2capQ(psm: Int) {
-        l2capSocket = device!!.createInsecureL2capChannel(psm)
-        l2capSocket!!.connect()
+    private suspend fun connectL2capQ(psm: Int) {
+        callWithRetry(
+            action = {
+                l2capSocket = device!!.createInsecureL2capChannel(psm)
+                val result = withTimeoutOrNull(3.seconds) {
+                    suspendCancellableCoroutine<Unit> { cont ->
+                        val connectJob = CoroutineScope(Dispatchers.IO).launch {
+                            try {
+                                l2capSocket!!.connect()
+                                if (cont.isActive) cont.resume(Unit)
+                            } catch (e: Exception) {
+                                if (cont.isActive) cont.resumeWithException(e)
+                            }
+                        }
+                        cont.invokeOnCancellation {
+                            Logger.w(TAG, "Connection timeout triggered, aggressively closing socket")
+                            try {
+                                l2capSocket?.close()
+                            } catch (_: Exception) {
+                            }
+                            connectJob.cancel()
+                        }
+                    }
+                }
+                if (result == null) {
+                    throw ConnectionFailedException("L2CAP connection timed out after 3 seconds")
+                }
+            },
+            cleanupOnFailure = {
+                try {
+                    l2capSocket?.close()
+                } catch (e: Exception) {
+                    Logger.w(TAG, "Error during cleanup close", e)
+                }
+                l2capSocket = null
+            }
+        )
 
         // Start reading in a coroutine
         CoroutineScope(Dispatchers.IO).launch {
@@ -753,8 +897,9 @@ internal class BleCentralManagerAndroid : BleCentralManager {
                 val message = inputStream.readNOctets(length)
                 incomingMessages.send(message)
             }
-        } catch (e: Throwable) {
-            onError(Error("Reading from L2CAP socket failed", e))
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            onError(IllegalStateException("Reading from L2CAP socket failed", e))
         }
     }
 

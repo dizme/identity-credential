@@ -1,6 +1,4 @@
 import SwiftUI
-import Multipaz
-import MultipazSwift
 
 struct PassphrasePromptScreen: View {
     @Environment(ViewModel.self) private var viewModel
@@ -21,8 +19,11 @@ struct PassphrasePromptScreen: View {
                 let promptModel = try await PromptModel.Companion.shared.get()
                 print("PromptModel.get() from Swift: \(promptModel)")
                 let passphrase = try await promptModel.requestPassphrase(
-                    title: "Verify knowledge factor",
-                    subtitle: "Enter your \(kfType) to continue. It's '\(expectedPassphrase)' but also try entering something else to see an error message",
+                    reason: ReasonHumanReadable(
+                        title: "Verify knowledge factor",
+                        subtitle: "Enter your \(kfType) to continue. It's '\(expectedPassphrase)' but also try entering something else to see an error message",
+                        requireConfirmation: false
+                    ),
                     passphraseConstraints: constraint,
                     passphraseEvaluatorFn: { enteredPassphrase in
                         print("numTries=\(await numTries) and passphrase: \(enteredPassphrase)")
@@ -39,7 +40,6 @@ struct PassphrasePromptScreen: View {
                             let numRemain = await 3 - self.numTries
                             self.numTries = await self.numTries + 1
                             return PassphraseEvaluation.TryAgainAttemptsRemain(remainingAttempts: Int32(numRemain))
-                            
                         }
                     })
                 print("Knowledge factor entered: \(passphrase)")

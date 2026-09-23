@@ -9,7 +9,7 @@ presentment protocols.
 
 The project provides libraries written in [Kotlin Multiplatform](https://kotlinlang.org/docs/multiplatform.html):
 
-- `multipaz` provides the core building blocks it works on Android,
+- `multipaz` provides the core building blocks. It works on Android,
   iOS, and in server-side environments. The library includes support 
   for ISO mdoc and IETF SD-JWT VC credential formats and also implements
   proximity presentment using ISO/IEC 18013-5:2021 (for ISO mdoc credentials)
@@ -17,17 +17,16 @@ The project provides libraries written in [Kotlin Multiplatform](https://kotlinl
   according to ISO/IEC 18013-7:2025 and OpenID4VP 1.0.
 - `multipaz-compose` provides rich UI elements to be used in Compose
   applications.
-- `multipaz-doctypes` contains known credential document types (for example
-  ISO/IEC 18013-5:2021 mDL and EU PID) along with human-readable descriptions
-  of claims / data elements, sample data, and sample requests. This is
-  packaged separately from the core `multipaz` library because its size is
-  non-negligible and not all applications need this or they may bring their
-  own.
+- `multipaz-utopia` contains document and transaction data types specific
+  to the Multipaz Utopia universe.
+- `multipaz-doctypes` contains standardized document and transaction data
+  types (including ISO/IEC 18013-5:2021 mDL and EU PID) along with human-readable
+  descriptions of claims / data elements, sample data, and sample requests.
 - `multipaz-longfellow` bundles the [Google Longfellow-ZK](https://github.com/google/longfellow-zk) library
   and integrates with the core `multipaz` for Zero-Knowledge Proofs
   according to latest available [ISO/IEC 18013-5 Second Edition draft](https://github.com/ISOWG10/ISO-18013).
-- `multipaz-swift` contains Swift and [SwiftUI](https://developer.apple.com/swiftui/)
-  functionality to easier use Multipaz in Swift applications on iOS.
+- `multipaz-swiftui` contains SwiftUI components which can be used in
+  Swift applications.
 
 ## Command-line tool
 
@@ -54,20 +53,126 @@ invoke `multipazctl` like any other system tool.
 
 ## Library releases, Versioning, and Stability
 
-Libraries are released on [GMaven](https://maven.google.com/) with a two-month cadence
-and [Semantic Versioning](https://en.wikipedia.org/wiki/Software_versioning#Semantic_versioning)
+Libraries are released on [Maven Central](https://mvnrepository.com/artifact/org.multipaz/multipaz)
+usually every 4-8 weeks. Releases up until and including 0.97.0 can be found on [GMaven](https://maven.google.com/).
+[Semantic Versioning](https://en.wikipedia.org/wiki/Software_versioning#Semantic_versioning)
 is used. At this time we're in pre-1.0 territory but we expect to hit 1.0 around
-early 2026.
+late 2026 or early 2027.
 
-We are also making Multipaz available as a [Swift package](https://github.com/openwallet-foundation/multipaz/blob/main/Package.swift)
-which includes an the `multipaz`, `multipaz-doctypes`, `multipaz-doctypes`,
-`multipaz-longfellow`, and `multipaz-swift` libraries. This is built using
-[SKIE](https://skie.touchlab.co/). Be careful relying on this as Swift/Kotlin
-interop technology might change in the near future.
-
-At this point both API interfaces and data stored on disk is subject to change
+At this point both API interfaces and data stored on disk are subject to change
 but we expect to provide stability guarantees post 1.0. We only expect minor changes
 for example conversion from `ByteArray` to `ByteString` and similar things.
+
+### Consuming on iOS
+
+Multipaz is published as Kotlin Multiplatform libraries rather than a pre-packaged
+Swift package or standalone XCFramework. Consuming iOS and Swift projects are
+better off building the XCFramework themselves using Gradle for several key reasons:
+
+1. **Customizable SKIE and compiler settings**: When building your own XCFramework,
+   you can tune [SKIE](https://skie.touchlab.co/) settings (such as Swift Coroutines
+   and Flow interop, enum wrapping, and suspend function transformations) and
+   Kotlin/Native compiler configurations (such as minimum iOS deployment targets,
+   linker flags, and optimization levels) to suit your project's specific requirements.
+2. **Avoiding the "diamond dependency" problem**: In Kotlin/Native, dynamic linking
+   between separate Kotlin frameworks is not supported on Apple platforms. Every
+   compiled framework bundles its own copy of the Kotlin/Native runtime and its
+   dependencies. If an iOS app links a pre-built Multipaz XCFramework and also includes
+   another Kotlin Multiplatform framework (such as the app's own shared Kotlin code
+   or a third-party Kotlin library), the resulting binary contains duplicate Kotlin
+   runtimes and symbols. This leads to duplicate symbol linker collisions and runtime
+   crashes. Furthermore, Kotlin objects cannot be shared across the two framework
+   boundaries because the types exist in separate module namespaces and runtimes.
+   Consequently, projects that combine Multipaz with their own Kotlin code are forced
+   to compile all Kotlin code together into a single umbrella XCFramework.
+
+To see how to structure this in practice, see the `shared` module in the
+[Multipaz Wallet](https://github.com/openwallet-foundation/multipaz-wallet/) repository.
+The `shared` module includes the Multipaz dependencies via Gradle, incorporates
+wallet-specific Kotlin code, configures SKIE, and builds a single unified XCFramework
+that the iOS application links against.
+
+
+### Snapshot Builds
+
+Snapshot builds of the latest development version are automatically published to the Sonatype Central Snapshots repository on every push to the `main` branch.
+
+To use snapshot builds in a project consuming Multipaz:
+
+1. Add the Sonatype Snapshots repository to your project's `settings.gradle.kts` file:
+   ```kotlin
+   dependencyResolutionManagement {
+       repositories {
+           google()
+           mavenCentral()
+           maven {
+               url = uri("https://central.sonatype.com/repository/maven-snapshots/")
+           }
+       }
+   }
+   ```
+
+2. Reference the snapshot version of the library in your module's `build.gradle.kts` dependencies block. For example if the latest release version is 0.99.0 you can consume snapshots leading up to the next release in the following way:
+   ```kotlin
+   dependencies {
+       implementation("org.multipaz:multipaz:0.100.0-SNAPSHOT")
+   }
+   ```
+
+> [!TIP]
+> By default, Gradle caches snapshots for 24 hours. To force Gradle to check for and download the latest snapshot immediately when doing a project sync, add the following to your top-level `build.gradle.kts`:
+> ```kotlin
+> subprojects {
+>     configurations.all {
+>         resolutionStrategy.cacheChangingModulesFor(0, "seconds")
+>     }
+> }
+> ```
+> Alternatively, you can run Gradle with the `--refresh-dependencies` flag (e.g., `./gradlew build --refresh-dependencies`) to update cached snapshots on demand.
+
+## Upgrading Kotlin/JS NPM Lockfiles
+
+This project uses Kotlin Multiplatform (KMP) JS and Wasm targets. NPM dependency versions are pinned in `kotlin-js-store/yarn.lock` and `kotlin-js-store/wasm/yarn.lock` to ensure build reproducibility.
+
+To upgrade the locked package versions (e.g., to address Dependabot vulnerability alerts):
+
+1. **Clean intermediate Gradle build artifacts:**
+   ```shell
+   $ ./gradlew clean
+   ```
+
+2. **Generate the initial NPM workspaces:**
+   ```shell
+   $ ./gradlew kotlinUpgradeYarnLock kotlinWasmUpgradeYarnLock
+   ```
+
+3. **Upgrade npm package versions using Yarn:**
+   ```shell
+   $ cd build/js && npx yarn upgrade
+   $ cd ../wasm && npx yarn upgrade
+   $ cd ../..
+   ```
+
+4. **Persist the updated lockfiles to the repository store:**
+   ```shell
+   $ ./gradlew kotlinUpgradeYarnLock kotlinWasmUpgradeYarnLock
+   ```
+
+## Regenerating Translation Sources
+
+Modules that localize strings (`multipaz-doctypes` and `multipaz-utopia`) keep their string resources as JSON under `src/commonMain/lokalize/`, and the Kotlin rendered from them is **checked into the tree** under `src/commonMain/generated/` so the source compiles as-is on non-Gradle build systems.
+
+Because those Kotlin files are committed rather than regenerated on every build, after adding or editing strings you must regenerate and commit them:
+
+1. **Regenerate the Kotlin sources for the affected module:**
+   ```shell
+   $ ./gradlew :multipaz-doctypes:generateMultipazStrings
+   $ ./gradlew :multipaz-utopia:generateMultipazStrings
+   ```
+
+2. **Commit the regenerated files** under `src/commonMain/generated/` together with the `strings.json` changes.
+
+`lokalizeCheckGenerated` runs as part of `./gradlew check` (and CI) and fails the build if the committed sources drift from the JSON resources, printing the exact command to run.
 
 ## Getting involved
 
@@ -78,6 +183,7 @@ to the Multipaz project
 - [CODING-STYLE.md](CODING-STYLE.md) for guidelines on writing code to be included in the project.
 - [TESTING.md](TESTING.md) explains our approach to unit and manual testing.
 - [DEVELOPER-ENVIRONMENT.md](DEVELOPER-ENVIRONMENT.md) for how to set up your system for building Multipaz.
+- [Lokalize Plugin](build-logic/lokalize/README.md) for managing translations in `multipaz-compose`, `multipaz-doctypes`, and `multipaz-utopia` (AI-assisted translation and validation).
 
 Note: If you're just looking to use the Multipaz libraries you do not need to build
 the entire Multipaz project from source. Instead, just use our released libraries,
@@ -91,20 +197,24 @@ developers and as such has a lot of options and settings. It's intended to
 exercise all code in the libraries. Prebuilt APKs are available from
 https://apps.multipaz.org.
 
+For a SwiftUI version of `samples/testapp` see `samples/SwiftTestApp` which works
+on iOS and is a testbed for the Swift bindings as well as the SwiftUI components
+in `multipaz-swiftui`.
+
 For a fully-featured proximity reader app using Multipaz, see
 [MpzIdentityReader](https://github.com/openwallet-foundation/multipaz-identity-reader/).
 Prebuilt APKs are available from https://apps.multipaz.org.
 
 For an over-the-Internet verifier supporting OpenID4VP (both W3C DC API and
-URI schemes) and ISO/IEC 18013-7 Annex C see https://verifier.multipaz.org.
+URI schemes) and ISO/IEC 18013-7 Annex A and C see https://verifier.multipaz.org.
 
-To see how to use the Multipaz in a 3rd party project, see
+To see how to use Multipaz in a 3rd party project, see
 https://github.com/openwallet-foundation/multipaz-samples/ which includes
 a number of samples for different platforms.
 
 ## Developer Resources
 
-[developer.multipaz.org](developer.multipaz.org) is a comprehensive resource for developers. **The entire developer website is open source** and contributions are welcome!
+[developer.multipaz.org](https://developer.multipaz.org) is a comprehensive resource for developers. **The entire developer website is open source** and contributions are welcome!
 
 ### Documentation
 
@@ -130,4 +240,3 @@ a number of samples for different platforms.
 ## Note
 
 This is not an official or supported Google product.
-

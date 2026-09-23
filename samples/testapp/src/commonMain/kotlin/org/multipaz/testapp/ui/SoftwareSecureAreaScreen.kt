@@ -1,5 +1,6 @@
 package org.multipaz.testapp.ui
 
+import kotlinx.coroutines.CancellationException
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.Text
@@ -11,6 +12,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import org.multipaz.crypto.Crypto
 import org.multipaz.crypto.EcCurve
+import org.multipaz.crypto.EcSignature
+import org.multipaz.crypto.MlDsaSignature
+import org.multipaz.crypto.MlKemPublicKey
+import org.multipaz.crypto.RsaSignature
 import org.multipaz.prompt.PromptModel
 import org.multipaz.securearea.KeyLockedException
 import org.multipaz.securearea.PassphraseConstraints
@@ -20,13 +25,13 @@ import org.multipaz.util.Logger
 import org.multipaz.util.toHex
 import kotlinx.coroutines.launch
 import kotlin.time.Clock
-import org.jetbrains.compose.ui.tooling.preview.Preview
 import org.multipaz.crypto.Algorithm
 import org.multipaz.prompt.Reason
 
+import org.multipaz.securearea.software.SoftwareUserAuthType
+
 private val TAG = "SoftwareSecureAreaScreen"
 
-@Preview
 @Composable
 fun SoftwareSecureAreaScreen(
     softwareSecureArea: SoftwareSecureArea,
@@ -42,14 +47,38 @@ fun SoftwareSecureAreaScreen(
             Text(text = "Implementation: ${Crypto.provider}")
         }
         for (algorithm in softwareSecureArea.supportedAlgorithms) {
-            for ((passphraseRequired, description) in arrayOf(
-                Pair(true, "- Passphrase"),
-                Pair(false, ""),
+            for ((passphraseRequired, userAuthTypes, description) in arrayOf(
+                Triple(false, emptySet<SoftwareUserAuthType>(), ""),
+                Triple(true, emptySet<SoftwareUserAuthType>(), "- Passphrase"),
+                Triple(
+                    false,
+                    setOf(SoftwareUserAuthType.PASSCODE, SoftwareUserAuthType.BIOMETRIC),
+                    "- User Auth (Passcode or Biometric)"
+                ),
+                Triple(
+                    false,
+                    setOf(SoftwareUserAuthType.PASSCODE),
+                    "- User Auth (Passcode only)"
+                ),
+                Triple(
+                    false,
+                    setOf(SoftwareUserAuthType.BIOMETRIC),
+                    "- User Auth (Biometric only)"
+                ),
+                Triple(
+                    true,
+                    setOf(SoftwareUserAuthType.PASSCODE, SoftwareUserAuthType.BIOMETRIC),
+                    "- Passphrase & User Auth"
+                ),
             )) {
-                // For brevity, only do passphrase for P-256 Signature and P-256 Key Agreement)
-                if (algorithm.curve!! != EcCurve.P256) {
-                    if (passphraseRequired) {
-                        continue;
+                // For brevity, only do passphrase / user auth for P-256 Signature, P-256 Key Agreement, RSA-2048, ML-DSA-44, and ML-KEM-768
+                if (algorithm.curve != EcCurve.P256 &&
+                    algorithm != Algorithm.RS256_2048 &&
+                    algorithm != Algorithm.ML_DSA_44 &&
+                    algorithm != Algorithm.ML_KEM_768
+                ) {
+                    if (passphraseRequired || userAuthTypes.isNotEmpty()) {
+                        continue
                     }
                 }
 
@@ -70,6 +99,7 @@ fun SoftwareSecureAreaScreen(
                                 } else {
                                     null
                                 },
+                                userAuthTypes = userAuthTypes,
                                 showToast = showToast
                             )
                         }
@@ -91,14 +121,16 @@ private suspend fun swTest(
     algorithm: Algorithm,
     passphrase: String?,
     passphraseConstraints: PassphraseConstraints?,
+    userAuthTypes: Set<SoftwareUserAuthType>,
     showToast: (message: String) -> Unit) {
     Logger.d(
         TAG,
-        "swTest algorithm:$algorithm passphrase:$passphrase"
+        "swTest algorithm:$algorithm passphrase:$passphrase userAuthTypes:$userAuthTypes"
     )
     try {
-        swTestUnguarded(softwareSecureArea, algorithm, passphrase, passphraseConstraints, showToast)
-    } catch (e: Throwable) {
+        swTestUnguarded(softwareSecureArea, algorithm, passphrase, passphraseConstraints, userAuthTypes, showToast)
+    } catch (e: Exception) {
+        if (e is CancellationException) throw e
         e.printStackTrace();
         showToast("${e.message}")
     }
@@ -109,6 +141,7 @@ private suspend fun swTestUnguarded(
     algorithm: Algorithm,
     passphrase: String?,
     passphraseConstraints: PassphraseConstraints?,
+    userAuthTypes: Set<SoftwareUserAuthType>,
     showToast: (message: String) -> Unit) {
 
     val builder = SoftwareCreateKeySettings.Builder()
@@ -116,14 +149,18 @@ private suspend fun swTestUnguarded(
     if (passphrase != null) {
         builder.setPassphraseRequired(true, passphrase, passphraseConstraints)
     }
+    if (userAuthTypes.isNotEmpty()) {
+        builder.setUserAuthenticationRequired(
+            true,
+            userAuthTypes
+        )
+    }
 
     softwareSecureArea.createKey("testKey", builder.build())
 
     val unlockReason = Reason.HumanReadable(
-        title = "Enter Knowledge Factor",
-        subtitle = "This is used to decrypt the private key material. " +
-                "In this sample the knowledge factor is '1111' but try " +
-                "entering something else to check out error handling",
+        title = "Authentication Required",
+        subtitle = "Authentication is required to use this software-backed key",
         requireConfirmation = false
     )
 
@@ -136,34 +173,71 @@ private suspend fun swTestUnguarded(
                 unlockReason,
             )
             val t1 = Clock.System.now()
+            val sigInfo = when (signature) {
+                is EcSignature -> "r=${signature.r.toHex()} s=${signature.s.toHex()}"
+                is RsaSignature -> "sig=${signature.signature.toHex()}"
+                is MlDsaSignature -> "sig=${signature.signature.toHex()}"
+            }
             Logger.d(
                 TAG,
-                "Made signature in " +
-                        "r=${signature.r.toHex()} s=${signature.s.toHex()}"
+                "Made signature: $sigInfo"
             )
             showToast("Signed in (${t1 - t0})")
         } catch (e: KeyLockedException) {
-            e.printStackTrace();
+            e.printStackTrace()
             showToast("${e.message}")
         }
-    } else {
-        val otherKeyPairForEcdh = Crypto.createEcPrivateKey(algorithm.curve!!)
+    } else if (algorithm.isKeyEncapsulation) {
+        val keyInfo = softwareSecureArea.getKeyInfo("testKey")
+        val kemResult = Crypto.kemEncapsulate(keyInfo.publicKey as MlKemPublicKey)
         try {
             val t0 = Clock.System.now()
-            val Zab = softwareSecureArea.keyAgreement(
+            val sharedSecret = softwareSecureArea.kemDecapsulate(
                 "testKey",
-                otherKeyPairForEcdh.publicKey,
+                kemResult.ciphertext,
                 unlockReason,
             )
             val t1 = Clock.System.now()
-            Logger.dHex(
-                TAG,
-                "Calculated ECDH",
-                Zab)
-            showToast("ECDH in (${t1 - t0})")
+            sharedSecret.use {
+                Logger.dHex(
+                    TAG,
+                    "Decapsulated shared secret",
+                    it.encoded
+                )
+                if (kemResult.sharedSecret.encoded.contentEquals(it.encoded)) {
+                    showToast("KEM in (${t1 - t0})")
+                } else {
+                    showToast("KEM failed: secret mismatch")
+                }
+            }
         } catch (e: KeyLockedException) {
-            e.printStackTrace();
+            e.printStackTrace()
             showToast("${e.message}")
+        } finally {
+            kemResult.close()
+        }
+    } else {
+        Crypto.createEcPrivateKey(algorithm.curve!!).use { otherKeyPairForEcdh ->
+            try {
+                val t0 = Clock.System.now()
+                val Zab = softwareSecureArea.keyAgreement(
+                    "testKey",
+                    otherKeyPairForEcdh.publicKey,
+                    unlockReason,
+                )
+                val t1 = Clock.System.now()
+                Zab.use {
+                    Logger.dHex(
+                        TAG,
+                        "Calculated ECDH",
+                        it.encoded
+                    )
+                }
+                showToast("ECDH in (${t1 - t0})")
+            } catch (e: KeyLockedException) {
+                e.printStackTrace()
+                showToast("${e.message}")
+            }
         }
     }
 }

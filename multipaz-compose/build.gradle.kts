@@ -1,12 +1,11 @@
 @file:OptIn(ExperimentalWasmDsl::class)
 
-import org.gradle.kotlin.dsl.implementation
 import org.jetbrains.compose.ExperimentalComposeLibrary
 import org.jetbrains.kotlin.gradle.ExperimentalKotlinGradlePluginApi
 import org.jetbrains.kotlin.gradle.ExperimentalWasmDsl
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.plugin.KotlinSourceSetTree
-import org.jetbrains.kotlin.gradle.plugin.mpp.apple.XCFramework
+
 
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
@@ -14,10 +13,14 @@ plugins {
     alias(libs.plugins.jetbrainsCompose)
     alias(libs.plugins.compose.compiler)
     id("maven-publish")
+    id("org.jetbrains.dokka") version "2.1.0"
+    id("org.multipaz.lokalize.convention")
 }
 
 val projectVersionCode: Int by rootProject.extra
 val projectVersionName: String by rootProject.extra
+
+val disableWebTargets = project.properties["disable.web.targets"]?.toString()?.toBoolean() ?: false
 
 kotlin {
     jvmToolchain(17)
@@ -39,22 +42,24 @@ kotlin {
         publishLibraryVariants("release")
     }
 
-    js {
-        outputModuleName = "multipaz-compose"
-        browser {
-            // Currently disabled, see https://youtrack.jetbrains.com/issue/CMP-4906
-            testTask { enabled = false }
+    if (!disableWebTargets) {
+        js {
+            outputModuleName = "multipaz-compose"
+            browser {
+                // Currently disabled, see https://youtrack.jetbrains.com/issue/CMP-4906
+                testTask { enabled = false }
+            }
+            binaries.executable()
         }
-        binaries.executable()
-    }
 
-    wasmJs {
-        outputModuleName = "multipaz-compose"
-        browser {
-            // Currently disabled, see https://youtrack.jetbrains.com/issue/CMP-4906
-            testTask { enabled = false }
+        wasmJs {
+            outputModuleName = "multipaz-compose"
+            browser {
+                // Currently disabled, see https://youtrack.jetbrains.com/issue/CMP-4906
+                testTask { enabled = false }
+            }
+            binaries.executable()
         }
-        binaries.executable()
     }
 
     listOf(
@@ -71,6 +76,8 @@ kotlin {
         it.binaries.all {
             linkerOpts(
                 "-L/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/${platform}/",
+                "-Wl,-rpath,/usr/lib/swift",
+                "-lsqlite3"
             )
         }
     }
@@ -86,6 +93,7 @@ kotlin {
                 implementation(compose.materialIconsExtended)
                 implementation(libs.jetbrains.navigation.compose)
                 implementation(libs.jetbrains.navigation.runtime)
+                implementation(libs.jetbrains.navigationevent.compose)
                 api(compose.runtime)
                 api(compose.foundation)
                 api(compose.material3)
@@ -94,9 +102,12 @@ kotlin {
                 api(compose.materialIconsExtended)
                 api(libs.jetbrains.navigation.compose)
                 api(libs.jetbrains.navigation.runtime)
+                api(libs.jetbrains.navigationevent.compose)
 
                 implementation(project(":multipaz"))
                 implementation(project(":multipaz-dcapi"))
+                implementation(project(":multipaz-doctypes"))
+                implementation(project(":multipaz-utopia"))
                 implementation(libs.kotlinx.datetime)
                 implementation(libs.kotlinx.serialization.json)
                 implementation(libs.kotlinx.io.core)
@@ -129,6 +140,8 @@ kotlin {
                 implementation(libs.androidx.credentials)
                 implementation(libs.androidx.credentials.registry.provider)
                 implementation(libs.ktor.client.android)
+                implementation(libs.androidx.browser)
+                implementation(libs.jj2000)
             }
         }
     }
@@ -139,7 +152,7 @@ android {
     compileSdk = libs.versions.android.compileSdk.get().toInt()
 
     defaultConfig {
-        minSdk = 26
+        minSdk = 29
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -178,23 +191,39 @@ version = projectVersionName
 publishing {
     repositories {
         maven {
-            url = uri("${rootProject.rootDir}/repo")
+            url = uri(rootProject.layout.buildDirectory.dir("staging-repo"))
         }
     }
     publications.withType(MavenPublication::class) {
         pom {
+            name.set("multipaz-compose")
+            description.set("Multipaz SDK Compose module")
+            url.set("https://github.com/openwallet-foundation/multipaz")
             licenses {
                 license {
-                    name = "Apache 2.0"
-                    url = "https://opensource.org/licenses/Apache-2.0"
+                    name.set("Apache-2.0")
+                    url.set("https://opensource.org/licenses/Apache-2.0")
+                    distribution.set("repo")
                 }
+            }
+            developers {
+                developer {
+                    id.set("zeuthen")
+                    name.set("David Zeuthen")
+                    email.set("zeuthen@google.com")
+                }
+            }
+            scm {
+                connection.set("scm:git:git://github.com/openwallet-foundation/multipaz.git")
+                developerConnection.set("scm:git:ssh://github.com/openwallet-foundation/multipaz.git")
+                url.set("https://github.com/openwallet-foundation/multipaz")
             }
         }
     }
 }
 
-tasks.named("generateResourceAccessorsForAndroidMain").configure { dependsOn("sourceReleaseJar") }
-
-subprojects {
-	apply(plugin = "org.jetbrains.dokka")
+// multipaz-compose keeps its translations as Compose Resources (strings.xml), so lokalize only
+// validates and AI-fills them here - it generates no Kotlin (outputFormat defaults to XML).
+lokalize {
+    resourcesDir.set("src/commonMain/composeResources")
 }

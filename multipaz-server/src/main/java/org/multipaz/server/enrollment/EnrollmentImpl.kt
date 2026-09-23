@@ -5,7 +5,9 @@ import io.ktor.client.request.forms.submitForm
 import io.ktor.client.request.get
 import io.ktor.client.statement.readRawBytes
 import io.ktor.http.HttpStatusCode
+import io.ktor.http.Url
 import io.ktor.http.parameters
+import io.ktor.server.plugins.origin
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
@@ -20,11 +22,15 @@ import kotlinx.io.bytestring.ByteString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import org.multipaz.asn1.ASN1
+import org.multipaz.asn1.ASN1Sequence
+import org.multipaz.asn1.ASN1TaggedObject
+import org.multipaz.asn1.OID
 import org.multipaz.cbor.annotation.CborSerializable
 import org.multipaz.crypto.AsymmetricKey
-import org.multipaz.crypto.EcPublicKey
 import org.multipaz.crypto.X509Cert
 import org.multipaz.crypto.X509CertChain
+import org.multipaz.crypto.X509KeyUsage
 import org.multipaz.rpc.annotation.RpcState
 import org.multipaz.rpc.backend.BackendEnvironment
 import org.multipaz.rpc.backend.Configuration
@@ -37,16 +43,17 @@ import org.multipaz.rpc.handler.RpcAuthInspectorSignature
 import org.multipaz.securearea.CreateKeySettings
 import org.multipaz.securearea.SecureAreaProvider
 import org.multipaz.securearea.SecureAreaRepository
+import org.multipaz.server.common.KtorCall
 import org.multipaz.server.common.baseUrl
 import org.multipaz.server.common.getBaseUrl
 import org.multipaz.server.common.enrollmentServerUrl
 import org.multipaz.storage.Storage
 import org.multipaz.storage.StorageTableSpec
 import org.multipaz.util.Eager
+import org.multipaz.crypto.Crypto
 import org.multipaz.util.Logger
 import org.multipaz.util.toBase64Url
 import org.multipaz.util.truncateToWholeSeconds
-import kotlin.random.Random
 import kotlin.time.Clock
 import kotlin.time.Duration.Companion.days
 import kotlin.time.Duration.Companion.minutes
@@ -111,7 +118,12 @@ class EnrollmentImpl: Enrollment, RpcAuthInspector by serverAuth {
         if (requestId != null && enrollmentsMap[identity]?.requestId != requestId) {
             throw InvalidRequestException("Enrollment was not requested")
         }
-        Logger.i(TAG, "Received enrollment for '$identity'")
+        try {
+            val call = KtorCall.getCall()
+            Logger.i(TAG, "Received enrollment for '$identity' from '${call.request.origin.remoteAddress}'")
+        } catch (_: IllegalStateException) {
+            Logger.i(TAG, "Received enrollment for '$identity'")
+        }
         val secureArea = BackendEnvironment.getInterface(SecureAreaProvider::class)!!.get()
         // Set up expiration to re-enroll ahead of the certificate expiration
         val expiration = certChain.certificates.first().validityNotAfter - MIN_VALIDITY_DURATION
@@ -153,19 +165,19 @@ class EnrollmentImpl: Enrollment, RpcAuthInspector by serverAuth {
     private class ServerIdentityRecord(
         // Lazy deferred seems exotic, but that's what's needed here. We do not want to launch
         // enrollment until ServerIdentityRecord is created and registered.
-        var signingKeyDeferred: Lazy<Deferred<AsymmetricKey.X509Certified>>,
+        var signingKeyDeferred: Lazy<Deferred<AsymmetricKey>>,
         val requestId: String? = null,
         val expiration: Instant? = null,
         val responseChannel: Channel<AsymmetricKey.X509Certified>? = null
     ) {
         companion object {
-            fun fromKey(key: AsymmetricKey): ServerIdentityRecord {
-                val cert = (key as AsymmetricKey.X509Certified).certChain.certificates.first()
-                return ServerIdentityRecord(
+            fun fromKey(key: AsymmetricKey): ServerIdentityRecord =
+                ServerIdentityRecord(
                     signingKeyDeferred = Eager(CompletableDeferred(key)),
-                    expiration = cert.validityNotAfter - MIN_VALIDITY_DURATION
+                    expiration = (key as? AsymmetricKey.X509Certified)
+                        ?.let { it.certChain.certificates.first().validityNotAfter - MIN_VALIDITY_DURATION }
+                        ?: Instant.DISTANT_FUTURE
                 )
-            }
         }
     }
 
@@ -184,9 +196,18 @@ class EnrollmentImpl: Enrollment, RpcAuthInspector by serverAuth {
             supportExpiration = true
         )
 
+        /**
+         * Returns a [Deferred] that resolves to this server's certified key for the given
+         * [serverIdentity] type.
+         *
+         * Loads from configuration, database, or triggers enrollment as needed. Results
+         * are cached in memory and automatically refreshed before certificate expiration.
+         *
+         * @param serverIdentity the type of identity for which the key is requested
+         */
         suspend fun getServerIdentity(
             serverIdentity: ServerIdentity,
-        ): Deferred<AsymmetricKey.X509Certified> {
+        ): Deferred<AsymmetricKey> {
             val record = enrollmentsMap[serverIdentity]
             val validRecord = if (record != null &&
                 (record.expiration == null || record.expiration > Clock.System.now())) {
@@ -221,12 +242,21 @@ class EnrollmentImpl: Enrollment, RpcAuthInspector by serverAuth {
                     val secureAreaRepository =
                         backendEnvironment.getInterface(SecureAreaRepository::class)
                     val loadedKey = AsymmetricKey.parse(keyJson, secureAreaRepository)
-                    return ServerIdentityRecord.fromKey(loadedKey)
+                    return ServerIdentityRecord.fromKey(loadedKey).also {
+                        val cert = (loadedKey as? AsymmetricKey.X509Certified)?.certChain?.certificates?.first()
+                        // If configuration is wrong, it has to be re-configured correctly
+                        if(!isValid(cert, serverIdentity, configuration)) {
+                            val message = "Configuration error: certificate for 'server_identities.${serverIdentity.jsonName}' is not generated correctly"
+                            Logger.w(TAG, message)
+                            throw IllegalStateException(message)
+                        }
+                    }
                 }
             }
 
             // Then, try to load from the database
-            val enrolled = storage.getTable(enrollmentsTable).get(serverIdentity.name)
+            val table = storage.getTable(enrollmentsTable)
+            val enrolled = table.get(serverIdentity.name)
             if (enrolled != null) {
                 val keyData = SigningKeyData.fromCbor(enrolled.toByteArray())
                 val secureArea = backendEnvironment.getInterface(SecureAreaProvider::class)!!.get()
@@ -235,13 +265,19 @@ class EnrollmentImpl: Enrollment, RpcAuthInspector by serverAuth {
                     keyInfo = secureArea.getKeyInfo(keyData.alias),
                     certChain = keyData.certChain
                 )
-                return ServerIdentityRecord.fromKey(loadedKey)
+                val cert = loadedKey.certChain.certificates.first()
+                if (isValid(cert, serverIdentity, configuration)) {
+                    return ServerIdentityRecord.fromKey(loadedKey)
+                } else {
+                    table.delete(serverIdentity.name)
+                    Logger.w(TAG, "Invalid certificate for $serverIdentity, re-enrolling...")
+                }
             }
 
             // Request enrollment from the server
             // Channel needs some capacity so that sending the result to the channel is not blocked.
             val responseChannel = Channel<AsymmetricKey.X509Certified>(capacity = 1)
-            val requestId = Random.nextBytes(15).toBase64Url()
+            val requestId = Crypto.secureRandom.nextBytes(15).toBase64Url()
             val signingKeyDeferred = lazy {
                 // Launch lazily to avoid race conditions. By the time this is launched,
                 // ServerIdentityRecord has been created and inserted in enrollmentsMap.
@@ -266,7 +302,7 @@ class EnrollmentImpl: Enrollment, RpcAuthInspector by serverAuth {
                             val request = enrollment.request(
                                 requestId = requestId,
                                 identity = serverIdentity,
-                                nonce = ByteString(Random.nextBytes(15)),
+                                nonce = ByteString(Crypto.secureRandom.nextBytes(15)),
                                 expiration = expiration
                             )
                             val certChain = generateServerIdentityLeafCertificate(
@@ -299,7 +335,14 @@ class EnrollmentImpl: Enrollment, RpcAuthInspector by serverAuth {
                             throw IllegalStateException("Could not enroll '$serverIdentity'")
                         }
                     }
-                    responseChannel.receive()
+                    responseChannel.receive().also {
+                        val cert = it.certChain.certificates.first()
+                        if(!isValid(cert, serverIdentity, configuration)) {
+                            val message = "Enrollment error: certificate for $serverIdentity was not generated correctly"
+                            Logger.w(TAG, message)
+                            throw IllegalStateException(message)
+                        }
+                    }
                 }
             }
             return ServerIdentityRecord(
@@ -309,11 +352,53 @@ class EnrollmentImpl: Enrollment, RpcAuthInspector by serverAuth {
             )
         }
 
+        private fun isValid(
+            cert: X509Cert?,
+            identity: ServerIdentity,
+            configuration: Configuration
+        ): Boolean {
+            if (cert == null) {
+                return false
+            }
+            if (identity == ServerIdentity.KEY_ATTESTATION || identity == ServerIdentity.CLOUD_SECURE_AREA_BINDING) {
+                val basicConstraints = cert.basicConstraints
+                if (basicConstraints == null || !basicConstraints.first || !cert.keyUsage.contains(X509KeyUsage.KEY_CERT_SIGN)) {
+                    Logger.w(TAG, "Certificate for $identity is invalid CA")
+                    return false
+                }
+            }
+            if (identity != ServerIdentity.VERIFIER) {
+                return true
+            }
+            // check that the certificate satisfies the requirements
+            if (!cert.keyUsage.contains(X509KeyUsage.DIGITAL_SIGNATURE)) {
+                Logger.w(TAG, "Reader certificate key usage is wrong")
+                return false
+            }
+            val subjectAltNameExt = cert.getExtensionValue(OID.X509_EXTENSION_SUBJECT_ALT_NAME.oid)
+            if (subjectAltNameExt == null) {
+                Logger.w(TAG, "Reader certificate subject alt name is missing")
+                return false
+            }
+            val dnsName = Url(configuration.baseUrl).host
+            val value = (ASN1.decode(subjectAltNameExt) as? ASN1Sequence)?.elements?.get(0)
+            if (value is ASN1TaggedObject) {
+                if (!dnsName.encodeToByteArray().contentEquals(value.content)) {
+                    Logger.w(TAG, "Reader certificate subject alt name does not match server url")
+                    return false
+                }
+            } else {
+                Logger.w(TAG, "Reader certificate subject alt name is invalid")
+                return false
+            }
+            return true
+        }
+
         private val provisioningServerKeyLock = Mutex()
         @Volatile
         private var provisioningServerNextUpdate: Instant = Instant.DISTANT_PAST
         @Volatile
-        private var provisioningServerPublicKey: Deferred<EcPublicKey>? = null
+        private var provisioningServerCertificate: Deferred<X509Cert>? = null
 
         private val serverAuth = RpcAuthInspectorSignature { serverUrl ->
             val now = Clock.System.now()
@@ -322,19 +407,19 @@ class EnrollmentImpl: Enrollment, RpcAuthInspector by serverAuth {
                     if (provisioningServerNextUpdate <= now) {
                         provisioningServerNextUpdate = now + 5.minutes
                         val env = BackendEnvironment.get(currentCoroutineContext())
-                        provisioningServerPublicKey = CoroutineScope(Dispatchers.IO).async {
-                            loadProvisioningServerPublicKey(env, serverUrl)
+                        provisioningServerCertificate = CoroutineScope(Dispatchers.IO).async {
+                            loadProvisioningServerCertificate(env, serverUrl)
                         }
                     }
                 }
             }
-            provisioningServerPublicKey!!.await()
+            provisioningServerCertificate!!.await()
         }
 
-        private suspend fun loadProvisioningServerPublicKey(
+        private suspend fun loadProvisioningServerCertificate(
             backendEnvironment: BackendEnvironment,
             serverUrl: String
-        ): EcPublicKey {
+        ): X509Cert {
             val enrollmentUrl = backendEnvironment.getInterface(Configuration::class)!!.enrollmentServerUrl
             if (enrollmentUrl != serverUrl) {
                 throw RpcAuthException(
@@ -350,7 +435,7 @@ class EnrollmentImpl: Enrollment, RpcAuthInspector by serverAuth {
                     rpcAuthError = RpcAuthError.FAILED
                 )
             }
-            return X509Cert.fromPem(response.readRawBytes().decodeToString()).ecPublicKey
+            return X509Cert.fromPem(response.readRawBytes().decodeToString())
         }
 
         /** Pattern that matches localhost urls */

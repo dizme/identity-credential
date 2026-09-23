@@ -15,6 +15,9 @@ struct StartScreen: View {
                 Button(action: { viewModel.path.append(Destination.documentStoreScreen) }) {
                     Text("Document Store")
                 }
+                Button(action: { viewModel.path.append(Destination.verticalCardListScreen(focusedDocumentId: nil)) }) {
+                    Text("Vertical Card List")
+                }
                 Button(action: { viewModel.path.append(Destination.consentPromptScreen) }) {
                     Text("Consent Prompt")
                 }
@@ -23,6 +26,9 @@ struct StartScreen: View {
                 }
                 Button(action: { viewModel.path.append(Destination.iso18013ProximityPresentmentScreen) }) {
                     Text("ISO 18013-5 Proximity Presentment")
+                }
+                Button(action: { viewModel.path.append(Destination.floatingItemListScreen) }) {
+                    Text("FloatingItemList examples")
                 }
             }
         }

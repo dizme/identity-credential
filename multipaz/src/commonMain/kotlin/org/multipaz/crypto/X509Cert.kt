@@ -5,6 +5,7 @@ import org.multipaz.asn1.ASN1BitString
 import org.multipaz.asn1.ASN1Boolean
 import org.multipaz.asn1.ASN1Encoding
 import org.multipaz.asn1.ASN1Integer
+import org.multipaz.asn1.ASN1Null
 import org.multipaz.asn1.ASN1Object
 import org.multipaz.asn1.ASN1ObjectIdentifier
 import org.multipaz.asn1.ASN1OctetString
@@ -80,6 +81,31 @@ data class X509Cert(
         get() = ((tbsCert.elements[4] as ASN1Sequence).elements[1] as ASN1Time).value
 
     /**
+     * The public key in the certificate.
+     *
+     * @throws IllegalStateException if the public key format or curve is not supported.
+     */
+    val publicKey: PublicKey
+        get() {
+            val subjectPublicKeyInfo = tbsCert.elements[6] as ASN1Sequence
+            val algorithmIdentifier = subjectPublicKeyInfo.elements[0] as ASN1Sequence
+            val algorithmOid = (algorithmIdentifier.elements[0] as ASN1ObjectIdentifier).oid
+            if (algorithmOid == OID.RSA_ENCRYPTION.oid) {
+                val keyMaterial = (subjectPublicKeyInfo.elements[1] as ASN1BitString).value
+                return RsaPublicKey.fromPkcs1(keyMaterial)
+            }
+            when (algorithmOid) {
+                OID.ML_DSA_44.oid -> return MlDsaPublicKey(Algorithm.ML_DSA_44, ByteString((subjectPublicKeyInfo.elements[1] as ASN1BitString).value))
+                OID.ML_DSA_65.oid -> return MlDsaPublicKey(Algorithm.ML_DSA_65, ByteString((subjectPublicKeyInfo.elements[1] as ASN1BitString).value))
+                OID.ML_DSA_87.oid -> return MlDsaPublicKey(Algorithm.ML_DSA_87, ByteString((subjectPublicKeyInfo.elements[1] as ASN1BitString).value))
+                OID.ML_KEM_512.oid -> return MlKemPublicKey(Algorithm.ML_KEM_512, ByteString((subjectPublicKeyInfo.elements[1] as ASN1BitString).value))
+                OID.ML_KEM_768.oid -> return MlKemPublicKey(Algorithm.ML_KEM_768, ByteString((subjectPublicKeyInfo.elements[1] as ASN1BitString).value))
+                OID.ML_KEM_1024.oid -> return MlKemPublicKey(Algorithm.ML_KEM_1024, ByteString((subjectPublicKeyInfo.elements[1] as ASN1BitString).value))
+            }
+            return ecPublicKey
+        }
+
+    /**
      * The public key in the certificate, as an Elliptic Curve key.
      *
      * Note that this is only supported for curves in [Crypto.supportedCurves].
@@ -148,11 +174,12 @@ data class X509Cert(
     val authorityKeyIdentifier: ByteArray?
         get() {
             val extVal = getExtensionValue(OID.X509_EXTENSION_AUTHORITY_KEY_IDENTIFIER.oid) ?: return null
-            val seq = ASN1.decode(extVal) as ASN1Sequence
-            val taggedObject = seq.elements[0] as ASN1TaggedObject
+            val seq = ASN1.decode(extVal) as? ASN1Sequence ?: return null
+            val taggedObject = seq.elements
+                .filterIsInstance<ASN1TaggedObject>()
+                .firstOrNull { it.tag == 0 } ?: return null
             check(taggedObject.cls == ASN1TagClass.CONTEXT_SPECIFIC) { "Expected context-specific tag" }
             check(taggedObject.enc == ASN1Encoding.PRIMITIVE)
-            check(taggedObject.tag == 0) { "Expected tag 0" }
             // Note: tags in AuthorityKeyIdentifier are IMPLICIT b/c its definition appear in
             // the implicitly tagged ASN.1 module, see RFC 5280 Appendix A.2.
             //
@@ -225,7 +252,7 @@ data class X509Cert(
      * @param validUntil the point in time the certificate is valid until.
      */
     class Builder(
-        private val publicKey: EcPublicKey,
+        private val publicKey: PublicKey,
         signingKey: AsymmetricKey,
         private val serialNumber: ASN1Integer,
         private val subject: X500Name,
@@ -345,18 +372,53 @@ data class X509Cert(
 
         override suspend fun buildTbs(tbsList: MutableList<ASN1Object>) {
             val signatureAlgorithmSeq =
-                signingKey.algorithm.getSignatureAlgorithmSeq(signingKey.publicKey.curve)
+                signingKey.algorithm.getSignatureAlgorithmSeq((signingKey.publicKey as? EcPublicKey)?.curve)
 
-            val subjectPublicKey = when (publicKey) {
+            val (algorithmSeq, subjectPublicKey) = when (publicKey) {
                 is EcPublicKeyDoubleCoordinate -> {
-                    publicKey.asUncompressedPointEncoding
+                    Pair(publicKey.curve.getCurveAlgorithmSeq(), publicKey.asUncompressedPointEncoding)
                 }
                 is EcPublicKeyOkp -> {
-                    publicKey.x
+                    Pair(publicKey.curve.getCurveAlgorithmSeq(), publicKey.x)
+                }
+                is RsaPublicKey -> {
+                    Pair(
+                        ASN1Sequence(
+                            listOf(
+                                ASN1ObjectIdentifier(OID.RSA_ENCRYPTION.oid),
+                                ASN1Null()
+                            )
+                        ),
+                        publicKey.toPkcs1()
+                    )
+                }
+                is MlDsaPublicKey -> {
+                    val oid = when (publicKey.algorithm) {
+                        Algorithm.ML_DSA_44 -> OID.ML_DSA_44.oid
+                        Algorithm.ML_DSA_65 -> OID.ML_DSA_65.oid
+                        Algorithm.ML_DSA_87 -> OID.ML_DSA_87.oid
+                        else -> throw IllegalArgumentException()
+                    }
+                    Pair(
+                        ASN1Sequence(listOf(ASN1ObjectIdentifier(oid))),
+                        publicKey.encoded.toByteArray()
+                    )
+                }
+                is MlKemPublicKey -> {
+                    val oid = when (publicKey.algorithm) {
+                        Algorithm.ML_KEM_512 -> OID.ML_KEM_512.oid
+                        Algorithm.ML_KEM_768 -> OID.ML_KEM_768.oid
+                        Algorithm.ML_KEM_1024 -> OID.ML_KEM_1024.oid
+                        else -> throw IllegalArgumentException()
+                    }
+                    Pair(
+                        ASN1Sequence(listOf(ASN1ObjectIdentifier(oid))),
+                        publicKey.encoded.toByteArray()
+                    )
                 }
             }
             val subjectPublicKeyInfoSeq = ASN1Sequence(listOf(
-                publicKey.curve.getCurveAlgorithmSeq(),
+                algorithmSeq,
                 ASN1BitString(0, subjectPublicKey)
             ))
 
@@ -453,7 +515,7 @@ data class X509Cert(
  * @return a [X509Cert].
  */
 suspend inline fun buildX509Cert(
-    publicKey: EcPublicKey,
+    publicKey: PublicKey,
     signingKey: AsymmetricKey,
     serialNumber: ASN1Integer,
     subject: X500Name,

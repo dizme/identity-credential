@@ -8,6 +8,7 @@ import org.multipaz.cbor.Tagged
 import org.multipaz.cbor.buildCborMap
 import org.multipaz.cbor.putCborArray
 import org.multipaz.crypto.Algorithm
+import org.multipaz.crypto.Crypto
 import org.multipaz.request.MdocRequestedClaim
 import kotlin.collections.component1
 import kotlin.collections.component2
@@ -38,7 +39,7 @@ data class IssuerNamespaces(
                     for ((_, issuerSignedItem) in innerMap) {
                         add(Tagged(
                             Tagged.ENCODED_CBOR,
-                            Bstr(Cbor.encode(issuerSignedItem.toDataItem()))
+                            Bstr(Cbor.encode(issuerSignedItem.dataItem))
                         ))
                     }
                 }
@@ -95,9 +96,7 @@ data class IssuerNamespaces(
                 val namespaceName = namespaceDataItemKey.asTstr
                 val innerMap = mutableMapOf<String, IssuerSignedItem>()
                 for (issuerSignedItemBytes in namespaceDataItemValue.asArray) {
-                    val issuerSignedItem = IssuerSignedItem.fromDataItem(
-                        issuerSignedItemBytes.asTaggedEncodedCbor
-                    )
+                    val issuerSignedItem = IssuerSignedItem(dataItem = issuerSignedItemBytes.asTaggedEncodedCbor)
                     innerMap[issuerSignedItem.dataElementIdentifier] = issuerSignedItem
                 }
                 ret[namespaceName] = innerMap
@@ -146,7 +145,7 @@ data class IssuerNamespaces(
      */
     class Builder(
         private val dataElementRandomSize: Int = 16,
-        private val randomProvider: Random = Random,
+        private val randomProvider: Random = Crypto.secureRandom,
     ) {
         private val builtNamespaces = mutableListOf<DataElements>()
 
@@ -192,17 +191,14 @@ data class IssuerNamespaces(
             for (ns in builtNamespaces) {
                 val items = mutableMapOf<String, IssuerSignedItem>()
                 for ((deName, deValue) in ns.dataElements) {
-                    items.put(
-                        deName,
-                        IssuerSignedItem(
-                            digestId = digestIt.next(),
-                            random = ByteString(randomProvider.nextBytes(dataElementRandomSize)),
-                            dataElementIdentifier = deName,
-                            dataElementValue = deValue
-                        )
+                    items[deName] = IssuerSignedItem.fromValues(
+                        digestId = digestIt.next(),
+                        random = ByteString(randomProvider.nextBytes(dataElementRandomSize)),
+                        dataElementIdentifier = deName,
+                        dataElementValue = deValue
                     )
                 }
-                ret.put(ns.namespaceName, items)
+                ret[ns.namespaceName] = items
             }
             return IssuerNamespaces(ret)
         }
@@ -219,7 +215,7 @@ data class IssuerNamespaces(
  */
 inline fun buildIssuerNamespaces(
     dataElementRandomSize: Int = 16,
-    randomProvider: Random = Random,
+    randomProvider: Random = Crypto.secureRandom,
     builderAction: IssuerNamespaces.Builder.() -> Unit
 ): IssuerNamespaces {
     val builder = IssuerNamespaces.Builder(dataElementRandomSize, randomProvider)

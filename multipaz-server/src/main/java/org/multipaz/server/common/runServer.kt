@@ -30,6 +30,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import org.multipaz.crypto.Crypto
 import org.multipaz.rpc.handler.InvalidRequestException
 import org.multipaz.storage.Storage
 import org.multipaz.util.Logger
@@ -38,7 +39,6 @@ import java.io.FileWriter
 import java.io.OutputStreamWriter
 import java.io.PrintWriter
 import java.io.StringWriter
-import kotlin.random.Random
 import kotlin.time.Duration.Companion.hours
 
 /**
@@ -55,6 +55,7 @@ fun runServer(
     args: Array<String>,
     needAdminPassword: Boolean = false,
     checkConfiguration: (ServerConfiguration) -> Unit = {},
+    environmentInitializer: suspend ServerEnvironmentInitializer.() -> Unit = {},
     applicationConfigurationAction: Application.(env: Deferred<ServerEnvironment>) -> Unit
 ) {
     val configuration = ServerConfiguration(args)
@@ -65,16 +66,18 @@ fun runServer(
             Logger.i("Main", "SQL driver: ${Driver()}")
         } else if (jdbc.startsWith("jdbc:postgresql:")) {
             Logger.i("Main", "SQL driver: ${org.postgresql.Driver()}")
+        } else if (jdbc.startsWith("jdbc:sqlite:")) {
+            Logger.i("Main", "SQL driver: ${org.sqlite.JDBC()}")
         }
     }
     if (needAdminPassword) {
         adminPassword = configuration.getValue("admin_password")
-            ?: Random.nextBytes(15).toBase64Url().also {
+            ?: Crypto.secureRandom.nextBytes(15).toBase64Url().also {
                 Logger.e(TAG, "No 'admin_password' in config, generated: '$it'")
             }
     }
     val host = configuration.serverHost ?: "0.0.0.0"
-    val serverEnvironment = ServerEnvironment.create(configuration)
+    val serverEnvironment = ServerEnvironment.create(configuration, environmentInitializer)
     launchBackgroundJob(serverEnvironment)
     embeddedServer(
         factory = Netty,
@@ -100,7 +103,7 @@ fun Application.installServerEnvironment(
 ) {
     intercept(ApplicationCallPipeline.Plugins) {
         // Inject server environment
-        withContext(serverEnvironment.await()) {
+        withContext(serverEnvironment.await() + KtorCall(call)) {
             // Standard error handling; if this is not desired, individual handlers
             // must do their own.
             try {
@@ -108,7 +111,7 @@ fun Application.installServerEnvironment(
             } catch (err: CancellationException) {
                 throw err
             } catch (err: InvalidRequestException) {
-                Logger.e(TAG, "Error", err)
+                Logger.e(TAG, "Error invalid_request: ${err.message}", err)
                 err.printStackTrace()
                 call.respondText(
                     status = HttpStatusCode.BadRequest,
@@ -118,7 +121,18 @@ fun Application.installServerEnvironment(
                     }.toString(),
                     contentType = ContentType.Application.Json
                 )
-            } catch (err: Throwable) {
+            } catch (err: ServerException) {
+                Logger.e(TAG, "Error ${err.code}: ${err.message}", err)
+                err.printStackTrace()
+                call.respondText(
+                    status = HttpStatusCode.BadRequest,
+                    text = buildJsonObject {
+                        put("error", err.code)
+                        put("error_description", err.message ?: "")
+                    }.toString(),
+                    contentType = ContentType.Application.Json
+                )
+            } catch (err: Exception) {
                 Logger.e(TAG, "Error", err)
                 err.printStackTrace()
                 call.respondText(
@@ -167,7 +181,9 @@ private val RESPONSE_COPY_KEY = AttributeKey<String>("RESPONSE_COPY_KEY")
 
 private fun Application.traceCalls(configuration: ServerConfiguration) {
     val traceFile = configuration.getValue("server_trace_file") ?: return
-    install(DoubleReceive)
+    install(DoubleReceive) {
+        cacheRawRequest = true
+    }
     val traceStream = if (traceFile == "-") {
         OutputStreamWriter(System.out)
     } else {

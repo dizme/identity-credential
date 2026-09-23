@@ -1,0 +1,98 @@
+import SwiftUI
+
+/// A list item view that displays a primary text, an optional secondary text below it,
+/// an optional leading image, and an optional trailing view.
+public struct FloatingItemText<ImageView: View, TrailingView: View>: View {
+
+    /// The primary text to display, formatted as an `AttributedString`.
+    public var text: AttributedString
+
+    /// Whether to show a right chevron icon on the right side.
+    public var showChevron: Bool
+
+    /// An optional secondary string displayed beneath the primary text in a smaller font.
+    public var secondary: String?
+
+    /// Color for secondary text.
+    public var secondaryColor: Color
+
+    /// A view builder that creates the leading image or icon.
+    @ViewBuilder public var image: () -> ImageView
+
+    /// A view builder that creates the trailing content, pushed to the rightmost edge.
+    @ViewBuilder public var trailingContent: () -> TrailingView
+
+    /// Creates a new floating item text view using an `AttributedString` for the primary text.
+    ///
+    /// - Parameters:
+    ///   - text: The primary text to display.
+    ///   - showChevron: Whether to show a right chevron icon on the right side. Defaults to `false`.
+    ///   - secondary: An optional secondary string to display below the primary text. Defaults to `nil`.
+    ///   - secondaryColor: Color for secondary text, defaults to `Color.secondary`.
+    ///   - image: A view builder that provides a leading image or icon. Defaults to an `EmptyView`.
+    ///   - trailingContent: A view builder that provides a trailing view. Defaults to an `EmptyView`.
+    public init(
+        text: AttributedString,
+        showChevron: Bool = false,
+        secondary: String? = nil,
+        secondaryColor: Color = .secondary,
+        @ViewBuilder image: @escaping () -> ImageView = { EmptyView() },
+        @ViewBuilder trailingContent: @escaping () -> TrailingView = { EmptyView() }
+    ) {
+        self.text = text
+        self.showChevron = showChevron
+        self.secondary = secondary
+        self.secondaryColor = secondaryColor
+        self.image = image
+        self.trailingContent = trailingContent
+    }
+
+    /// Creates a new floating item text view using a `String` for the primary text.
+    ///
+    /// - Parameters:
+    ///   - text: The primary string to display.
+    ///   - showChevron: Whether to show a right chevron icon on the right side. Defaults to `false`.
+    ///   - secondary: An optional secondary string to display below the primary text. Defaults to `nil`.
+    ///   - secondaryColor: Color for secondary text, defaults to `Color.secondary`.
+    ///   - image: A view builder that provides a leading image or icon. Defaults to an `EmptyView`.
+    ///   - trailingContent: A view builder that provides a trailing view. Defaults to an `EmptyView`.
+    public init(
+        text: String,
+        showChevron: Bool = false,
+        secondary: String? = nil,
+        secondaryColor: Color = .secondary,
+        @ViewBuilder image: @escaping () -> ImageView = { EmptyView() },
+        @ViewBuilder trailingContent: @escaping () -> TrailingView = { EmptyView() }
+    ) {
+        self.init(text: AttributedString(text), showChevron: showChevron, secondary: secondary, secondaryColor: secondaryColor, image: image, trailingContent: trailingContent)
+    }
+
+    public var body: some View {
+        FloatingItemContainer(showChevron: showChevron) {
+            HStack(alignment: .center, spacing: 16) {
+                image()
+
+                if let secondary = secondary {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(text)
+                            .font(.body)
+                            .multilineTextAlignment(.leading)
+                        Text(secondary)
+                            .font(.subheadline)
+                            .multilineTextAlignment(.leading)
+                            .foregroundStyle(secondaryColor)
+                    }
+                } else {
+                    Text(text)
+                        .font(.body)
+                        .multilineTextAlignment(.leading)
+                }
+
+                // Pushes the trailing content to the rightmost edge
+                Spacer(minLength: 0)
+
+                trailingContent()
+            }
+        }
+    }
+}

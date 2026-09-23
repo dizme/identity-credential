@@ -1,5 +1,6 @@
 package org.multipaz.mdoc.transport
 
+import kotlinx.coroutines.CancellationException
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothGattCharacteristic
@@ -39,6 +40,7 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.io.bytestring.ByteStringBuilder
 import org.multipaz.crypto.Hkdf
+import org.multipaz.crypto.SecretKey
 import org.multipaz.util.getUInt32
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -161,13 +163,15 @@ internal class BlePeripheralManagerAndroid: BlePeripheralManager {
             Logger.i(TAG, "Closing deferred L2CAP socket (via init)")
             try {
                 deferredCloseSocket?.close()
-            } catch (e: Throwable) {
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
                 Logger.e(TAG, "Error closing L2CAP socket (via init)", e)
             }
             deferredCloseSocket = null
             try {
                 deferredCloseJob?.cancel()
-            } catch (e: Throwable) {
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
                 Logger.e(TAG, "Error canceling deferred closing job (via init)", e)
             }
             deferredCloseJob = null
@@ -182,7 +186,7 @@ internal class BlePeripheralManagerAndroid: BlePeripheralManager {
                 if (status == BluetoothGatt.GATT_SUCCESS) {
                     resumeWait()
                 } else {
-                    resumeWaitWithException(Error("onServiceAdded: Expected GATT_SUCCESS got $status"))
+                    resumeWaitWithException(IllegalStateException("onServiceAdded: Expected GATT_SUCCESS got $status"))
                 }
             } else {
                 Logger.w(TAG, "onServiceAdded but not waiting")
@@ -201,7 +205,7 @@ internal class BlePeripheralManagerAndroid: BlePeripheralManager {
                     "$offset ${characteristic.uuid}")
             if (characteristic == identCharacteristic) {
                 if (identValue == null) {
-                    onError(Error("Received request for ident before it's set.."))
+                    onError(IllegalStateException("Received request for ident before it's set.."))
                 } else {
                     gattServer!!.sendResponse(
                         device,
@@ -288,8 +292,9 @@ internal class BlePeripheralManagerAndroid: BlePeripheralManager {
             } else if (characteristic.uuid == client2ServerCharacteristicUuid.toJavaUuid()) {
                 try {
                     handleIncomingData(value)
-                } catch (e: Throwable) {
-                    onError(Error("Error processing incoming data", e))
+                } catch (e: Exception) {
+                    if (e is CancellationException) throw e
+                    onError(IllegalStateException("Error processing incoming data", e))
                 }
             }
         }
@@ -326,7 +331,7 @@ internal class BlePeripheralManagerAndroid: BlePeripheralManager {
             Logger.d(TAG, "onNotificationSent $status for ${device.address}")
             if (waitFor?.state == WaitState.CHARACTERISTIC_WRITE_COMPLETED) {
                 if (status != BluetoothGatt.GATT_SUCCESS) {
-                    resumeWaitWithException(Error("onNotificationSent: Expected GATT_SUCCESS but got $status"))
+                    resumeWaitWithException(IllegalStateException("onNotificationSent: Expected GATT_SUCCESS but got $status"))
                 } else {
                     resumeWait()
                 }
@@ -347,7 +352,7 @@ internal class BlePeripheralManagerAndroid: BlePeripheralManager {
 
         override fun onStartFailure(errorCode: Int) {
             if (waitFor?.state == WaitState.START_ADVERTISING) {
-                resumeWaitWithException(Error("Started advertising failed with $errorCode"))
+                resumeWaitWithException(IllegalStateException("Started advertising failed with $errorCode"))
             } else {
                 Logger.w(TAG, "Unexpected AdvertiseCallback.onStartFailure() callback")
             }
@@ -358,7 +363,7 @@ internal class BlePeripheralManagerAndroid: BlePeripheralManager {
 
     private fun handleIncomingData(chunk: ByteArray) {
         if (chunk.size < 1) {
-            throw Error("Invalid data length ${chunk.size} for Client2Server characteristic")
+            throw IllegalStateException("Invalid data length ${chunk.size} for Client2Server characteristic")
         }
         incomingMessage.append(chunk, 1, chunk.size)
         when {
@@ -379,7 +384,7 @@ internal class BlePeripheralManagerAndroid: BlePeripheralManager {
             }
 
             else -> {
-                throw Error("Invalid first byte ${chunk[0]} in Client2Server data chunk, " +
+                throw IllegalStateException("Invalid first byte ${chunk[0]} in Client2Server data chunk, " +
                         "expected 0 or 1")
             }
         }
@@ -471,7 +476,7 @@ internal class BlePeripheralManagerAndroid: BlePeripheralManager {
 
         advertiser = bluetoothManager.adapter.bluetoothLeAdvertiser
         if (advertiser == null) {
-            throw Error("Advertiser not available, is Bluetooth off?")
+            throw IllegalStateException("Advertiser not available, is Bluetooth off?")
         }
         val settings = AdvertiseSettings.Builder()
             .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
@@ -494,10 +499,16 @@ internal class BlePeripheralManagerAndroid: BlePeripheralManager {
         val ikm = Cbor.encode(Tagged(24, Bstr(Cbor.encode(eSenderKey.toCoseKey().toDataItem()))))
         val info = "BLEIdent".encodeToByteArray()
         val salt = null
-        identValue = Hkdf.deriveKey(Algorithm.HMAC_SHA256, ikm, salt, info, 16)
+        identValue = SecretKey(ikm).use {
+            Hkdf.deriveKey(Algorithm.HMAC_SHA256, it, salt, info, 16).use { key -> key.encoded }
+        }
     }
 
     override suspend fun waitForStateCharacteristicWriteOrL2CAPClient() {
+        if (device != null) {
+            Logger.i(TAG, "The device is already connected, no need to wait")
+            return
+        }
         suspendCancellableCoroutine<Boolean> { continuation ->
             setWaitCondition(WaitState.STATE_CHARACTERISTIC_WRITTEN_OR_L2CAP_CLIENT, continuation)
         }
@@ -539,7 +550,7 @@ internal class BlePeripheralManagerAndroid: BlePeripheralManager {
                     false,
                     value)
                 if (rc != BluetoothStatusCodes.SUCCESS) {
-                    throw Error("Error notifyCharacteristicChanged on characteristic ${characteristic.uuid} rc=$rc")
+                    throw IllegalStateException("Error notifyCharacteristicChanged on characteristic ${characteristic.uuid} rc=$rc")
                 }
             } else {
                 @Suppress("DEPRECATION")
@@ -550,7 +561,7 @@ internal class BlePeripheralManagerAndroid: BlePeripheralManager {
                         characteristic,
                         false)
                 ) {
-                    throw Error("Error notifyCharacteristicChanged on characteristic ${characteristic.uuid}")
+                    throw IllegalStateException("Error notifyCharacteristicChanged on characteristic ${characteristic.uuid}")
                 }
             }
         }
@@ -580,7 +591,8 @@ internal class BlePeripheralManagerAndroid: BlePeripheralManager {
                 Logger.i(TAG, "Closing deferred L2CAP socket (via delay)")
                 try {
                     deferredCloseSocket?.close()
-                } catch (e: Throwable) {
+                } catch (e: Exception) {
+                    if (e is CancellationException) throw e
                     Logger.e(TAG, "Error closing L2CAP socket (via delay)", e)
                 }
                 deferredCloseSocket = null
@@ -612,30 +624,32 @@ internal class BlePeripheralManagerAndroid: BlePeripheralManager {
         try {
             l2capSocket = l2capServerSocket!!.accept()
 
+            val psm = l2capPsm
             l2capServerSocket?.close()
             l2capServerSocket = null
 
             if (waitFor?.state == WaitState.STATE_CHARACTERISTIC_WRITTEN_OR_L2CAP_CLIENT) {
-                Logger.i(TAG, "L2CAP connection")
+                Logger.i(TAG, "L2CAP client at PSM $psm")
                 device = l2capSocket!!.remoteDevice
-                // Since the central found us, we can stop advertising....
-                advertiser?.stopAdvertising(advertiseCallback)
                 resumeWait()
             } else {
-                Logger.w(TAG, "Got a L2CAP client but not waiting")
-                return
+                Logger.i(TAG, "L2CAP client at PSM $psm (but not yet waiting)")
+                device = l2capSocket!!.remoteDevice
             }
+            // Since the central found us, we can stop advertising....
+            advertiser?.stopAdvertising(advertiseCallback)
 
             val inputStream = l2capSocket!!.inputStream
             while (true) {
                 val message = inputStream.readNOctets(inputStream.readNOctets(4U).getUInt32(0))
                 incomingMessages.send(message)
             }
-        } catch (e: Throwable) {
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
             if (l2capNotUsed) {
                 Logger.d(TAG, "Ignoring error since l2capNotUsed is true", e)
             } else {
-                onError(Error("Accepting/reading from L2CAP socket failed", e))
+                onError(IllegalStateException("Accepting/reading from L2CAP socket failed", e))
             }
         }
     }

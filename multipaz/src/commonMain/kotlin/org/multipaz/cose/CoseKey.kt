@@ -9,6 +9,14 @@ import org.multipaz.cbor.annotation.CborSerializationImplemented
 import org.multipaz.cbor.buildCborMap
 import org.multipaz.crypto.EcPrivateKey
 import org.multipaz.crypto.EcPublicKey
+import org.multipaz.crypto.MlDsaPrivateKey
+import org.multipaz.crypto.MlDsaPublicKey
+import org.multipaz.crypto.MlKemPrivateKey
+import org.multipaz.crypto.MlKemPublicKey
+import org.multipaz.crypto.PrivateKey
+import org.multipaz.crypto.PublicKey
+import org.multipaz.crypto.RsaPrivateKey
+import org.multipaz.crypto.RsaPublicKey
 
 /**
  * COSE Key.
@@ -40,6 +48,18 @@ class CoseKey(val labels: Map<CoseLabel, DataItem>) {
     }
 
     /**
+     * Gets the public key in the COSE Key as a [PublicKey].
+     */
+    val publicKey: PublicKey
+        get() = PublicKey.fromCoseKey(this)
+
+    /**
+     * Gets the private key in the COSE Key as a [PrivateKey].
+     */
+    val privateKey: PrivateKey
+        get() = PrivateKey.fromCoseKey(this)
+
+    /**
      * Gets the public key in the COSE Key as a [EcPublicKey].
      */
     val ecPublicKey: EcPublicKey
@@ -50,6 +70,42 @@ class CoseKey(val labels: Map<CoseLabel, DataItem>) {
      */
     val ecPrivateKey: EcPrivateKey
         get() = EcPrivateKey.fromCoseKey(this)
+
+    /**
+     * Gets the public key in the COSE Key as a [RsaPublicKey].
+     */
+    val rsaPublicKey: RsaPublicKey
+        get() = RsaPublicKey.fromCoseKey(this)
+
+    /**
+     * Gets the private key in the COSE Key as a [RsaPrivateKey].
+     */
+    val rsaPrivateKey: RsaPrivateKey
+        get() = RsaPrivateKey.fromCoseKey(this)
+
+    /**
+     * Gets the public key in the COSE Key as a [MlDsaPublicKey].
+     */
+    val mlDsaPublicKey: MlDsaPublicKey
+        get() = MlDsaPublicKey.fromCoseKey(this)
+
+    /**
+     * Gets the private key in the COSE Key as a [MlDsaPrivateKey].
+     */
+    val mlDsaPrivateKey: MlDsaPrivateKey
+        get() = MlDsaPrivateKey.fromCoseKey(this)
+
+    /**
+     * Gets the public key in the COSE Key as a [MlKemPublicKey].
+     */
+    val mlKemPublicKey: MlKemPublicKey
+        get() = MlKemPublicKey.fromCoseKey(this)
+
+    /**
+     * Gets the private key in the COSE Key as a [MlKemPrivateKey].
+     */
+    val mlKemPrivateKey: MlKemPrivateKey
+        get() = MlKemPrivateKey.fromCoseKey(this)
 
     companion object {
         /**

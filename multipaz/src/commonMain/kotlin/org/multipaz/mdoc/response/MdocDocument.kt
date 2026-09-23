@@ -18,8 +18,10 @@ import org.multipaz.crypto.AsymmetricKey
 import org.multipaz.crypto.Crypto
 import org.multipaz.crypto.EcPublicKey
 import org.multipaz.crypto.Hkdf
+import org.multipaz.crypto.SecretKey
 import org.multipaz.crypto.SignatureVerificationException
 import org.multipaz.crypto.X509CertChain
+import org.multipaz.documenttype.TransactionType
 import org.multipaz.mdoc.credential.MdocCredential
 import org.multipaz.mdoc.devicesigned.DeviceAuth
 import org.multipaz.mdoc.devicesigned.DeviceNamespaces
@@ -28,9 +30,10 @@ import org.multipaz.mdoc.issuersigned.IssuerNamespaces
 import org.multipaz.mdoc.issuersigned.IssuerSignedItem
 import org.multipaz.mdoc.issuersigned.buildIssuerNamespaces
 import org.multipaz.mdoc.mso.MobileSecurityObject
+import org.multipaz.presentment.TransactionData
+import org.multipaz.presentment.TransactionProtocol
 import org.multipaz.presentment.PresentmentUnlockReason
 import org.multipaz.request.MdocRequestedClaim
-import kotlin.time.Clock
 import kotlin.time.Instant
 
 /**
@@ -43,7 +46,7 @@ import kotlin.time.Instant
  * @property deviceNamespaces the device-signed data elements.
  * @property errors the errors in the document.
  */
-data class MdocDocument(
+class MdocDocument(
     val docType: String,
     val issuerAuth: CoseSign1,
     val issuerNamespaces: IssuerNamespaces,
@@ -52,20 +55,6 @@ data class MdocDocument(
     val errors: Map<String, Map<String, Int>>,
     private val issuerNamespaceDigests: Map<String, Map<String, ByteString>>? = null
 ) {
-
-    // Don't include issuerNamespaceDigests in comparison
-    override fun equals(other: Any?): Boolean {
-        if (this === other) return true
-        if (other !is MdocDocument) return false
-        if (docType != other.docType) return false
-        if (issuerAuth != other.issuerAuth) return false
-        if (issuerNamespaces != other.issuerNamespaces) return false
-        if (deviceAuth != other.deviceAuth) return false
-        if (deviceNamespaces != other.deviceNamespaces) return false
-        if (errors != other.errors) return false
-        return true
-    }
-
     /**
      * Convenience property for accessing the [MobileSecurityObject] from [issuerAuth].
      */
@@ -78,10 +67,18 @@ data class MdocDocument(
      * Convenience property for accessing the X.509 certificate chain for the issuer signature from [issuerAuth].
      */
     val issuerCertChain: X509CertChain by lazy {
-        issuerAuth.unprotectedHeaders[
-            CoseNumberLabel(Cose.COSE_LABEL_X5CHAIN)
-        ]!!.asX509CertChain
+        (issuerAuth.protectedHeaders[Cose.COSE_LABEL_X5CHAIN.toCoseLabel]
+            ?: issuerAuth.unprotectedHeaders[Cose.COSE_LABEL_X5CHAIN.toCoseLabel])!!.asX509CertChain
     }
+
+    /**
+     * List of verified transaction data which was sent in the request
+     */
+    lateinit var transactionData: List<TransactionData<*>>
+    /**
+     * Transaction response indexed by [TransactionType.identifier]
+     */
+    lateinit var transactionResponse: Map<String, Map<String, DataItem>>
 
     /**
      * Generates CBOR compliant with the CDDL for `Document` according to ISO 18013-5.
@@ -125,20 +122,19 @@ data class MdocDocument(
 
     internal suspend fun verify(
         sessionTranscript: DataItem,
-        eReaderKey: AsymmetricKey? = null,
-        atTime: Instant = Clock.System.now(),
+        eReaderKey: AsymmetricKey?,
+        transactionData: List<TransactionData<*>>,
+        atTime: Instant,
+        rejectIfValidUntilAfterNotAfter: Boolean = false,
     ) {
         // First check the issuer signature..
-        val issuerAuthorityCertChain =
-            issuerAuth.unprotectedHeaders[
-                CoseNumberLabel(Cose.COSE_LABEL_X5CHAIN)
-            ]!!.asX509CertChain
+        val issuerAuthorityCertChain = issuerCertChain
         val signatureAlgorithm = Algorithm.fromCoseAlgorithmIdentifier(
             issuerAuth.protectedHeaders[
                 CoseNumberLabel(Cose.COSE_LABEL_ALG)
             ]!!.asNumber.toInt()
         )
-        val documentSigningKey = issuerAuthorityCertChain.certificates[0].ecPublicKey
+        val documentSigningKey = issuerAuthorityCertChain.certificates[0].publicKey
         try {
             Cose.coseSign1Check(
                 documentSigningKey,
@@ -156,6 +152,13 @@ data class MdocDocument(
         }
 
         // Check validity
+        val dsCert = issuerAuthorityCertChain.certificates[0]
+        if (mso.signedAt < dsCert.validityNotBefore || mso.signedAt > dsCert.validityNotAfter) {
+            throw IllegalStateException("MSO signed date is outside DS certificate validity period")
+        }
+        if (rejectIfValidUntilAfterNotAfter && mso.validUntil > dsCert.validityNotAfter) {
+            throw IllegalStateException("MSO validUntil is after DS certificate validity period")
+        }
         if (atTime < mso.validFrom) {
             throw IllegalStateException("MSO is not yet valid")
         }
@@ -196,24 +199,26 @@ data class MdocDocument(
                 if (eReaderKey == null) {
                     throw IllegalArgumentException("Device authentication is MAC but eReaderKey was not set")
                 }
-                val sharedSecret = eReaderKey.keyAgreement(mso.deviceKey)
                 val sessionTranscriptBytes = Cbor.encode(Tagged(
                     Tagged.ENCODED_CBOR,
                     Bstr(Cbor.encode(sessionTranscript)))
                 )
                 val salt = Crypto.digest(Algorithm.SHA256, sessionTranscriptBytes)
                 val info = "EMacKey".encodeToByteArray()
-                val eMacKey = Hkdf.deriveKey(Algorithm.HMAC_SHA256, sharedSecret, salt, info, 32)
-                val expectedTag = Cose.coseMac0(
-                    algorithm = Algorithm.HMAC_SHA256,
-                    key = eMacKey,
-                    message = deviceAuthenticationBytes,
-                    includeMessageInPayload = false,
-                    protectedHeaders = mapOf(
-                        CoseNumberLabel(Cose.COSE_LABEL_ALG) to Algorithm.HMAC_SHA256.coseAlgorithmIdentifier!!.toDataItem()
-                    ),
-                    unprotectedHeaders = mapOf()
-                ).tag
+                val expectedTag = eReaderKey.keyAgreement(mso.deviceKey).use { sharedSecretKey ->
+                    Hkdf.deriveKey(Algorithm.HMAC_SHA256, sharedSecretKey, salt, info, 32).use { eMacKey ->
+                        Cose.coseMac0(
+                            algorithm = Algorithm.HMAC_SHA256,
+                            key = eMacKey,
+                            message = deviceAuthenticationBytes,
+                            includeMessageInPayload = false,
+                            protectedHeaders = mapOf(
+                                CoseNumberLabel(Cose.COSE_LABEL_ALG) to Algorithm.HMAC_SHA256.coseAlgorithmIdentifier!!.toDataItem()
+                            ),
+                            unprotectedHeaders = mapOf()
+                        ).tag
+                    }
+                }
                 if (!(expectedTag contentEquals deviceAuth.mac.tag)) {
                     throw IllegalStateException("Device authentication MAC failed to verify")
                 }
@@ -239,6 +244,61 @@ data class MdocDocument(
                 }
             }
         }
+
+        // Check DeviceSigned key authorizations
+        for ((namespaceName, innerMap) in deviceNamespaces.data) {
+            for ((dataElementName, _) in innerMap) {
+                val authorizedByNamespace = mso.deviceKeyAuthorizedNamespaces.contains(namespaceName)
+                val authorizedByElement = mso.deviceKeyAuthorizedDataElements[namespaceName]?.contains(dataElementName) == true
+                if (!authorizedByNamespace && !authorizedByElement) {
+                    throw IllegalStateException(
+                        "Device-signed data element '$dataElementName' in namespace '$namespaceName' is not authorized by MSO"
+                    )
+                }
+            }
+        }
+
+        // Check transaction data and return transaction processing responses
+        this.transactionData = transactionData
+        transactionResponse = buildMap {
+            for (transaction in transactionData) {
+                val response: Map<String, DataItem> = when (transaction.protocol) {
+                    TransactionProtocol.ISO_18013_5 -> {
+                        val ns = transaction.type.getMdocResponseNamespace(TransactionProtocol.ISO_18013_5)
+                        val namespaceMap = deviceNamespaces.data[ns]
+                            ?: throw IllegalStateException("No transaction response namespace '$ns'")
+                        val responseItem = namespaceMap[transaction.type.identifier]
+                            ?: throw IllegalStateException("No transaction response for '${transaction.type.identifier}'")
+                        responseItem.asMap.entries.associate { (k, v) -> Pair(k.asTstr, v) }
+                    }
+                    TransactionProtocol.OPENID4VP -> {
+                        val ns = transaction.type.getMdocResponseNamespace(TransactionProtocol.OPENID4VP)
+                        val namespaceMap = deviceNamespaces.data[ns]
+                            ?: throw IllegalStateException(
+                                "No transaction response for '${transaction.type.identifier}' in namespace '$ns'"
+                            )
+                        namespaceMap
+                    }
+                }
+                transaction.verifyMdocResponse(response)
+                put(transaction.type.identifier, response)
+            }
+        }
+    }
+
+    // This should only be used for testing
+    // Don't include issuerNamespaceDigests in comparison
+    // TODO: consider either removing this or doing hashCode as well
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is MdocDocument) return false
+        if (docType != other.docType) return false
+        if (issuerAuth != other.issuerAuth) return false
+        if (issuerNamespaces != other.issuerNamespaces) return false
+        if (deviceAuth != other.deviceAuth) return false
+        if (deviceNamespaces != other.deviceNamespaces) return false
+        if (errors != other.errors) return false
+        return true
     }
 
     companion object {
@@ -264,14 +324,14 @@ data class MdocDocument(
                     val namespaceName = namespaceDataItemKey.asTstr
                     val innerMap = mutableMapOf<String, ByteString>()
                     for (issuerSignedItemBytes in namespaceDataItemValue.asArray) {
-                        val issuerSignedItem = IssuerSignedItem.fromDataItem(issuerSignedItemBytes.asTaggedEncodedCbor)
+                        val issuerSignedItem = IssuerSignedItem(issuerSignedItemBytes.asTaggedEncodedCbor)
                         val digest = Crypto.digest(
                             algorithm = mso.digestAlgorithm,
                             message = Cbor.encode(issuerSignedItemBytes)
                         )
-                        innerMap.put(issuerSignedItem.dataElementIdentifier, ByteString(digest))
+                        innerMap[issuerSignedItem.dataElementIdentifier] = ByteString(digest)
                     }
-                    issuerNamespaceDigests.put(namespaceName, innerMap)
+                    issuerNamespaceDigests[namespaceName] = innerMap
                 }
                 IssuerNamespaces.fromDataItem(it)
             } ?: buildIssuerNamespaces {}
@@ -296,7 +356,7 @@ data class MdocDocument(
                 deviceAuth = deviceAuth,
                 deviceNamespaces = deviceNamespaces,
                 errors = errors ?: emptyMap(),
-                issuerNamespaceDigests = issuerNamespaceDigests
+                issuerNamespaceDigests = issuerNamespaceDigests,
             )
         }
 
@@ -337,26 +397,28 @@ data class MdocDocument(
                 if (eReaderKey == null) {
                     throw IllegalStateException("Trying to add a document with MACing but eReaderKey not specified")
                 }
-                val sharedSecret = deviceKey.keyAgreement(eReaderKey)
                 val sessionTranscriptBytes = Cbor.encode(
                     Tagged(Tagged.ENCODED_CBOR, Bstr(encodedSessionTranscript))
                 )
                 val salt = Crypto.digest(Algorithm.SHA256, sessionTranscriptBytes)
                 val info = "EMacKey".encodeToByteArray()
-                val eMacKey = Hkdf.deriveKey(Algorithm.HMAC_SHA256, sharedSecret, salt, info, 32)
-                val deviceMac = Cose.coseMac0(
-                    algorithm = Algorithm.HMAC_SHA256,
-                    key = eMacKey,
-                    message = deviceAuthenticationBytes,
-                    includeMessageInPayload = false,
-                    protectedHeaders = mapOf(
-                        Pair(
-                            CoseNumberLabel(Cose.COSE_LABEL_ALG),
-                            Algorithm.HMAC_SHA256.coseAlgorithmIdentifier!!.toDataItem()
+                val deviceMac = deviceKey.keyAgreement(eReaderKey).use { sharedSecretKey ->
+                    Hkdf.deriveKey(Algorithm.HMAC_SHA256, sharedSecretKey, salt, info, 32).use { eMacKey ->
+                        Cose.coseMac0(
+                            algorithm = Algorithm.HMAC_SHA256,
+                            key = eMacKey,
+                            message = deviceAuthenticationBytes,
+                            includeMessageInPayload = false,
+                            protectedHeaders = mapOf(
+                                Pair(
+                                    CoseNumberLabel(Cose.COSE_LABEL_ALG),
+                                    Algorithm.HMAC_SHA256.coseAlgorithmIdentifier!!.toDataItem()
+                                )
+                            ),
+                            unprotectedHeaders = mapOf()
                         )
-                    ),
-                    unprotectedHeaders = mapOf()
-                )
+                    }
+                }
                 DeviceAuth.Mac(deviceMac)
             } else {
                 // Make sure we're not using fully-specified algorithms

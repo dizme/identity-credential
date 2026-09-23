@@ -1,9 +1,7 @@
 package org.multipaz.testapp
 
-import androidx.sqlite.driver.NativeSQLiteDriver
 import io.ktor.client.engine.HttpClientEngineFactory
 import io.ktor.client.engine.darwin.Darwin
-import org.multipaz.storage.Storage
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.allocArray
@@ -17,24 +15,23 @@ import kotlinx.cinterop.toKString
 import kotlinx.cinterop.value
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.newSingleThreadContext
 import multipazproject.samples.testapp.generated.resources.Res
 import multipazproject.samples.testapp.generated.resources.app_icon
-import org.multipaz.nfc.NfcTagReader
-import org.multipaz.prompt.IosPromptModel
-import org.multipaz.prompt.PromptModel
+import org.multipaz.document.Document
+import org.multipaz.document.DocumentBadge
+import org.multipaz.presentment.PresentmentSource
+import org.multipaz.storage.Storage
 import org.multipaz.storage.ios.IosStorage
-import org.multipaz.storage.sqlite.SqliteStorage
+import platform.Foundation.NSBundle
 import platform.Foundation.NSFileManager
-import platform.Foundation.NSURLIsExcludedFromBackupKey
 import platform.darwin.freeifaddrs
 import platform.darwin.getifaddrs
 import platform.darwin.ifaddrs
 import platform.darwin.inet_ntop
 import platform.posix.AF_INET
 import platform.posix.AF_INET6
-import platform.posix.INET_ADDRSTRLEN
 import platform.posix.INET6_ADDRSTRLEN
+import platform.posix.INET_ADDRSTRLEN
 import platform.posix.sa_family_t
 import platform.posix.sockaddr_in
 import platform.posix.sockaddr_in6
@@ -45,10 +42,6 @@ actual object TestAppConfiguration {
 
     actual val appIcon = Res.drawable.app_icon
 
-    actual val promptModel: PromptModel by lazy {
-        IosPromptModel.Builder().apply { addCommonDialogs() }.build()
-    }
-
     actual val platform = TestAppPlatform.IOS
 
     @OptIn(
@@ -58,7 +51,8 @@ actual object TestAppConfiguration {
     )
     actual val storage: Storage = IosStorage(
         storageFileUrl = NSFileManager.defaultManager.containerURLForSecurityApplicationGroupIdentifier(
-            groupIdentifier = "group.org.multipaz.testapp.sharedgroup"
+            groupIdentifier = NSBundle.mainBundle.objectForInfoDictionaryKey("AppGroupID") as? String
+                ?: error("Missing AppGroupID in Info.plist")
         )!!.URLByAppendingPathComponent("storageNoBackup.db")!!,
         excludeFromBackup = true
     )
@@ -117,7 +111,7 @@ actual object TestAppConfiguration {
 
         for (address in addresses) {
             if (address.startsWith("192.168") || address.startsWith("10.") || address.startsWith("172.")) {
-                address
+                return@lazy address
             }
         }
         throw IllegalStateException("Unable to determine local address")
@@ -133,5 +127,10 @@ actual object TestAppConfiguration {
         TODO("Add support for iOS")
     }
 
-    actual suspend fun getExternalNfcTagReaders(): List<NfcTagReader> = emptyList()
+    actual suspend fun launchQuickAccessWallet(
+        source: PresentmentSource,
+        initiallySelectedDocumentId: String?
+    ) {
+        throw NotImplementedError("Not implemented on this platform")
+    }
 }

@@ -45,7 +45,6 @@ import org.multipaz.storage.StorageTableSpec
 import kotlin.random.Random
 import kotlin.test.BeforeTest
 import kotlin.test.Test
-import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
@@ -112,17 +111,189 @@ class DocumentStoreTest {
 
         // Expect reverse order, since creation time was decreasing
         assertEquals(documents.reversed(), documentStore.listDocuments())
+    }
 
-        // Use ordering
-        documents.withIndex().forEach { (index, document) ->
-            document.edit {
-                orderingKey = "order $index"
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun testTags() = runTest {
+        val documentStore = buildDocumentStore(
+            storage = storage,
+            secureAreaRepository = secureAreaRepository
+        ) {
+            addCredentialImplementation(TestCredential.CREDENTIAL_TYPE) { document ->
+                TestCredential(document)
             }
         }
 
-        // Check that the order has changed
-        assertEquals(documents, documentStore.listDocuments())
+        assertTrue(documentStore.getTags().keys.isEmpty())
+        documentStore.getTags().edit {
+            set("com.example.name", "Alice")
+        }
+        assertEquals("Alice", documentStore.getTags().get<String>("com.example.name"))
+        documentStore.getTags().edit {
+            set("com.example.name", "Bob")
+        }
+        assertEquals("Bob", documentStore.getTags().get<String>("com.example.name"))
+
+        val doc1 = documentStore.createDocument()
+        assertTrue(doc1.tags.keys.isEmpty())
+        doc1.tags.edit {
+            set("com.example.name", "Carol")
+        }
+        assertEquals("Carol", doc1.tags.get<String>("com.example.name"))
+        doc1.tags.edit {
+            set("com.example.name", "Carlos")
+        }
+        assertEquals("Carlos", doc1.tags.get<String>("com.example.name"))
+
+        val doc2 = documentStore.createDocument()
+        assertTrue(doc2.tags.keys.isEmpty())
+        doc2.tags.edit {
+            set("com.example.name", "Dan")
+        }
+        assertEquals("Dan", doc2.tags.get<String>("com.example.name"))
+
+        val cred = TestCredential(
+            doc2,
+            null,
+            CREDENTIAL_DOMAIN
+        )
+        cred.addToDocument()
+        assertTrue(cred.tags.keys.isEmpty())
+        cred.tags.edit {
+            set("com.example.name", "Eve")
+        }
+        assertEquals("Eve", cred.tags.get<String>("com.example.name"))
+        cred.tags.edit {
+            set("com.example.name", "Yves")
+        }
+        assertEquals("Yves", cred.tags.get<String>("com.example.name"))
+
+
+        // Check that the tags are persisted
+        runCurrent()
+        val documentStore2 = buildDocumentStore(
+            storage = storage,
+            secureAreaRepository = secureAreaRepository
+        ) {
+            addCredentialImplementation(TestCredential.CREDENTIAL_TYPE) { document ->
+                TestCredential(document)
+            }
+        }
+        assertEquals("Bob", documentStore2.getTags().get<String>("com.example.name"))
+
+        assertEquals(
+            "Carlos",
+            documentStore2.lookupDocument(doc1.identifier)!!.tags.get<String>("com.example.name")
+        )
+        assertEquals(
+            "Dan",
+            documentStore2.lookupDocument(doc2.identifier)!!.tags.get<String>("com.example.name")
+        )
+        assertEquals(
+            "Yves",
+            documentStore2.lookupDocument(doc2.identifier)!!
+                .getPendingCredentials().first().tags.get<String>("com.example.name")
+        )
     }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun testIosTags() = runTest {
+        val documentStore = buildDocumentStore(
+            storage = storage,
+            secureAreaRepository = secureAreaRepository
+        ) {
+            addCredentialImplementation(TestCredential.CREDENTIAL_TYPE) { document ->
+                TestCredential(document)
+            }
+        }
+
+        // Test DocumentStore iOS mdoc doctypes tag
+        assertNull(documentStore.getIosMdocDoctypes())
+        documentStore.setIosMdocDoctypes(listOf("org.iso.18013.5.1.mDL", "eu.europa.ec.eudi.pid.1"))
+        assertEquals(
+            listOf("org.iso.18013.5.1.mDL", "eu.europa.ec.eudi.pid.1"),
+            documentStore.getIosMdocDoctypes()
+        )
+
+        // Check persistence across reload
+        runCurrent()
+        val documentStore2 = buildDocumentStore(
+            storage = storage,
+            secureAreaRepository = secureAreaRepository
+        ) {
+            addCredentialImplementation(TestCredential.CREDENTIAL_TYPE) { document ->
+                TestCredential(document)
+            }
+        }
+        assertEquals(
+            listOf("org.iso.18013.5.1.mDL", "eu.europa.ec.eudi.pid.1"),
+            documentStore2.getIosMdocDoctypes()
+        )
+
+        // Test clearing tags
+        documentStore2.setIosMdocDoctypes(null)
+        assertNull(documentStore2.getIosMdocDoctypes())
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun testAppData() = runTest {
+        val documentStore = buildDocumentStore(
+            storage = storage,
+            secureAreaRepository = secureAreaRepository
+        ) {
+            addCredentialImplementation(TestCredential.CREDENTIAL_TYPE) { document ->
+                TestCredential(document)
+            }
+        }
+
+        val testData1 = ByteString(1, 2, 3)
+        val testData2 = ByteString(4, 5, 6, 7)
+
+        val doc1 = documentStore.createDocument()
+        assertNull(doc1.appData)
+
+        val doc2 = documentStore.createDocument(appData = testData1)
+        assertEquals(testData1, doc2.appData)
+
+        doc2.edit {
+            appData = testData2
+        }
+        assertEquals(testData2, doc2.appData)
+
+        // Check persistence
+        runCurrent()
+        val documentStore2 = buildDocumentStore(
+            storage = storage,
+            secureAreaRepository = secureAreaRepository
+        ) {
+            addCredentialImplementation(TestCredential.CREDENTIAL_TYPE) { document ->
+                TestCredential(document)
+            }
+        }
+        assertNull(documentStore2.lookupDocument(doc1.identifier)!!.appData)
+        assertEquals(testData2, documentStore2.lookupDocument(doc2.identifier)!!.appData)
+
+        val doc2Reloaded = documentStore2.lookupDocument(doc2.identifier)!!
+        doc2Reloaded.edit {
+            appData = null
+        }
+        assertNull(doc2Reloaded.appData)
+
+        val documentStore3 = buildDocumentStore(
+            storage = storage,
+            secureAreaRepository = secureAreaRepository
+        ) {
+            addCredentialImplementation(TestCredential.CREDENTIAL_TYPE) { document ->
+                TestCredential(document)
+            }
+        }
+        assertNull(documentStore3.lookupDocument(doc2.identifier)!!.appData)
+    }
+
 
     @OptIn(ExperimentalCoroutinesApi::class)
     @Test
@@ -131,8 +302,8 @@ class DocumentStoreTest {
             storage = storage,
             secureAreaRepository = secureAreaRepository
         ) {
-            addCredentialImplementation(TestSecureAreaBoundCredential.CREDENTIAL_TYPE) { document ->
-                TestSecureAreaBoundCredential(document)
+            addCredentialImplementation(TestCredential.CREDENTIAL_TYPE) { document ->
+                TestCredential(document)
             }
         }
 
@@ -160,8 +331,70 @@ class DocumentStoreTest {
         doc1.edit {
             displayName = "foo"
             typeDisplayName = "bar"
+            tags.set("com.example.something", "foobar")
         }
         runCurrent()
+        assertEquals(DocumentUpdated(doc1.identifier), events.last())
+
+        doc2.tags.edit {
+            set("com.example.something", "foobar")
+        }
+        runCurrent()
+        assertEquals(DocumentUpdated(doc2.identifier), events.last())
+
+        // Make sure we only emit events if something actually changed
+        doc1.edit {}
+        assertEquals(DocumentUpdated(doc2.identifier), events.last())
+        doc1.edit {
+            displayName = "foo"  // no change, value is the same
+        }
+        assertEquals(DocumentUpdated(doc2.identifier), events.last())
+        doc1.tags.edit {
+            set("com.example.something", "foobar") // no change, value is the same
+        }
+        assertEquals(DocumentUpdated(doc2.identifier), events.last())
+        doc1.edit {
+            tags.set("com.example.something", "foobar") // no change, value is the same
+        }
+        assertEquals(DocumentUpdated(doc2.identifier), events.last())
+
+        // Check we get DocumentUpdated when changing an underlying credential
+        val credDoc1 = TestCredential(
+            doc1,
+            null,
+            CREDENTIAL_DOMAIN
+        )
+        credDoc1.addToDocument()
+        assertEquals(DocumentUpdated(doc1.identifier), events.last())
+
+        val credDoc2 = TestCredential(
+            doc2,
+            null,
+            CREDENTIAL_DOMAIN
+        )
+        credDoc2.addToDocument()
+        assertEquals(DocumentUpdated(doc2.identifier), events.last())
+
+        assertTrue(credDoc1.tags.keys.isEmpty())
+        credDoc1.tags.edit {
+            set("com.example.name", "Alice")
+        }
+        assertEquals(DocumentUpdated(doc1.identifier), events.last())
+
+        assertTrue(credDoc2.tags.keys.isEmpty())
+        credDoc2.tags.edit {
+            set("com.example.name", "Bob")
+        }
+        assertEquals(DocumentUpdated(doc2.identifier), events.last())
+
+        credDoc1.tags.edit {
+            set("com.example.name", "Alice")  // no change, value is the same
+        }
+        assertEquals(DocumentUpdated(doc2.identifier), events.last())
+
+        credDoc1.tags.edit {
+            set("com.example.name", "Alex")  // different value, should cause a change
+        }
         assertEquals(DocumentUpdated(doc1.identifier), events.last())
 
         documentStore.deleteDocument(doc0.identifier)
@@ -477,15 +710,23 @@ class DocumentStoreTest {
         )
         assertFalse(document.provisioned)
         assertEquals("init", document.displayName)
+        assertEquals(emptyList(), document.readerIdentifiers)
         document.edit { provisioned = true }
         assertTrue(document.provisioned)
+        val testReaderIds = listOf(ByteString(1, 2, 3), ByteString(4, 5, 6))
         document.edit {
             displayName = "foo"
             typeDisplayName = "bar"
             cardArt = ByteString(1, 2, 3)
+            tags.set("com.example.foo", "bar")
+            tags.set("com.example.bar", 42L)
+            readerIdentifiers = testReaderIds
         }
         assertEquals("foo", document.displayName)
         assertEquals(ByteString(1, 2, 3), document.cardArt)
+        assertEquals(testReaderIds, document.readerIdentifiers)
+        assertEquals("bar", document.tags.get("com.example.foo"))
+        assertEquals(42L, document.tags.get("com.example.bar"))
 
         val documentStore2 = buildDocumentStore(
             storage = storage,
@@ -500,6 +741,23 @@ class DocumentStoreTest {
         assertTrue(document2.provisioned)
         assertEquals("foo", document2.displayName)
         assertEquals(ByteString(1, 2, 3), document2.cardArt)
+        assertEquals(testReaderIds, document2.readerIdentifiers)
+        assertEquals("bar", document2.tags.get("com.example.foo"))
+        assertEquals(42L, document2.tags.get("com.example.bar"))
+        assertEquals(setOf("com.example.foo", "com.example.bar"), document2.tags.keys)
+        document2.edit {
+            tags.remove("com.example.bar")
+        }
+        assertEquals(setOf("com.example.foo"), document2.tags.keys)
+
+        val documentWithReaderIds = documentStore.createDocument(
+            displayName = "readerAuthDoc",
+            readerIdentifiers = testReaderIds
+        )
+        assertEquals(testReaderIds, documentWithReaderIds.readerIdentifiers)
+        val loadedDoc = documentStore2.lookupDocument(documentWithReaderIds.identifier)
+        assertNotNull(loadedDoc)
+        assertEquals(testReaderIds, loadedDoc.readerIdentifiers)
     }
 
     @OptIn(ExperimentalCoroutinesApi::class)

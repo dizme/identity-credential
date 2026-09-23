@@ -1,9 +1,10 @@
 import SwiftUI
 import Multipaz
-import MultipazSwift
 
 struct DocumentStoreScreen: View {
     @Environment(ViewModel.self) private var viewModel
+
+    @AppStorage("focusedDocumentId") private var focusedDocumentId: String = ""
 
     var body: some View {
         ScrollView {
@@ -11,7 +12,7 @@ struct DocumentStoreScreen: View {
                 Button(action: {
                     Task {
                         await viewModel.addSelfsignedMdoc(
-                            documentType: DrivingLicense.shared.getDocumentType(),
+                            documentType: DrivingLicense.shared.getDocumentType(locale: LocalizedStrings.shared.getCurrentLocale()),
                             displayName: "Erika's Driving License",
                             typeDisplayName: "Utopia Driving License",
                             cardArtResourceName: "driving_license_card_art"
@@ -23,7 +24,7 @@ struct DocumentStoreScreen: View {
                 Button(action: {
                     Task {
                         await viewModel.addSelfsignedMdoc(
-                            documentType: PhotoID.shared.getDocumentType(),
+                            documentType: PhotoID.shared.getDocumentType(locale: LocalizedStrings.shared.getCurrentLocale()),
                             displayName: "Erika's PhotoID",
                             typeDisplayName: "Utopia PhotoID",
                             cardArtResourceName: "photo_id_card_art"
@@ -35,7 +36,7 @@ struct DocumentStoreScreen: View {
                 Button(action: {
                     Task {
                         await viewModel.addSelfsignedMdoc(
-                            documentType: EUPersonalID.shared.getDocumentType(),
+                            documentType: EUPersonalID.shared.getDocumentType(locale: LocalizedStrings.shared.getCurrentLocale()),
                             displayName: "Erika's PID",
                             typeDisplayName: "Utopia PID",
                             cardArtResourceName: "pid_card_art"
@@ -47,7 +48,7 @@ struct DocumentStoreScreen: View {
                 Button(action: {
                     Task {
                         await viewModel.addSelfsignedMdoc(
-                            documentType: AgeVerification.shared.getDocumentType(),
+                            documentType: AgeVerification.shared.getDocumentType(locale: LocalizedStrings.shared.getCurrentLocale()),
                             displayName: "Erika's Age Verification Credential",
                             typeDisplayName: "Utopia Age Verification Credential",
                             cardArtResourceName: "av18_card_art"
@@ -56,7 +57,7 @@ struct DocumentStoreScreen: View {
                 }) {
                     Text("Add self-signed Age Verification Credential")
                 }
-
+                
                 Button(
                     role: .destructive,
                     action: {
@@ -69,29 +70,54 @@ struct DocumentStoreScreen: View {
                 ) {
                     Text("Delete all documents")
                 }
-
-                let numDocs = viewModel.documentModel.documentInfos.count
-                let docWord = if (numDocs == 1) { "document" } else { "documents" }
-                Text("\(numDocs) \(docWord) in DocumentStore")
-                    .font(.headline)
-                    .bold()
                 
-                ForEach(viewModel.documentModel.documentInfos, id: \.self) { documentInfo in
-                    HStack {
-                        Image(uiImage: documentInfo.cardArt)
-                            .resizable()
-                            .scaledToFit()
-                            .frame(height: 40)
-                        Text(documentInfo.document.displayName ?? "(No displayName)")
+                CardCarousel(
+                    cardInfos: viewModel.documentModel.documentInfos,
+                    initialCardInfo: viewModel.documentModel.documentInfos.first { $0.identifier == focusedDocumentId },
+                    allowReordering: true,
+                    onCardClicked: { cardInfo in
+                        let documentInfo = cardInfo as! DocumentInfo
+                        viewModel.path.append(Destination.documentScreen(documentId: documentInfo.document.identifier))
+                    },
+                    onCardFocused: { cardInfo in
+                        focusedDocumentId = cardInfo.identifier
+                    },
+                    onCardReordered: { cardInfo, oldPosition, newPosition in
+                        let documentInfo = cardInfo as! DocumentInfo
+                        Task {
+                            do {
+                                try await viewModel.documentModel.setDocumentPosition(
+                                    documentInfo: documentInfo,
+                                    position: newPosition
+                                )
+                            } catch {
+                                print("Error setting document position: \(error)")
+                            }
+                        }
+                    },
+                    selectedCardInfo: { cardInfo, documentIdx, numDocuments in
+                        HStack {
+                            if let documentInfo = cardInfo as? DocumentInfo {
+                                Text("\(documentIdx + 1) of \(numDocuments): " +
+                                     (documentInfo.document.displayName ?? "(No displayName)")
+                                )
+                                .font(.subheadline)
+                                .bold()
+                            } else {
+                                Text("Drag to reorder")
+                                    .font(.subheadline)
+                                    .bold()
+                            }
+                        }
+                    },
+                    emptyCardContent: {
+                        Text("No documents in store")
+                            .foregroundStyle(Color.secondary)
                     }
-                    .onTapGesture {
-                        viewModel.path.append(Destination.documentScreen(documentInfo: documentInfo))
-                    }
-                }
+                )
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding()
         }
         .navigationTitle("Document Store")
-        .padding()
     }
 }

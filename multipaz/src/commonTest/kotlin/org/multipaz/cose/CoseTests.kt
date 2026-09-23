@@ -21,6 +21,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class CoseTests {
@@ -301,6 +302,134 @@ class CoseTests {
     @Test fun coseSign1_SigningKey_ESB512() = coseSign1_SigningKey_helper(Algorithm.ESB512)
     @Test fun coseSign1_SigningKey_ED25519() = coseSign1_SigningKey_helper(Algorithm.ED25519)
     @Test fun coseSign1_SigningKey_ED448() = coseSign1_SigningKey_helper(Algorithm.ED448)
+
+    fun coseSign1_SigningKey_Rsa_helper(algorithm: Algorithm) = runTest {
+        assertTrue(algorithm.fullySpecified)
+
+        val storage = EphemeralStorage()
+        val sa = SoftwareSecureArea.create(storage)
+
+        sa.createKey("testKey", CreateKeySettings(algorithm, ByteString()))
+        val message = "Hello World".encodeToByteArray()
+
+        // First check that coseSign1Sign() puts the algorithm's coseAlgorithmIdentifier in
+        // the protected header as COSE_LABEL_ALG
+        val coseSignNoExplicitHeaderSet = Cose.coseSign1Sign(
+            signingKey = AsymmetricKey.anonymous(
+                secureArea = sa,
+                alias = "testKey"
+            ),
+            message = message,
+            includeMessageInPayload = true,
+            protectedHeaders = mapOf(),
+            unprotectedHeaders = mapOf()
+        )
+        Cose.coseSign1Check(
+            sa.getKeyInfo("testKey").publicKey,
+            null,
+            coseSignNoExplicitHeaderSet,
+            algorithm
+        )
+        assertEquals(
+            algorithm.coseAlgorithmIdentifier,
+            coseSignNoExplicitHeaderSet.protectedHeaders[Cose.COSE_LABEL_ALG.toCoseLabel]!!.asNumber.toInt()
+        )
+
+        // Second, check detached payload mode
+        val coseSignDetached = Cose.coseSign1Sign(
+            signingKey = AsymmetricKey.anonymous(sa, "testKey"),
+            message = message,
+            includeMessageInPayload = false,
+            protectedHeaders = mapOf(),
+            unprotectedHeaders = mapOf(),
+        )
+        assertNull(coseSignDetached.payload)
+        Cose.coseSign1Check(
+            sa.getKeyInfo("testKey").publicKey,
+            message,
+            coseSignDetached,
+            algorithm
+        )
+    }
+
+    @Test fun coseSign1_SigningKey_RS256_2048() = coseSign1_SigningKey_Rsa_helper(Algorithm.RS256_2048)
+    @Test fun coseSign1_SigningKey_PS256_2048() = coseSign1_SigningKey_Rsa_helper(Algorithm.PS256_2048)
+
+    @Test
+    fun coseSign1_Rsa_Direct() = runTest {
+        val rsaKey = Crypto.createRsaPrivateKey(2048)
+        val message = "Hello RSA in COSE".encodeToByteArray()
+
+        for (alg in listOf(Algorithm.RS256, Algorithm.PS256)) {
+            val signingKey = AsymmetricKey.anonymous(rsaKey, alg)
+            val coseSign1 = Cose.coseSign1Sign(
+                signingKey = signingKey,
+                message = message,
+                includeMessageInPayload = true
+            )
+            assertEquals(
+                alg.coseAlgorithmIdentifier,
+                coseSign1.protectedHeaders[Cose.COSE_LABEL_ALG.toCoseLabel]!!.asNumber.toInt()
+            )
+            Cose.coseSign1Check(
+                publicKey = rsaKey.publicKey,
+                detachedData = null,
+                signature = coseSign1,
+                signatureAlgorithm = alg
+            )
+        }
+    }
+
+    private fun coseSign1_SigningKey_MlDsa_helper(algorithm: Algorithm) = runTest {
+        if (algorithm !in Crypto.supportedMlDsaAlgorithms) {
+            return@runTest
+        }
+        val storage = EphemeralStorage()
+        val sa = SoftwareSecureArea.create(storage)
+
+        sa.createKey("testKey", CreateKeySettings(algorithm))
+        val message = "Hello ML-DSA in COSE".encodeToByteArray()
+
+        val coseSignNoExplicitHeaderSet = Cose.coseSign1Sign(
+            signingKey = AsymmetricKey.anonymous(
+                secureArea = sa,
+                alias = "testKey"
+            ),
+            message = message,
+            includeMessageInPayload = true,
+            protectedHeaders = mapOf(),
+            unprotectedHeaders = mapOf()
+        )
+        Cose.coseSign1Check(
+            sa.getKeyInfo("testKey").publicKey,
+            null,
+            coseSignNoExplicitHeaderSet,
+            algorithm
+        )
+        assertEquals(
+            algorithm.coseAlgorithmIdentifier,
+            coseSignNoExplicitHeaderSet.protectedHeaders[Cose.COSE_LABEL_ALG.toCoseLabel]!!.asNumber.toInt()
+        )
+
+        val coseSignDetached = Cose.coseSign1Sign(
+            signingKey = AsymmetricKey.anonymous(sa, "testKey"),
+            message = message,
+            includeMessageInPayload = false,
+            protectedHeaders = mapOf(),
+            unprotectedHeaders = mapOf(),
+        )
+        assertNull(coseSignDetached.payload)
+        Cose.coseSign1Check(
+            sa.getKeyInfo("testKey").publicKey,
+            message,
+            coseSignDetached,
+            algorithm
+        )
+    }
+
+    @Test fun coseSign1_SigningKey_ML_DSA_44() = coseSign1_SigningKey_MlDsa_helper(Algorithm.ML_DSA_44)
+    @Test fun coseSign1_SigningKey_ML_DSA_65() = coseSign1_SigningKey_MlDsa_helper(Algorithm.ML_DSA_65)
+    @Test fun coseSign1_SigningKey_ML_DSA_87() = coseSign1_SigningKey_MlDsa_helper(Algorithm.ML_DSA_87)
 
     @Test
     fun coseSign1X5Chain() = runTest {

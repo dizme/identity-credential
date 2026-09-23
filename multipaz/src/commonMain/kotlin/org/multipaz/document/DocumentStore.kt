@@ -27,9 +27,22 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.io.bytestring.ByteString
+import kotlinx.io.bytestring.encodeToByteString
+import org.multipaz.cbor.Cbor
+import org.multipaz.cbor.buildCborMap
 import org.multipaz.credential.Credential
 import org.multipaz.credential.CredentialLoaderBuilder
+import org.multipaz.mdoc.credential.MdocCredential
+import org.multipaz.mpzpass.MpzPass
 import org.multipaz.provisioning.Provisioning
+import org.multipaz.sdjwt.credential.KeyBoundSdJwtVcCredential
+import org.multipaz.sdjwt.credential.KeylessSdJwtVcCredential
+import org.multipaz.securearea.software.SoftwareCreateKeySettings
+import org.multipaz.securearea.software.SoftwareSecureArea
+import org.multipaz.securearea.software.SoftwareUserAuthType
+import org.multipaz.storage.NoRecordStorageException
+import org.multipaz.tags.Tags
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.time.Clock
 import kotlin.time.Instant
 
@@ -66,7 +79,7 @@ class DocumentStore private constructor(
         documentId: String,
         data: ByteString,
     ) -> AbstractDocumentMetadata)?,
-    private val documentTableSpec: StorageTableSpec = Document.defaultTableSpec
+    private val documentTableSpec: StorageTableSpec = Document.defaultTableSpec,
 ) {
     // Use a cache so the same instance is returned by multiple lookupDocument() calls.
     // Cache is protected by the lock. Once the document is loaded it is never evicted.
@@ -76,6 +89,37 @@ class DocumentStore private constructor(
     init {
         check(!documentTableSpec.supportExpiration)
         check(!documentTableSpec.supportPartitions)
+    }
+
+    private var tags: Tags? = null
+
+    /**
+     * Gets a [Tags] which can be used to storing application-specific data.
+     *
+     * Applications must use collision-resistant keys when using the [Tags] instance.
+     *
+     * @return a [Tags] instance.
+     */
+    suspend fun getTags(): Tags {
+        lock.withLock {
+            if (tags != null) {
+                return tags!!
+            }
+            val table = storage.getTable(documentStoreTableSpec)
+            val encodedTags = table.get(TAGS_KEY)
+            tags = Tags(
+                data = encodedTags?.toByteArray()?.let { Cbor.decode(it) },
+                saveFn = { newData ->
+                    try {
+                        table.update(TAGS_KEY, ByteString(Cbor.encode(newData)))
+                    } catch (_: NoRecordStorageException) {
+                        table.insert(TAGS_KEY, ByteString(Cbor.encode(newData)))
+                    }
+                    null
+                }
+            )
+            return tags!!
+        }
     }
 
     /**
@@ -91,6 +135,11 @@ class DocumentStore private constructor(
      * @param issuerLogo An image that represents the issuer of the document in the UI,
      *  e.g. passport office logo. PNG format is expected, transparency is supported and square
      *  aspect ratio is preferred.
+     * @param authorizationData Saved authorization data to refresh credentials, possibly without requiring
+     *  user to re-authorize.
+     * @param appData Application-specific data.
+     * @param created The time the document was created.
+     * @param readerIdentifiers A list of reader identifiers for reader authentication.
      * @param metadata initial value for [Document.metadata]
      * @return A newly created document.
      */
@@ -100,8 +149,10 @@ class DocumentStore private constructor(
         cardArt: ByteString? = null,
         issuerLogo: ByteString? = null,
         authorizationData: ByteString? = null,
+        appData: ByteString? = null,
         created: Instant = Clock.System.now(),
-        metadata: AbstractDocumentMetadata? = null
+        readerIdentifiers: List<ByteString> = emptyList(),
+        metadata: AbstractDocumentMetadata? = null,
     ): Document {
         val table = storage.getTable(documentTableSpec)
         val data = DocumentData(
@@ -112,6 +163,8 @@ class DocumentStore private constructor(
             cardArt = cardArt,
             issuerLogo = issuerLogo,
             authorizationData = authorizationData,
+            appData = appData,
+            readerIdentifiers = readerIdentifiers.ifEmpty { null },
             metadata = metadata?.serialize()
         )
         // NB: insertion in the storage is when the document is actually added, it may be
@@ -162,7 +215,7 @@ class DocumentStore private constructor(
     /**
      * Lists all documents in the store.
      *
-     * @param sort if true, the returned list is sorted using [Document.Comparator]
+     * @param sort if true, the returned list is sorted using [Document.Comparator].
      * @return list of all the documents in the store.
      */
     suspend fun listDocuments(sort: Boolean = true): List<Document> {
@@ -198,10 +251,11 @@ class DocumentStore private constructor(
                 )
             }
             document.metadata?.cleanup(secureAreaRepository, storage)
+            emitOnDocumentDeleted(identifier)
         }
     }
 
-    private val _eventFlow = MutableSharedFlow<DocumentEvent>()
+    private val _eventFlow = MutableSharedFlow<DocumentEvent>(extraBufferCapacity = 64)
 
     /**
      * A [SharedFlow] which can be used to listen for when credentials are added and removed
@@ -225,6 +279,152 @@ class DocumentStore private constructor(
 
     internal suspend fun getDocumentTable(): StorageTable {
         return storage.getTable(documentTableSpec)
+    }
+
+    /**
+     * Imports a [MpzPass] into a [DocumentStore].
+     *
+     * The returned document will have the [Document.provisioned] flag set to `true`,
+     * [Document.mpzPassId] and [Document.mpzPassVersion] will be set to [MpzPass.uniqueId]
+     * and [MpzPass.version], and [Document.readerIdentifiers] will be set to [MpzPass.readerIdentifiers].
+     *
+     * If the pass had been previously imported at an earlier version, the same [Document] will
+     * be returned and the credentials, display metadata, reader identifiers, and [Document.mpzPassVersion]
+     * will be updated. If the pass is already import at the same or later version,
+     * [ImportMpzPassException] will be thrown.
+     *
+     * @param mpzPass The [MpzPass] to import.
+     * @param isoMdocDomain The domain string to use when creating ISO mdoc credentials.
+     * @param sdJwtVcDomain The domain string to use when creating SD-JWT VC credentials.
+     * @param keylessSdJwtVcDomain the domain string to use when creating keyless SD-JWT VC credentials.
+     * @return An existing [Document] if updating, otherwise a newly created [Document]. In both cases
+     * the returned document will have the credentials included in [mpzPass].
+     * @throws IllegalStateException if a SoftwareSecureArea implementation cannot be found in the repository.
+     * @throws ImportMpzPassException if credential creation or certification fails or if the pass
+     * already exists in the store at the given version.
+     */
+    @Throws(IllegalStateException::class, ImportMpzPassException::class, CancellationException::class)
+    suspend fun importMpzPass(
+        mpzPass: MpzPass,
+        isoMdocDomain: String,
+        sdJwtVcDomain: String,
+        keylessSdJwtVcDomain: String
+    ): Document {
+        val softwareSecureArea = secureAreaRepository.getImplementation(SoftwareSecureArea.IDENTIFIER)
+            ?: throw IllegalStateException(
+                "No SoftwareSecureArea implementation found"
+            )
+
+        val document = try {
+            val existingDocument = listDocuments().find { it.mpzPassId == mpzPass.uniqueId }
+            if (existingDocument != null) {
+                existingDocument.mpzPassVersion?.let { currentVersion ->
+                    if (currentVersion >= mpzPass.version) {
+                        throw ImportMpzPassException(
+                            "Pass already imported at version $currentVersion which is greater or equal to version ${mpzPass.version}"
+                        )
+                    }
+                }
+                existingDocument.getCredentials().forEach { credential ->
+                    credential.deleteCredential()
+                }
+                existingDocument
+            } else {
+                createDocument(
+                    displayName = mpzPass.name,
+                    typeDisplayName = mpzPass.typeName,
+                    cardArt = mpzPass.cardArt,
+                    readerIdentifiers = mpzPass.readerIdentifiers,
+                )
+            }
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            throw ImportMpzPassException("Failed to create document", e)
+        }
+
+        try {
+            mpzPass.isoMdoc.forEach { isoMdoc ->
+                val createKeySettingsBuilder = SoftwareCreateKeySettings.Builder()
+                    .setPrivateKey(isoMdoc.deviceKeyPrivate)
+                if (mpzPass.userAuthenticationRequired) {
+                    createKeySettingsBuilder.setUserAuthenticationRequired(
+                        true,
+                        setOf(SoftwareUserAuthType.PASSCODE, SoftwareUserAuthType.BIOMETRIC)
+                    )
+                }
+                val importedKeyInfo = softwareSecureArea.createKey(
+                    alias = null,
+                    createKeySettings = createKeySettingsBuilder.build()
+                )
+                val credential = MdocCredential.createForExistingAlias(
+                    document = document,
+                    asReplacementForIdentifier = null,
+                    domain = isoMdocDomain,
+                    secureArea = softwareSecureArea,
+                    docType = isoMdoc.docType,
+                    existingKeyAlias = importedKeyInfo.alias,
+                )
+                credential.certify(
+                    issuerProvidedAuthenticationData = ByteString(
+                        Cbor.encode(buildCborMap {
+                            put("nameSpaces", isoMdoc.issuerNamespaces.toDataItem())
+                            put("issuerAuth", isoMdoc.issuerAuth.toDataItem())
+                        })
+                    )
+                )
+            }
+
+            mpzPass.sdJwtVc.forEach { sdJwtVc ->
+                val credential = if (sdJwtVc.deviceKeyPrivate != null) {
+                    val createKeySettingsBuilder = SoftwareCreateKeySettings.Builder()
+                        .setPrivateKey(sdJwtVc.deviceKeyPrivate)
+                    if (mpzPass.userAuthenticationRequired) {
+                        createKeySettingsBuilder.setUserAuthenticationRequired(
+                            true,
+                            setOf(SoftwareUserAuthType.PASSCODE, SoftwareUserAuthType.BIOMETRIC)
+                        )
+                    }
+                    val importedKeyInfo = softwareSecureArea.createKey(
+                        alias = null,
+                        createKeySettings = createKeySettingsBuilder.build()
+                    )
+                    KeyBoundSdJwtVcCredential.createForExistingAlias(
+                        document = document,
+                        asReplacementForIdentifier = null,
+                        domain = sdJwtVcDomain,
+                        secureArea = softwareSecureArea,
+                        vct = sdJwtVc.vct,
+                        existingKeyAlias = importedKeyInfo.alias,
+                    )
+                } else {
+                    KeylessSdJwtVcCredential.create(
+                        document = document,
+                        asReplacementForIdentifier = null,
+                        domain = keylessSdJwtVcDomain,
+                        vct = sdJwtVc.vct
+                    )
+                }
+
+                credential.certify(
+                    issuerProvidedAuthenticationData = sdJwtVc.compactSerialization.encodeToByteString()
+                )
+            }
+
+            document.edit {
+                provisioned = true
+                displayName = mpzPass.name
+                typeDisplayName = mpzPass.typeName
+                cardArt = mpzPass.cardArt
+                mpzPassId = mpzPass.uniqueId
+                mpzPassVersion = mpzPass.version
+                readerIdentifiers = mpzPass.readerIdentifiers
+            }
+            return document
+        } catch (e: Exception) {
+            deleteDocument(document.identifier)
+            if (e is CancellationException) throw e
+            throw ImportMpzPassException("Failed importing credentials", e)
+        }
     }
 
     /**
@@ -320,6 +520,13 @@ class DocumentStore private constructor(
 
     companion object {
         private const val TAG = "DocumentStore"
+
+        private val documentStoreTableSpec = StorageTableSpec(
+            name = "DocumentStore",
+            supportPartitions = false,
+            supportExpiration = false,
+        )
+        private const val TAGS_KEY = "tags"
     }
 }
 

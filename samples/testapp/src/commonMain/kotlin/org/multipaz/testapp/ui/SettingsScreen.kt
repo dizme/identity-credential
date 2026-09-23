@@ -1,5 +1,6 @@
 package org.multipaz.testapp.ui
 
+import kotlinx.coroutines.CancellationException
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -23,6 +24,7 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.painter.BitmapPainter
 import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import multipazproject.samples.testapp.generated.resources.Res
@@ -33,8 +35,6 @@ import org.multipaz.testapp.TestAppPlatform
 import org.multipaz.testapp.TestAppSettingsModel
 import org.multipaz.compose.cards.WarningCard
 import org.multipaz.compose.decodeImage
-import org.multipaz.digitalcredentials.Default
-import org.multipaz.digitalcredentials.DigitalCredentials
 import org.multipaz.document.Document
 import org.multipaz.testapp.TestAppConfiguration
 import org.multipaz.testapp.ui.customtheme.AppThemeLimeGreen
@@ -62,7 +62,8 @@ fun SettingsScreen(
                     app.settingsModel.cryptoPreferBouncyCastle.value = it
                     try {
                         TestAppConfiguration.restartApp()
-                    } catch (e: Throwable) {
+                    } catch (e: Exception) {
+                        if (e is CancellationException) throw e
                         showToast("An error occurred: $e")
                     }
                 },
@@ -254,8 +255,8 @@ fun SettingsScreen(
         item {
             SettingHeadline("Digital Credentials API Options")
         }
-        if (DigitalCredentials.Default.available) {
-            for (protocol in DigitalCredentials.Default.supportedProtocols.sorted()) {
+        if (app.digitalCredentials.registerAvailable) {
+            for (protocol in app.digitalCredentials.supportedProtocols.sorted()) {
                 item {
                     SettingToggle(
                         title = "Protocol: $protocol",
@@ -332,6 +333,17 @@ fun SettingsScreen(
         }
 
         item {
+            SettingHeadline("Logging Options")
+        }
+        item {
+            SettingToggle(
+                title = "Enable Debug Logging",
+                isChecked = app.settingsModel.loggingDebugEnabled.collectAsState().value,
+                onCheckedChange = { app.settingsModel.loggingDebugEnabled.value = it },
+            )
+        }
+
+        item {
             HorizontalDivider(
                 modifier = Modifier.padding(8.dp)
             )
@@ -359,9 +371,18 @@ fun SettingsScreen(
                             override val theme: @Composable (content: @Composable () -> Unit) -> Unit
                                 get() = { AppThemeLimeGreen(it) }
 
-                            // TODO: use lime green default cardart?
+                            // TODO: use lime green default cardart
                             override suspend fun renderFallbackCardArt(document: Document): ImageBitmap =
                                 Branding.Default.renderFallbackCardArt(document)
+
+                            // TODO: use random colors from a lime green palette
+                            @Composable
+                            override fun AvatarIcon(
+                                size: Dp,
+                                name: String,
+                                additionalData: ByteArray?,
+                                modifier: Modifier
+                            ) = Branding.Default.AvatarIcon(size, name, additionalData, modifier)
                         })
                     }
                 }) {

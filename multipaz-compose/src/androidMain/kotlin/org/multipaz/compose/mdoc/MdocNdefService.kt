@@ -1,8 +1,8 @@
 package org.multipaz.compose.mdoc
 
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
-import android.nfc.cardemulation.HostApduService
 import android.os.Bundle
 import android.os.VibrationEffect
 import android.os.Vibrator
@@ -11,21 +11,30 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlin.concurrent.Volatile
 import kotlin.time.Clock
 import kotlinx.io.bytestring.ByteString
 import org.multipaz.cbor.Cbor
 import org.multipaz.cbor.DataItem
-import org.multipaz.context.initializeApplication
+import org.multipaz.cbor.toDataItem
 import org.multipaz.crypto.Crypto
 import org.multipaz.crypto.EcCurve
 import org.multipaz.crypto.EcPrivateKey
 import org.multipaz.mdoc.connectionmethod.MdocConnectionMethod
 import org.multipaz.mdoc.connectionmethod.MdocConnectionMethodBle
 import org.multipaz.mdoc.connectionmethod.MdocConnectionMethodNfc
+import org.multipaz.mdoc.engagement.Capability
 import org.multipaz.mdoc.nfc.MdocNfcEngagementHelper
 import org.multipaz.mdoc.role.MdocRole
+import org.multipaz.mdoc.transport.MdocTransport
 import org.multipaz.mdoc.transport.MdocTransportFactory
 import org.multipaz.mdoc.transport.MdocTransportOptions
 import org.multipaz.mdoc.transport.advertise
@@ -33,10 +42,10 @@ import org.multipaz.mdoc.transport.waitForConnection
 import org.multipaz.nfc.CommandApdu
 import org.multipaz.nfc.Nfc
 import org.multipaz.nfc.ResponseApdu
-import org.multipaz.presentment.model.Iso18013Presentment
-import org.multipaz.presentment.model.PresentmentCanceled
-import org.multipaz.presentment.model.PresentmentModel
-import org.multipaz.presentment.model.PresentmentSource
+import org.multipaz.presentment.Iso18013Presentment
+import org.multipaz.presentment.PresentmentCanceledException
+import org.multipaz.presentment.PresentmentModel
+import org.multipaz.presentment.PresentmentSource
 import org.multipaz.prompt.PromptModel
 import org.multipaz.util.Logger
 import org.multipaz.util.UUID
@@ -48,12 +57,15 @@ import kotlin.time.Duration
  * Applications should subclass this and include the appropriate stanzas in its manifest
  * for binding to the NDEF Type 4 tag AID (D2760000850101).
  *
- * See `ComposeWallet` in [Multipaz Samples](https://github.com/openwallet-foundation/multipaz-samples)
- * for an example.
+ * @property applicationContext the [Context], passed by [CombinedNfcService].
+ * @property sendResponse a function to send a response APDU via [CombinedNfcService].
  */
-abstract class MdocNdefService: HostApduService() {
+abstract class MdocNdefService(
+    applicationContext: Context,
+    sendResponse: (ByteArray) -> Unit
+) : NfcApduService(applicationContext, sendResponse) {
     companion object {
-        private val TAG = "MdocNdefService"
+        private const val TAG = "MdocNdefService"
     }
 
     private fun vibrate(pattern: List<Int>) {
@@ -70,10 +82,14 @@ abstract class MdocNdefService: HostApduService() {
         vibrate(listOf(0, 100, 50, 100))
     }
 
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+
     override fun onDestroy() {
         Logger.i(TAG, "onDestroy")
         super.onDestroy()
-        engagementJob?.cancel()
+        serviceScope.cancel()
+        engagementJob = null
+        channel.close()
     }
 
     // A job started when the reader has selected us and used for establishing
@@ -88,10 +104,11 @@ abstract class MdocNdefService: HostApduService() {
     // runs until the remote reader disconnects.
     private var transactionJob: Job? = null
 
+    @Volatile
     private var engagement: MdocNfcEngagementHelper? = null
 
     // Channel used for bouncing data from processCommandApdu() and onDeactivated() to engagementJob coroutine.
-    private val channel = Channel<Data>(Channel.Factory.UNLIMITED)
+    private val channel = Channel<Data>(Channel.UNLIMITED)
 
     private sealed class Data
 
@@ -120,6 +137,7 @@ abstract class MdocNdefService: HostApduService() {
      * @property staticHandoverNfcDataTransferEnabled `true` if NFC data transfer should be offered when using NFC
      *   static handover
      * @property transportOptions the [MdocTransportOptions] to use for newly created connections.
+     * @property capabilities the capabilities to convey to the mdoc reader.
      */
     data class Settings(
         val source: PresentmentSource,
@@ -135,7 +153,11 @@ abstract class MdocNdefService: HostApduService() {
         val staticHandoverBlePeripheralServerModeEnabled: Boolean,
         val staticHandoverNfcDataTransferEnabled: Boolean,
 
-        val transportOptions: MdocTransportOptions
+        val transportOptions: MdocTransportOptions,
+        val capabilities: Map<Capability, DataItem> = mapOf(
+            Capability.READER_AUTH_ALL_SUPPORT to true.toDataItem(),
+            Capability.EXTENDED_REQUEST_SUPPORT to true.toDataItem()
+        )
     )
 
     /**
@@ -154,8 +176,6 @@ abstract class MdocNdefService: HostApduService() {
         Logger.i(TAG, "onCreate")
         super.onCreate()
 
-        initializeApplication(applicationContext)
-
         engagement = null
         transactionJob = null
 
@@ -163,24 +183,42 @@ abstract class MdocNdefService: HostApduService() {
         // from the OS in processCommandApdu() and onDeactivated() overrides. This is so we can
         // use suspend functions.
         //
-        engagementJob = CoroutineScope(Dispatchers.IO).launch {
-            while (true) {
-                val data = channel.receive()
-                when (data) {
-                    is CommandApduData -> {
-                        processCommandApdu(data.commandApdu)?.let { responseApdu ->
-                            sendResponseApdu(responseApdu.encode())
+        engagementJob = serviceScope.launch(Dispatchers.IO) {
+            for (data in channel) {
+                try {
+                    when (data) {
+                        is CommandApduData -> {
+                            processCommandApdu(data.commandApdu)?.let { responseApdu ->
+                                try {
+                                    sendResponseApdu(responseApdu.encode())
+                                } catch (e: Exception) {
+                                    Logger.w(TAG, "Error sending response APDU", e)
+                                }
+                            }
+                        }
+                        is DeactivatedData -> {
+                            processDeactivated(data.reason)
                         }
                     }
-                    is DeactivatedData -> {
-                        processDeactivated(data.reason)
+                } catch (e: Exception) {
+                    if (e is CancellationException) {
+                        if (!isActive) {
+                            // The whole service/job is being shut down, let the exception propagate so the loop dies.
+                            throw e
+                        }
+                        // Only the current sub-task (APDU processing) was aborted, keep the loop alive for the next tap.
+                        Logger.i(TAG, "engagementJob: APDU processing cancelled (likely due to deactivation)")
+                    } else {
+                        Logger.e(TAG, "Error processing data from channel", e)
                     }
                 }
             }
         }
     }
 
+    @Volatile
     private var engagementStarted = false
+    @Volatile
     private var engagementComplete = false
 
     private suspend fun startEngagement() {
@@ -201,12 +239,9 @@ abstract class MdocNdefService: HostApduService() {
         listenForCancellationFromUiJob = CoroutineScope(Dispatchers.IO).launch {
             settings.presentmentModel?.state?.collect { state ->
                 if (state == PresentmentModel.State.CanceledByUser) {
-                    engagementJob?.cancel()
-                    engagementJob = null
+                    cancelEngagementJobs()
                     transactionJob?.cancel()
                     transactionJob = null
-                    listenForCancellationFromUiJob?.cancel()
-                    listenForCancellationFromUiJob = null
                 }
             }
         }
@@ -237,7 +272,7 @@ abstract class MdocNdefService: HostApduService() {
         var staticHandoverConnectionMethods: List<MdocConnectionMethod>? = null
         if (!settings.useNegotiatedHandover) {
             staticHandoverConnectionMethods = mutableListOf<MdocConnectionMethod>()
-            val bleUuid = UUID.Companion.randomUUID()
+            val bleUuid = UUID.randomUUID()
             if (settings.staticHandoverBleCentralClientModeEnabled) {
                 staticHandoverConnectionMethods.add(
                     MdocConnectionMethodBle(
@@ -275,23 +310,25 @@ abstract class MdocNdefService: HostApduService() {
             eDeviceKey = eDeviceKey.publicKey,
             onHandoverComplete = { connectionMethods, encodedDeviceEngagement, handover ->
                 // OK, we're done with engagement and we're communicating with a bona fide ISO/IEC 18013-5:2021 reader.
-                // Start the activity and also launch a new job for handling the transaction...
+                // Let the user know and launch a new job to start the transaction.
                 //
-                //engagementComplete = true
                 vibrateSuccess()
 
-                if (settings.activityClass != null) {
-                    val intent = Intent(applicationContext, settings.activityClass)
-                    intent.addFlags(
-                        Intent.FLAG_ACTIVITY_NEW_TASK or
-                                Intent.FLAG_ACTIVITY_NO_HISTORY or
-                                Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS or
-                                Intent.FLAG_ACTIVITY_NO_ANIMATION
-                    )
-                    applicationContext.startActivity(intent)
-                }
-
+                // We launch transactionJob in a new detached scope so it survives both
+                // NFC deactivation (the reader moving away) and the Service's onDestroy
+                // (as the transaction may continue over BLE and wait for UI consent).
                 transactionJob = CoroutineScope(Dispatchers.IO + settings.promptModel).launch {
+                    if (settings.activityClass != null) {
+                        val intent = Intent(applicationContext, settings.activityClass)
+                        intent.addFlags(
+                            Intent.FLAG_ACTIVITY_NEW_TASK or
+                                    Intent.FLAG_ACTIVITY_NO_HISTORY or
+                                    Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS or
+                                    Intent.FLAG_ACTIVITY_NO_ANIMATION
+                        )
+                        applicationContext.startActivity(intent)
+                    }
+
                     val duration = Clock.System.now() - timeStarted
                     startTransaction(
                         settings = settings,
@@ -305,7 +342,7 @@ abstract class MdocNdefService: HostApduService() {
             },
             onError = { error ->
                 // Engagement failed. This can happen if a NDEF tag reader - for example another unlocked
-                // Android device - is reading this device. So we really don't want any user-visible side-effects
+                // Android device - is reading this device. So we really don't want any user-visible side effects
                 // here such as showing an error or vibrating the phone.
                 //
                 engagementComplete = true
@@ -313,7 +350,8 @@ abstract class MdocNdefService: HostApduService() {
                 Logger.w(TAG, "Engagement failed. Maybe this wasn't an ISO mdoc reader.", error)
             },
             staticHandoverMethods = staticHandoverConnectionMethods,
-            negotiatedHandoverPicker = negotiatedHandoverPicker
+            negotiatedHandoverPicker = negotiatedHandoverPicker,
+            capabilities = settings.capabilities
         )
     }
 
@@ -335,7 +373,17 @@ abstract class MdocNdefService: HostApduService() {
             eSenderKey = eDeviceKey.publicKey,
         )
 
+        val context = currentCoroutineContext()
+        val monitorJob = CoroutineScope(context).launch {
+            transport.state.collect { state ->
+                if (state == MdocTransport.State.FAILED || state == MdocTransport.State.CLOSED) {
+                    context.cancel(CancellationException("Transport $state"))
+                }
+            }
+        }
+
         try {
+            val preselectedDocuments = settings.presentmentModel?.documentsSelected?.value ?: emptyList()
             settings.presentmentModel?.setConnecting()
             Iso18013Presentment(
                 transport = transport,
@@ -344,6 +392,7 @@ abstract class MdocNdefService: HostApduService() {
                 handover = handover,
                 source = settings.source,
                 keyAgreementPossible = listOf(eDeviceKey.curve),
+                preselectedDocuments = preselectedDocuments,
                 onWaitingForRequest = { settings.presentmentModel?.setWaitingForReader() },
                 onWaitingForUserInput = { settings.presentmentModel?.setWaitingForUserInput() },
                 onDocumentsInFocus = { documents ->
@@ -352,17 +401,25 @@ abstract class MdocNdefService: HostApduService() {
                 onSendingResponse = { settings.presentmentModel?.setSending() }
             )
             settings.presentmentModel?.setCompleted(null)
-        } catch (e: Throwable) {
+        } catch (e: Exception) {
             Logger.w(TAG, "Caught error while performing 18013-5 transaction", e)
             if (e is CancellationException) {
-                settings.presentmentModel?.setCompleted(PresentmentCanceled("Presentment was cancelled"))
+                settings.presentmentModel?.setCompleted(PresentmentCanceledException("Presentment was cancelled"))
             } else {
                 settings.presentmentModel?.setCompleted(e)
             }
         } finally {
+            monitorJob.cancel()
             listenForCancellationFromUiJob?.cancel()
             listenForCancellationFromUiJob = null
         }
+    }
+
+    private fun cancelEngagementJobs() {
+        engagementJob?.cancel()
+        engagementJob = null
+        listenForCancellationFromUiJob?.cancel()
+        listenForCancellationFromUiJob = null
     }
 
     private var numApdusReceived = 0
@@ -394,13 +451,14 @@ abstract class MdocNdefService: HostApduService() {
                     val responseApdu = it.processApdu(firstCommandApdu!!)
                     if (responseApdu != ResponseApdu(status = Nfc.RESPONSE_STATUS_SUCCESS)) {
                         Logger.w(TAG, "Expected response 9000 to SELECT APPLICATION, " +
-                                " got ${responseApdu}")
+                                " got $responseApdu")
                     }
                 }
                 val responseApdu = it.processApdu(commandApdu)
                 return responseApdu
             }
-        } catch (e: Throwable) {
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
             Logger.e(TAG, "Error processing APDU in MdocNfcEngagementHelper", e)
         }
         return null
@@ -410,7 +468,18 @@ abstract class MdocNdefService: HostApduService() {
     private suspend fun processDeactivated(reason: Int) {
         try {
             engagement?.processDeactivated(reason)
-        } catch (e: Throwable) {
+
+            // Android might reuse this service for the next tap. That is, we can't rely on onDestroy()
+            // firing right after this, then onCreate(). So reset everything so next time processCommandApdu()
+            // is called we're ready to go with a new engagement...
+            engagement = null
+            engagementStarted = false
+            engagementComplete = false
+            numApdusReceived = 0
+
+            cancelEngagementJobs()
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
             Logger.e(TAG, "Error processing deactivation event in MdocNfcEngagementHelper", e)
         }
     }
@@ -418,7 +487,17 @@ abstract class MdocNdefService: HostApduService() {
     // Called by OS when an APDU arrives
     override fun processCommandApdu(encodedCommandApdu: ByteArray, extras: Bundle?): ByteArray? {
         // Bounce the APDU to processCommandApdu() above via the coroutine in I/O thread set up in onCreate()
-        val commandApdu = CommandApdu.decode(encodedCommandApdu)
+        //
+        // With Extended APDUs it's possible we get a partial APDU so gracefully handle if decoding fails. Simply
+        // log and discard, we'll likely get hit with an onDeactivated call soon anyway.
+        //
+        val commandApdu = try {
+            CommandApdu.decode(encodedCommandApdu)
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            Logger.w(TAG, "Error decoding APDU", e)
+            return null
+        }
         if (!engagementComplete) {
             val unused = channel.trySend(CommandApduData(commandApdu))
         } else {
@@ -430,18 +509,10 @@ abstract class MdocNdefService: HostApduService() {
     // Called by OS when NFC tag reader deactivates
     override fun onDeactivated(reason: Int) {
         Logger.i(TAG, "onDeactivated: reason=$reason")
+        // Important: we must call this here to unblock engagementJob if it is suspended in
+        // engagement.processApdu() waiting for a response to send back to the reader.
+        engagement?.processDeactivated(reason)
         // Bounce the event to processDeactivated() above via the coroutine in I/O thread set up in onCreate()
-        if (!engagementComplete) {
-            val unused = channel.trySend(DeactivatedData(reason))
-        }
-
-        // Android might reuse this service for the next tap. That is, we can't rely on onDestroy()
-        // firing right after this, then onCreate(). So reset everything so next time processCommandApdu()
-        // is called we're ready to go with a new engagement...
-        engagement = null
-        engagementStarted = false
-        engagementComplete = false
-        numApdusReceived = 0
-
+        val unused = channel.trySend(DeactivatedData(reason))
     }
 }

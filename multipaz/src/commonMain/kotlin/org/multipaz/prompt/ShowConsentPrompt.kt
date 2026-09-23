@@ -1,9 +1,11 @@
 package org.multipaz.prompt
 
 import org.multipaz.document.Document
-import org.multipaz.presentment.CredentialPresentmentData
-import org.multipaz.presentment.CredentialPresentmentSelection
+import org.multipaz.presentment.CredentialQueryResult
+import org.multipaz.presentment.CredentialSelection
+import org.multipaz.presentment.ConsentData
 import org.multipaz.request.Requester
+import org.multipaz.request.TrustedRequesterIdentity
 import org.multipaz.trustmanagement.TrustMetadata
 
 /**
@@ -20,25 +22,25 @@ import org.multipaz.trustmanagement.TrustMetadata
  */
 typealias ShowConsentPromptFn = suspend (
     requester: Requester,
-    trustMetadata: TrustMetadata?,
-    credentialPresentmentData: CredentialPresentmentData,
+    trustedRequesterIdentity: TrustedRequesterIdentity?,
+    consentData: ConsentData,
     preselectedDocuments: List<Document>,
     onDocumentsInFocus: (documents: List<Document>) -> Unit
-) -> CredentialPresentmentSelection?
+) -> CredentialSelection?
 
 /**
  * A [ShowConsentPromptFn] which doesn't show any consent prompt
  *
- * @return the result of calling [CredentialPresentmentData.select] passing [preselectedDocuments].
+ * @return the result of calling [CredentialQueryResult.select] passing [preselectedDocuments].
  */
 suspend fun promptModelSilentConsent(
     requester: Requester,
-    trustMetadata: TrustMetadata?,
-    credentialPresentmentData: CredentialPresentmentData,
+    trustedRequesterIdentity: TrustedRequesterIdentity?,
+    consentData: ConsentData,
     preselectedDocuments: List<Document>,
     onDocumentsInFocus: (documents: List<Document>) -> Unit
-): CredentialPresentmentSelection? {
-    val ret = credentialPresentmentData.select(preselectedDocuments)
+): CredentialSelection? {
+    val ret = consentData.credentialQueryResult.select(preselectedDocuments)
     onDocumentsInFocus(ret.matches.map { it.credential.document })
     return ret
 }
@@ -49,33 +51,33 @@ suspend fun promptModelSilentConsent(
  *
  * @param requester the relying party which is requesting the data.
  * @param trustMetadata [TrustMetadata] conveying the level of trust in the requester, if any.
- * @param credentialPresentmentData the combinations of credentials and claims that the user can select.
+ * @param consentData the combinations of credentials and claims that the user can select.
  * @param preselectedDocuments a list of documents the user may have preselected earlier (for
  *   example an OS-provided credential picker like Android's Credential Manager) or the empty list
  *   if the user didn't preselect.
  * @param onDocumentsInFocus called with the documents currently selected for the user, including when
  *   first shown. If the user selects a different set of documents in the prompt, this will be called again.
- * @return `null` if the user dismissed the prompt, otherwise a [CredentialPresentmentSelection] object
+ * @return `null` if the user dismissed the prompt, otherwise a [CredentialSelection] object
  *   conveying which credentials the user selected, if multiple options are available.
  * @throws PromptModelNotAvailableException if `coroutineContext` does not have [PromptModel].
  * @throws PromptUiNotAvailableException if the UI layer hasn't bound any UI for [PromptModel].
  */
 suspend fun promptModelRequestConsent(
     requester: Requester,
-    trustMetadata: TrustMetadata?,
-    credentialPresentmentData: CredentialPresentmentData,
+    trustedRequesterIdentity: TrustedRequesterIdentity?,
+    consentData: ConsentData,
     preselectedDocuments: List<Document>,
     onDocumentsInFocus: (documents: List<Document>) -> Unit
-): CredentialPresentmentSelection? {
-    try {
-        return PromptModel.get().requestConsent(
+): CredentialSelection? {
+    return try {
+        PromptModel.get().requestConsent(
             requester = requester,
-            trustMetadata = trustMetadata,
-            credentialPresentmentData = credentialPresentmentData,
+            trustedRequesterIdentity = trustedRequesterIdentity,
+            consentData = consentData,
             preselectedDocuments = preselectedDocuments,
             onDocumentsInFocus = onDocumentsInFocus,
         )
     } catch (_: PromptDismissedException) {
-        return null
+        null
     }
 }

@@ -1,5 +1,6 @@
 package org.multipaz.compose.prompt
 
+import kotlinx.coroutines.CancellationException
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -10,13 +11,15 @@ import org.multipaz.context.getActivity
 import org.multipaz.prompt.PromptDialogModel
 import androidx.lifecycle.compose.currentStateAsState
 import org.multipaz.prompt.BiometricPromptDialogModel
+import org.multipaz.prompt.Reason
 
 /**
  * Displays biometric prompt dialog in Composable UI environment.
  */
 @Composable
 internal fun BiometricPromptDialog(
-    model: PromptDialogModel<BiometricPromptDialogModel.BiometricPromptState, Boolean>
+    model: PromptDialogModel<BiometricPromptDialogModel.BiometricPromptState, Boolean>,
+    toHumanReadable: suspend (Reason) -> Reason.HumanReadable
 ) {
     val activity = LocalContext.current.getActivity() as FragmentActivity
     val dialogState = model.dialogState.collectAsState(PromptDialogModel.NoDialogState())
@@ -30,16 +33,18 @@ internal fun BiometricPromptDialog(
             is PromptDialogModel.DialogShownState -> {
                 val dialogParameters = dialogStateValue.parameters
                 try {
+                    val humanReadable = toHumanReadable(dialogParameters.reason)
                     val result = org.multipaz.compose.biometrics.showBiometricPrompt(
                         activity = activity,
                         cryptoObject = dialogParameters.cryptoObject,
-                        title = dialogParameters.title,
-                        subtitle = dialogParameters.subtitle,
+                        title = humanReadable.title,
+                        subtitle = humanReadable.subtitle,
                         userAuthenticationTypes = dialogParameters.userAuthenticationTypes,
                         requireConfirmation = dialogParameters.requireConfirmation
                     )
                     dialogStateValue.resultChannel.send(result)
-                } catch (err: Throwable) {
+                } catch (err: Exception) {
+                    if (err is CancellationException) throw err
                     dialogStateValue.resultChannel.send(false)
                 }
             }

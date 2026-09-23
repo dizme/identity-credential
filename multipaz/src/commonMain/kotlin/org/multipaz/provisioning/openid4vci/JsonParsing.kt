@@ -69,7 +69,7 @@ internal open class JsonParsing(val source: String) {
         throw IllegalStateException("$source: $name must be an integer")
     }
 
-    fun JsonObject.integerOrNull(name: String): Int {
+    fun JsonObject.integerOrNull(name: String): Int? {
         val value = this[name]
         if (value is JsonPrimitive && !value.isString) {
             val intValue = value.intOrNull
@@ -77,7 +77,7 @@ internal open class JsonParsing(val source: String) {
                 return intValue
             }
         }
-        throw IllegalStateException("$source: $name must be an integer")
+        return null
     }
 
     fun JsonObject.obj(name: String): JsonObject {
@@ -114,11 +114,12 @@ internal open class JsonParsing(val source: String) {
 
     suspend fun extractDisplay(
         element: JsonObject?,
+        httpClient: HttpClient,
         clientPreferences: OpenID4VCIClientPreferences
     ): Display {
         val displayJson = element?.arrayOrNull("display")
         if (displayJson == null || displayJson.isEmpty()) {
-            return Display("Untitled", null)
+            return Display("Untitled")
         }
         var bestMatch: JsonObject? = null
         var bestRank = Int.MAX_VALUE
@@ -143,26 +144,39 @@ internal open class JsonParsing(val source: String) {
                 bestMatch = displayObj
             }
         }
-        val text = bestMatch!!.string("name")
-        val logoObj = bestMatch.objOrNull("logo")
-        var logo: ByteString? = null
-        if (logoObj != null) {
-            val uri = logoObj.stringOrNull("uri")
-            if (uri != null) {
-                if (uri.startsWith("data:")) {
-                    val start = uri.indexOf(",")
-                    if (start > 0) {
-                        logo = ByteString(uri.substring(start + 1).fromBase64())
-                    }
-                } else {
-                    val httpClient = BackendEnvironment.getInterface(HttpClient::class)!!
-                    val response = httpClient.get(uri)
-                    if (response.status == HttpStatusCode.OK) {
-                        logo = ByteString(response.readRawBytes())
-                    }
-                }
+        return Display(
+            text = bestMatch!!.string("name"),
+            logo = loadImage(
+                logoObj = bestMatch.objOrNull("logo"),
+                httpClient = httpClient
+            ),
+            description = bestMatch.stringOrNull("description"),
+            backgroundColor = bestMatch.stringOrNull("background_color"),
+            textColor = bestMatch.stringOrNull("text_color"),
+            backgroundImage = loadImage(
+                logoObj = bestMatch.objOrNull("background_image"),
+                httpClient = httpClient
+            )
+        )
+    }
+
+    private suspend fun loadImage(
+        logoObj: JsonObject?,
+        httpClient: HttpClient
+    ): ByteString? {
+        val uri = logoObj?.stringOrNull("uri") ?: return null
+        if (uri.startsWith("data:")) {
+            val start = uri.indexOf(",")
+            if (start > 0) {
+                return ByteString(uri.substring(start + 1).fromBase64())
+            }
+        } else {
+            val response = httpClient.get(uri)
+            if (response.status == HttpStatusCode.OK) {
+                return ByteString(response.readRawBytes())
             }
         }
-        return Display(text, logo)
+        return null
     }
+
 }

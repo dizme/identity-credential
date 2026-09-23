@@ -25,12 +25,13 @@ import org.multipaz.crypto.EcPublicKey
 import kotlinx.io.bytestring.ByteStringBuilder
 import org.multipaz.cbor.buildCborMap
 import org.multipaz.crypto.Hkdf
+import org.multipaz.crypto.SecretKey
 import org.multipaz.mdoc.role.MdocRole
+import org.multipaz.util.Logger
+
+private const val TAG = "SessionEncryption"
 
 /**
- * Helper class for implementing session encryption according to ISO/IEC 18013-5:2021
- * section 9.1.1 Session encryption.
- *
  * The `DeviceEngagement` and `Handover` CBOR referenced in the
  * parameters below must conform to the CDDL in ISO 18013-5.
  *
@@ -44,21 +45,49 @@ import org.multipaz.mdoc.role.MdocRole
  * it's the for the mdoc.
  * @param remotePublicKey The public ephemeral key of the other end.
  * @param encodedSessionTranscript The bytes of the `SessionTranscript` CBOR.
+ * @param insertSequenceNumbers if `true`, inserts sequence numbers in generated messages.
  */
 class SessionEncryption(
     val role: MdocRole,
     private val eSelfKey: EcPrivateKey,
     private val remotePublicKey: EcPublicKey,
-    private val encodedSessionTranscript: ByteArray
-) {
+    private val encodedSessionTranscript: ByteArray,
+    private val insertSequenceNumbers: Boolean = false
+) : AutoCloseable {
+    private val eSelfPublicKey: EcPublicKey = eSelfKey.publicKey
     private var sessionEstablishmentSent = false
-    private lateinit var skRemote: ByteArray
-    private lateinit var skSelf: ByteArray
+    private lateinit var skRemote: SecretKey
+    private lateinit var skSelf: SecretKey
+    private var nextSequenceNumber_ = 0
     private var decryptedCounter = 1
     private var encryptedCounter = 1
     private var sendSessionEstablishment = true
 
     private var initialized: Boolean = false
+
+    override fun close() {
+        if (::skSelf.isInitialized) {
+            skSelf.close()
+        }
+        if (::skRemote.isInitialized) {
+            skRemote.close()
+        }
+        eSelfKey.close()
+    }
+
+    /**
+     * Returns the next sequence number that will be used.
+     *
+     * @throws IllegalStateException if the [org.multipaz.mdoc.sessionencryption.SessionEncryption] was constructed
+     *   with [insertSequenceNumbers] set to `false`
+     */
+    val nextSequenceNumber: Int
+        get() {
+            check(insertSequenceNumbers) {
+                "This object was constructed with insertSequenceNumber set to false"
+            }
+            return nextSequenceNumber_
+        }
 
     private suspend fun ensureInitialized() {
         if (initialized) {
@@ -68,10 +97,16 @@ class SessionEncryption(
         val sharedSecret = Crypto.keyAgreement(eSelfKey, remotePublicKey)
         val sessionTranscriptBytes = Cbor.encode(Tagged(24, Bstr(encodedSessionTranscript)))
         val salt = Crypto.digest(Algorithm.SHA256, sessionTranscriptBytes)
-        var info = "SKDevice".encodeToByteArray()
-        val deviceSK = Hkdf.deriveKey(Algorithm.HMAC_SHA256, sharedSecret, salt, info, 32)
-        info = "SKReader".encodeToByteArray()
-        val readerSK = Hkdf.deriveKey(Algorithm.HMAC_SHA256, sharedSecret, salt, info, 32)
+        val deviceSK: SecretKey
+        val readerSK: SecretKey
+        try {
+            var info = "SKDevice".encodeToByteArray()
+            deviceSK = Hkdf.deriveKey(Algorithm.HMAC_SHA256, sharedSecret, salt, info, 32)
+            info = "SKReader".encodeToByteArray()
+            readerSK = Hkdf.deriveKey(Algorithm.HMAC_SHA256, sharedSecret, salt, info, 32)
+        } finally {
+            sharedSecret.close()
+        }
         if (role == MdocRole.MDOC) {
             skSelf = deviceSK
             skRemote = readerSK
@@ -103,6 +138,25 @@ class SessionEncryption(
     }
 
     /**
+     * Configure the encryption and decryption counters.
+     *
+     * This is useful if the verifier cannot persist the [SessionEncryption] object, for example
+     * if used in a Servlet setup.
+     *
+     * The default value for these counters for a fresh [SessionEncryption] object are both 1.
+     *
+     * @param decryptedCounter the value to use for the decryption counter.
+     * @param encryptedCounter the value to use for the decryption counter.
+     */
+    fun setEncryptionCounters(
+        decryptedCounter: Int,
+        encryptedCounter: Int,
+    ) {
+        this.decryptedCounter = decryptedCounter
+        this.encryptedCounter = encryptedCounter
+    }
+
+    /**
      * Encrypt a message intended for the remote device.
      *
      *
@@ -130,7 +184,7 @@ class SessionEncryption(
             iv.append(ivIdentifier)
             iv.append(encryptedCounter.toUInt())
             messageCiphertext = Crypto.encrypt(
-                Algorithm.A128GCM,
+                Algorithm.A256GCM,
                 skSelf,
                 iv.toByteString().toByteArray(),
                 messagePlaintext
@@ -140,7 +194,7 @@ class SessionEncryption(
 
         val messageData = Cbor.encode(buildCborMap {
             if (!sessionEstablishmentSent && sendSessionEstablishment && role == MdocRole.MDOC_READER) {
-                var eReaderKey = eSelfKey.publicKey
+                val eReaderKey = eSelfPublicKey
                 putTaggedEncodedCbor("eReaderKey", Cbor.encode(eReaderKey.toCoseKey().toDataItem()))
                 checkNotNull(messageCiphertext) { "Data cannot be empty in initial message" }
             }
@@ -150,6 +204,10 @@ class SessionEncryption(
             if (statusCode != null) {
                 put("status", statusCode)
             }
+            if (insertSequenceNumbers) {
+                put("seq", nextSequenceNumber_)
+            }
+            nextSequenceNumber_++
         })
         sessionEstablishmentSent = true
         return messageData
@@ -187,7 +245,7 @@ class SessionEncryption(
             iv.append(ivIdentifier)
             iv.append(decryptedCounter.toUInt())
             plainText = Crypto.decrypt(
-                Algorithm.A128GCM,
+                Algorithm.A256GCM,
                 skRemote,
                 iv.toByteString().toByteArray(),
                 messageCiphertext
@@ -215,11 +273,18 @@ class SessionEncryption(
          * code and no data.
          *
          * @param statusCode the intended status code, with value as defined in ISO/IEC 18013-5 Table 20.
+         * @param sequenceNumber optional sequence number or `null`
          * @return a byte array with the encoded CBOR message
          */
-        fun encodeStatus(statusCode: Long): ByteArray = Cbor.encode(
+        fun encodeStatus(
+            statusCode: Long,
+            sequenceNumber: Int? = null,
+        ): ByteArray = Cbor.encode(
             buildCborMap {
                 put("status", statusCode)
+                sequenceNumber?.let {
+                    put("seq", it)
+                }
             }
         )
 

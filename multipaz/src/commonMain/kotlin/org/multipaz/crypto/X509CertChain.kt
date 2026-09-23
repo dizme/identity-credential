@@ -12,6 +12,8 @@ import org.multipaz.cbor.annotation.CborSerializationImplemented
 import org.multipaz.cbor.buildCborArray
 import org.multipaz.util.fromBase64
 import kotlin.io.encoding.Base64
+import kotlin.time.Clock
+import kotlin.time.Instant
 
 /**
  * A chain of certificates.
@@ -42,20 +44,15 @@ data class X509CertChain(
     }
 
     /**
-     * Encodes the certificate as JSON Array according to RFC 7515 Section 4.1.6.
+     * Encodes the certificate chain as JSON Array according to RFC 7515 Section 4.1.6.
      *
-     * Current draft of HAIP spec states "The X.509 certificate of the trust anchor MUST NOT be
-     * included in the x5c JOSE header of the Status List Token. The X.509 certificate signing
-     * the request MUST NOT be self-signed.". [excludeRoot] parameter helps to enforce this.
-     * Note that including trust root is always redundant, as both the key and the issuer identity
-     * must be known to the party that validates the certificate chain.
-     *
-     * @param excludeRoot if the last certificate is root (self-signed), exclude it
+     * @param excludeRoot if the certificate chain has more than one certificate and the last certificate is a root
+     *   certificate (self-signed), exclude it.
      * @return a [JsonElement].
      */
     fun toX5c(excludeRoot: Boolean = true): JsonElement {
         val last = certificates.last()
-        val certs = if (excludeRoot && last.subject == last.issuer) {
+        val certs = if (excludeRoot && certificates.size > 1 && last.subject == last.issuer) {
             certificates.subList(0, certificates.size - 1)
         } else {
             certificates
@@ -69,12 +66,107 @@ data class X509CertChain(
     }
 
     /**
-     * Validates that every certificate in the chain is signed by the next one.
+     * Encodes the certificate chain as CBOR for use in COSE 'x5chain' header parameter (label 33)
+     * according to RFC 9360 Section 2.
      *
-     * @return true if every certificate in the chain is signed by the next one, false otherwise.
+     * If [excludeRoot] is true, the certificate chain has more than one certificate, and the last
+     * certificate is a root certificate (self-signed), it is excluded.
+     *
+     * If the resulting chain has only one certificate, a [Bstr] containing the DER-encoded certificate
+     * is returned. Otherwise, a [CborArray] of [Bstr]s containing each DER-encoded certificate is returned.
+     *
+     * @param excludeRoot whether to exclude a self-signed root certificate if the chain has more than one certificate.
+     * @return a [DataItem] representing the COSE 'x5chain'.
      */
-    // TODO: also include other checks including validity dates, etc
-    suspend fun validate(): Boolean = Crypto.validateCertChain(this)
+    fun toCoseX5Chain(excludeRoot: Boolean = true): DataItem {
+        val last = certificates.last()
+        val certs = if (excludeRoot && certificates.size > 1 && last.subject == last.issuer) {
+            certificates.subList(0, certificates.size - 1)
+        } else {
+            certificates
+        }
+        return if (certs.size == 1) {
+            certs[0].toDataItem()
+        } else {
+            buildCborArray {
+                certs.forEach { certificate -> add(certificate.toDataItem()) }
+            }
+        }
+    }
+
+    /**
+     * Performs basic certificate chain validation.
+     *
+     * Specifically, these checks are performed:
+     *  - every certificate in the chain is signed by the next one,
+     *  - signer certificate's subject matches signed certificate's issuer,
+     *  - certificates are within their validity period (already valid and not yet expired),
+     *  - signer certificate have `CERT_SIGN` key usage
+     *  - non-leaf certificate must have basic constrains extension with
+     *    - CA flag set to true
+     *    - path length constraint that is sufficient for number of certificates in the chain
+     *
+     * This method does not check certificate revocation lists.
+     *
+     * @param validateAt time of the validation
+     * @param requireBasicConstraints if non-leaf certificates must use basic constrains extension
+     * @param validateValidity if validityNotBefore / validityNotAfter should be checked for the leaf certificate
+     * @param validateCaValidity if validityNotBefore / validityNotAfter should be checked for non-leaf CA certificates
+     * @throws [X509CertChainValidationException] if validation fails.
+     */
+    suspend fun validate(
+        validateAt: Instant = Clock.System.now(),
+        requireBasicConstraints: Boolean = true,
+        validateValidity: Boolean = true,
+        validateCaValidity: Boolean = true
+    ) {
+        if (!Crypto.validateCertChainSignatures(this)) {
+            throw X509CertChainValidationException.Signature()
+        }
+        var previous: X509Cert? = null
+        for ((index, certificate) in certificates.withIndex()) {
+            if (previous != null) {
+                if (previous.issuer != certificate.subject) {
+                    throw X509CertChainValidationException.SubjectIssuerMismatch()
+                }
+                if (!certificate.keyUsage.contains(X509KeyUsage.KEY_CERT_SIGN)) {
+                    throw X509CertChainValidationException.KeyUsageMissing()
+                }
+                val basicConstraints = certificate.basicConstraints
+                if (basicConstraints == null) {
+                    if (requireBasicConstraints) {
+                        throw X509CertChainValidationException.BasicConstraintsMissing()
+                    }
+                } else {
+                    if (!basicConstraints.first) {
+                        throw X509CertChainValidationException.BasicConstraintsNotCA()
+                    }
+                    val maxPathLength = basicConstraints.second
+                    if (maxPathLength != null) {
+                        // the leaf is not counted in path length constraints
+                        val pathLength = index - 1
+                        if (pathLength > maxPathLength) {
+                            throw X509CertChainValidationException.BasicConstraintsPathLength()
+                        }
+                    }
+                }
+            }
+            previous = certificate
+            val shouldCheckValidity = if (index == 0) {
+                validateValidity
+            } else {
+                validateValidity && validateCaValidity
+            }
+            if (shouldCheckValidity) {
+                if (certificate.validityNotAfter < validateAt) {
+                    throw X509CertChainValidationException.Expired(certificate.validityNotAfter)
+                }
+                if (certificate.validityNotBefore > validateAt) {
+                    throw X509CertChainValidationException.NotYetValid(certificate.validityNotBefore)
+                }
+            }
+        }
+    }
 
     companion object {
         /**

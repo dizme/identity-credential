@@ -1,6 +1,5 @@
 import SwiftUI
 import Multipaz
-import MultipazSwift
 
 struct CertificateViewerScreen: View {
     let certificates: [X509Cert]
@@ -13,7 +12,7 @@ struct CertificateViewerScreen: View {
             certificates: certificates,
             currentPage: $currentPage
         )
-        .background(Color(uiColor: .secondarySystemFill))
+        .navigationTitle("Certificate Viewer")
     }
 }
 
@@ -31,6 +30,7 @@ private struct CertificateViewerInternal: View {
                         ForEach(0..<certificates.count, id: \.self) { index in
                             ScrollView {
                                 X509CertViewer(certificate: certificates[index])
+                                    .padding(10)
                                     .tag(index)
                             }
                         }
